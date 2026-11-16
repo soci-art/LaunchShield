@@ -8,6 +8,7 @@
 
 #import "WQChannel.h"
 #import "WQAppCatalog.h"
+#import "WQLaunchServices.h"
 #import "WQAccess.h"
 #import <CommonCrypto/CommonDigest.h>
 #import <sys/stat.h>
@@ -47,7 +48,13 @@
 {
     static WQChannel *channel;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ channel = [WQChannel new]; });
+    dispatch_once(&once, ^{
+        // Same wiring as WQ Files: the LaunchServices database backs the
+        // container label resolver and the container list provider.
+        wq_set_container_label_resolver(wq_bundle_id_for_container);
+        wq_set_container_list_provider(wq_ls_container_paths);
+        channel = [WQChannel new];
+    });
     return channel;
 }
 
@@ -77,12 +84,39 @@
 
 #pragma mark - Containers
 
+// Fallback for systems where the container-manager query returns nothing
+// (seen on iOS 27.x): walk the app-data container folder and resolve each
+// folder's bundle id through wq_container_label, whose sources include the
+// LaunchServices database registered in +shared.
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)fallbackContainerRows
+{
+    wq_load_display_names();
+    NSString *parent = @"/private/var/mobile/Containers/Data/Application";
+    NSMutableSet<NSString *> *paths = [NSMutableSet set];
+    for (NSString *path in wq_ls_container_paths(nil) ?: @[]) {
+        if ([path hasPrefix:parent]) [paths addObject:path];
+    }
+    NSString *error = nil;
+    for (NSString *name in wq_list(parent, &error) ?: @[]) {
+        if (name.length) [paths addObject:[parent stringByAppendingPathComponent:name]];
+    }
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *rows = [NSMutableArray array];
+    for (NSString *path in paths) {
+        NSString *identifier = wq_container_label(path);
+        if (identifier.length) [rows addObject:@{ @"identifier": identifier, @"path": path }];
+    }
+    wq_log(@"containers: query empty, fallback resolved %lu of %lu folders",
+           (unsigned long)rows.count, (unsigned long)paths.count);
+    return rows;
+}
+
 - (NSArray<WQAppContainer *> *)appContainers
 {
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
     if (_containers && now - _containersAt < 30) return _containers;
 
     NSArray<NSDictionary<NSString *, NSString *> *> *rows = wq_list_containers(2);
+    if (!rows.count) rows = [self fallbackContainerRows];
     NSDictionary<NSString *, NSString *> *names = wq_app_display_names();
     NSMutableArray<WQAppContainer *> *result = [NSMutableArray array];
     for (NSDictionary<NSString *, NSString *> *row in rows) {
@@ -92,7 +126,7 @@
         WQAppContainer *container = [WQAppContainer new];
         container.identifier = identifier;
         container.path = path;
-        container.name = names[identifier] ?: identifier;
+        container.name = names[identifier] ?: wq_display_name(identifier) ?: identifier;
         container.isSystem = [identifier hasPrefix:@"com.apple."];
         [result addObject:container];
     }

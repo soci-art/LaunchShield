@@ -3925,7 +3925,10 @@ BOOL wq_is_immutable(NSString *path)
 NSArray<NSDictionary<NSString *, NSString *> *> *wq_list_containers(uint64_t containerClass)
 {
     void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib", RTLD_NOW | RTLD_LOCAL);
-    if (!mgr) return nil;
+    if (!mgr) {
+        wq_log(@"list containers: cannot open libsystem_containermanager (%s)", dlerror());
+        return nil;
+    }
     cq_create_fn create = (cq_create_fn)dlsym(mgr, "container_query_create");
     cq_set_u64_fn setClass = (cq_set_u64_fn)dlsym(mgr, "container_query_set_class");
     cq_iterate_fn iterate = (cq_iterate_fn)dlsym(mgr, "container_query_iterate_results_sync");
@@ -3934,6 +3937,8 @@ NSArray<NSDictionary<NSString *, NSString *> *> *wq_list_containers(uint64_t con
     co_get_id_fn getIdentifier = (co_get_id_fn)dlsym(mgr, "container_object_get_identifier");
     if (!getIdentifier) getIdentifier = (co_get_id_fn)dlsym(mgr, "container_result_get_identifier");
     if (!create || !setClass || !iterate || !freeQuery || !getPath || !getIdentifier) {
+        wq_log(@"list containers: missing symbols (create=%p setClass=%p iterate=%p free=%p path=%p id=%p)",
+               create, setClass, iterate, freeQuery, getPath, getIdentifier);
         dlclose(mgr);
         return nil;
     }
@@ -3955,7 +3960,13 @@ NSArray<NSDictionary<NSString *, NSString *> *> *wq_list_containers(uint64_t con
             return true;
         });
         freeQuery(query);
+    } else {
+        wq_log(@"list containers: container_query_create returned NULL");
     }
     dlclose(mgr);
+    if (!rows.count) {
+        wq_log(@"list containers: query for class %llu returned no rows",
+               (unsigned long long)containerClass);
+    }
     return rows.count ? rows : nil;
 }
