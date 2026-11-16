@@ -227,6 +227,8 @@ final class AppState: ObservableObject {
 
         work.async {
             var done = 0
+            var frozenCount = 0
+            var freezeFailureCount = 0
             var failure: String?
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
@@ -240,28 +242,44 @@ final class AppState: ObservableObject {
                     let size = self.channel.item(at: targetFile.path)?.size ?? 0
                     if size == 0 {
                         self.log("已经是 0 字节，跳过：\(targetFile.relativePath)", .info)
-                        continue
+                    } else {
+                        let record = try self.backupManager.backup(path: targetFile.path,
+                                                                   relativePath: targetFile.relativePath,
+                                                                   bundleID: BaiduNetdisk.bundleID,
+                                                                   appName: BaiduNetdisk.displayName,
+                                                                   source: targetFile.group,
+                                                                   channel: self.channel)
+                        newBackups.append(record)
+                        try self.channel.truncate(targetFile.path)
+                        done += 1
+                        self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
+                        if targetFile.group == "百度自营" {
+                            newRecipes.append(Recipe(id: UUID(),
+                                                     bundleID: BaiduNetdisk.bundleID,
+                                                     appName: BaiduNetdisk.displayName,
+                                                     relativePath: targetFile.relativePath,
+                                                     createdAt: Date(),
+                                                     frozen: false,
+                                                     placeholder: false,
+                                                     lastCheckedAt: Date(),
+                                                     lastState: RecipeState.normal.rawValue))
+                        }
                     }
-                    let record = try self.backupManager.backup(path: targetFile.path,
-                                                               relativePath: targetFile.relativePath,
-                                                               bundleID: BaiduNetdisk.bundleID,
-                                                               appName: BaiduNetdisk.displayName,
-                                                               source: targetFile.group,
-                                                               channel: self.channel)
-                    newBackups.append(record)
-                    try self.channel.truncate(targetFile.path)
-                    done += 1
-                    self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
-                    if targetFile.group == "百度自营" {
-                        newRecipes.append(Recipe(id: UUID(),
-                                                 bundleID: BaiduNetdisk.bundleID,
-                                                 appName: BaiduNetdisk.displayName,
-                                                 relativePath: targetFile.relativePath,
-                                                 createdAt: Date(),
-                                                 frozen: false,
-                                                 placeholder: false,
-                                                 lastCheckedAt: Date(),
-                                                 lastState: RecipeState.normal.rawValue))
+                    // 优量汇补货最快：清零后顺手把整组冻上，它就写不回这些文件了。
+                    // 冻结失败不算清零失败，只记下来在总结里说明。
+                    if targetFile.group == "优量汇" {
+                        if self.channel.isImmutable(targetFile.path) {
+                            frozenCount += 1
+                        } else {
+                            do {
+                                try self.channel.setImmutable(targetFile.path, true)
+                                frozenCount += 1
+                                self.log("已冻结：\(targetFile.relativePath)", .success)
+                            } catch {
+                                freezeFailureCount += 1
+                                self.log("冻结失败：\(targetFile.relativePath)：\(error.localizedDescription)", .warning)
+                            }
+                        }
                     }
                 } catch {
                     failure = "\(targetFile.relativePath)：\(error.localizedDescription)"
@@ -290,7 +308,15 @@ final class AppState: ObservableObject {
                     self.banner = "清零没有全部完成，已经停在出问题的文件，详情看日志。"
                 } else {
                     self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
-                    self.banner = "清零完成：\(done) 个文件已截断为 0 字节。请强退百度网盘再冷启动看看。"
+                    if frozenCount > 0 {
+                        self.log("优量汇已冻结：\(frozenCount) 个文件", .success)
+                    }
+                    if freezeFailureCount > 0 {
+                        self.log("优量汇有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
+                    }
+                    self.banner = frozenCount > 0
+                        ? "清零完成：\(done) 个文件已截断为 0 字节，优量汇已冻结。请强退百度网盘再冷启动看看。"
+                        : "清零完成：\(done) 个文件已截断为 0 字节。请强退百度网盘再冷启动看看。"
                     self.scanTargets = []
                 }
                 self.checkRecipes(silent: true)
