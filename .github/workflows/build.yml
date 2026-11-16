@@ -1,0 +1,73 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode 26
+        run: |
+          ls /Applications | grep -i Xcode || true
+          XCODE_APP="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$XCODE_APP" ]; then XCODE_APP="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"; fi
+          echo "Using $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+
+      - name: Build app (unsigned)
+        run: |
+          xcodebuild build \
+            -project LaunchShield.xcodeproj \
+            -scheme LaunchShield \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DD \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Package IPA (Info-ZIP)
+        run: |
+          APP_PATH="$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
+          echo "App: $APP_PATH"
+          test -n "$APP_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r -X LaunchShield-0.1.0-unsigned.ipa Payload
+          unzip -l LaunchShield-0.1.0-unsigned.ipa | head -20
+          ls -la LaunchShield-0.1.0-unsigned.ipa
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v0.1.0-test.${{ github.run_number }}"
+          cat > /tmp/notes.md << 'NOTES'
+          LaunchShield 0.1.0 测试版（界面原型）
+
+          本版内容：
+          - SwiftUI 界面：目标应用（百度网盘）、素材来源分类（百度自营 / 优量汇 / 穿山甲 / BeiZi）、数量摘要
+          - 「全部清零」「全部还原」操作入口与运行日志界面
+
+          当前阶段说明：
+          - 本版只有界面与流程外壳，按钮会明确提示尚未接入，不会修改任何应用的数据
+          - 跨应用文件访问能力不在本版内，后续接入后另行发布
+
+          安装：未签名 IPA，请用证书签名后安装；系统要求 iOS 26.0 或更新版本。
+          NOTES
+          gh release create "$TAG" LaunchShield-0.1.0-unsigned.ipa \
+            --prerelease \
+            --title "LaunchShield 0.1.0 测试版" \
+            --notes-file /tmp/notes.md
