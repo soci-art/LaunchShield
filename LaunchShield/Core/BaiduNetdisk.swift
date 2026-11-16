@@ -5,12 +5,16 @@ import CryptoKit
 /// path changes with every campaign, so it is derived at runtime:
 ///
 ///   Library/Preferences/com.baidu.netdisk.plist
-///     key "kBDNCSplashLastAdsFormat_<account>" -> JSON with activity_message
+///     key "kBDNCSplashLastAdsFormat_<account>" -> record with activity_message
+///     the splash image URL lives in activity_message's content_url_list
 ///     MD5 of the percent-encoded URL text       -> <md5>.png
 ///   Library/Caches/com.hackemist.SDImageCache/default/<md5>.png
 ///
-/// Nothing here hard-codes a file name, and a missing record is reported
-/// instead of guessed silently.
+/// Nothing here hard-codes a file name. The derivation is deterministic:
+/// candidate URLs are collected in a fixed order (content_url_list first,
+/// then every other URL in the message), each is matched against the cache,
+/// and the largest matching image wins. There is no "newest file" guessing:
+/// when no candidate matches a cached file, the miss is reported instead.
 enum BaiduNetdisk {
     static let bundleID = "com.baidu.netdisk"
     static let displayName = "百度网盘"
@@ -38,47 +42,47 @@ enum BaiduNetdisk {
         let cachedFiles = (try? channel.children(of: cacheRoot))?.filter { !$0.isDirectory } ?? []
 
         let keys = plist.keys.filter { $0.hasPrefix(splashKeyPrefix) }.sorted()
+        var bestPrimary: (resolution: SplashResolution, size: UInt64)?
+        var bestSecondary: (resolution: SplashResolution, size: UInt64)?
         var unresolved: SplashResolution?
         for key in keys {
             guard let value = plist[key], let json = decodeJSON(value) else { continue }
-            guard let message = activityMessage(in: json), let url = firstURL(in: message) else { continue }
-            let digest = md5Hex(url)
-            if let path = cachedFile(root: cacheRoot, md5: digest, cached: cachedFiles, channel: channel) {
-                return SplashResolution(key: key,
-                                        url: url,
-                                        md5: digest,
-                                        path: path,
-                                        exists: true,
-                                        inferred: false,
-                                        cachedFileCount: cachedFiles.count)
-            }
-            if unresolved == nil {
-                unresolved = SplashResolution(key: key,
-                                              url: url,
-                                              md5: digest,
-                                              path: cacheRoot + "/" + digest + ".png",
-                                              exists: false,
-                                              inferred: false,
-                                              cachedFileCount: cachedFiles.count)
+            for message in activityMessages(in: json) {
+                let (primary, secondary) = candidateURLs(in: message)
+                for (urls, isPrimary) in [(primary, true), (secondary, false)] {
+                    for url in urls {
+                        for digest in digests(for: url) {
+                            if let path = cachedFile(root: cacheRoot, md5: digest, cached: cachedFiles, channel: channel) {
+                                let size = channel.item(at: path)?.size ?? 0
+                                let found = SplashResolution(key: key,
+                                                             url: url,
+                                                             md5: digest,
+                                                             path: path,
+                                                             exists: true,
+                                                             inferred: false,
+                                                             cachedFileCount: cachedFiles.count)
+                                if isPrimary {
+                                    if bestPrimary == nil || size > bestPrimary!.size { bestPrimary = (found, size) }
+                                } else if bestSecondary == nil || size > bestSecondary!.size {
+                                    bestSecondary = (found, size)
+                                }
+                            } else if unresolved == nil {
+                                unresolved = SplashResolution(key: key,
+                                                              url: url,
+                                                              md5: digest,
+                                                              path: cacheRoot + "/" + digest + ".png",
+                                                              exists: false,
+                                                              inferred: false,
+                                                              cachedFileCount: cachedFiles.count)
+                            }
+                        }
+                    }
+                }
             }
         }
-        if let unresolved { return unresolved }
-
-        // No usable record (for example the ad never played on this account):
-        // fall back to the newest cached image, flagged so the user confirms it.
-        let newest = cachedFiles
-            .filter { FileKind.of($0.name) == .image }
-            .sorted { $0.modified > $1.modified }
-            .first
-        guard let newest else { return nil }
-        let stem = (newest.name as NSString).deletingPathExtension
-        return SplashResolution(key: "",
-                                url: "",
-                                md5: stem,
-                                path: newest.path,
-                                exists: true,
-                                inferred: true,
-                                cachedFileCount: cachedFiles.count)
+        if let bestPrimary { return bestPrimary.resolution }
+        if let bestSecondary { return bestSecondary.resolution }
+        return unresolved
     }
 
     static func relativePath(container: String, path: String) -> String {
@@ -106,7 +110,7 @@ enum BaiduNetdisk {
         if let splash, splash.exists, let item = channel.item(at: splash.path), !item.isDirectory {
             append(item,
                    group: "百度自营",
-                   note: splash.inferred ? "按最新素材推断，请你确认" : "按广告记录动态推导")
+                   note: "按广告记录动态推导")
         }
 
         for group in thirdPartyCacheGroups {
@@ -151,44 +155,77 @@ enum BaiduNetdisk {
         return nil
     }
 
-    private static func activityMessage(in object: Any) -> String? {
-        if let dictionary = object as? [String: Any] {
-            for (key, value) in dictionary where key.lowercased().contains("activity_message") {
-                if let text = value as? String, !text.isEmpty { return text }
-                if let nested = firstString(in: value) { return nested }
-            }
-            for value in dictionary.values {
-                if let found = activityMessage(in: value) { return found }
-            }
-        } else if let array = object as? [Any] {
-            for value in array {
-                if let found = activityMessage(in: value) { return found }
+    /// Every activity_message value in the record, collected in a fixed
+    /// walk order (dictionary keys sorted, arrays in order) so repeated
+    /// scans of the same record always see the same list.
+    static func activityMessages(in object: Any) -> [Any] {
+        var result: [Any] = []
+        func walk(_ o: Any) {
+            if let dictionary = o as? [String: Any] {
+                for key in dictionary.keys.sorted() {
+                    let value = dictionary[key]!
+                    if key.lowercased().contains("activity_message") { result.append(value) }
+                    walk(value)
+                }
+            } else if let array = o as? [Any] {
+                for value in array { walk(value) }
+            } else if let text = o as? String, let parsed = decodeJSON(text), !(parsed is String) {
+                walk(parsed)
             }
         }
-        return nil
+        walk(object)
+        return result
     }
 
-    private static func firstString(in object: Any) -> String? {
-        if let text = object as? String { return text.isEmpty ? nil : text }
-        if let dictionary = object as? [String: Any] {
-            for value in dictionary.values {
-                if let found = firstString(in: value) { return found }
+    /// Candidate URLs of one activity_message: URLs listed under
+    /// content_url_list first (the splash image lives there), then every
+    /// other URL in the message. Both lists keep a fixed order.
+    static func candidateURLs(in message: Any) -> (primary: [String], secondary: [String]) {
+        var primary: [String] = []
+        var secondary: [String] = []
+        func walk(_ o: Any, underContentList: Bool) {
+            if let dictionary = o as? [String: Any] {
+                for key in dictionary.keys.sorted() {
+                    walk(dictionary[key]!, underContentList: underContentList || key.lowercased() == "content_url_list")
+                }
+            } else if let array = o as? [Any] {
+                for value in array { walk(value, underContentList: underContentList) }
+            } else if let text = o as? String {
+                if let parsed = decodeJSON(text), !(parsed is String) {
+                    walk(parsed, underContentList: underContentList)
+                } else {
+                    for url in allURLs(in: text) {
+                        if underContentList {
+                            if !primary.contains(url) { primary.append(url) }
+                        } else if !secondary.contains(url) {
+                            secondary.append(url)
+                        }
+                    }
+                }
             }
         }
-        if let array = object as? [Any] {
-            for value in array {
-                if let found = firstString(in: value) { return found }
-            }
-        }
-        return nil
+        walk(message, underContentList: false)
+        secondary.removeAll { primary.contains($0) }
+        return (primary, secondary)
     }
 
-    static func firstURL(in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: "https?://[^\\s\"'<>\\\\]+") else { return nil }
+    static func allURLs(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: "https?://[^\\s\"'<>\\\\]+") else { return [] }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, options: [], range: range),
-              let found = Range(match.range, in: text) else { return nil }
-        return String(text[found])
+        return regex.matches(in: text, options: [], range: range).compactMap { match in
+            Range(match.range, in: text).map { String(text[$0]) }
+        }
+    }
+
+    /// The cache file name is the MD5 of the URL exactly as stored in the
+    /// record (percent-encoded spelling). The decoded spelling is tried
+    /// too, in this fixed order.
+    static func digests(for url: String) -> [String] {
+        var result = [md5Hex(url)]
+        if let decoded = url.removingPercentEncoding, decoded != url {
+            result.append(md5Hex(decoded))
+        }
+        return result
     }
 
     static func md5Hex(_ text: String) -> String {

@@ -182,11 +182,11 @@ final class AppState: ObservableObject {
                 if let splash {
                     if splash.exists {
                         let relative = BaiduNetdisk.relativePath(container: root, path: splash.path)
-                        self.log(splash.inferred
-                                 ? "自营开屏素材（按最新素材推断）：\(relative)"
-                                 : "自营开屏素材：\(relative)", splash.inferred ? .notice : .info)
+                        self.log("自营开屏素材：\(relative)", .info)
+                        self.log("推导依据：\(splash.url) → MD5 \(splash.md5)", .info)
                     } else {
-                        self.log("按广告记录算出了素材路径，但那个文件现在不存在", .notice)
+                        let relative = BaiduNetdisk.relativePath(container: root, path: splash.path)
+                        self.log("按广告记录算出了素材路径，但那个文件现在不存在：\(relative)（网址 \(splash.url)）", .notice)
                     }
                 } else {
                     self.log("没有读到开屏广告记录，可能广告还没缓存过，或记录文件暂时读不到", .notice)
@@ -369,6 +369,31 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    func deleteBackup(_ record: BackupRecord) {
+        store.file.backups.removeAll { $0.id == record.id }
+        try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
+        store.save()
+        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
+        log("已删除一份备份：\(record.relativePath)", .info)
+        banner = "已删除这份备份。"
+    }
+
+    func deleteAllBackups() {
+        let records = store.file.backups
+        guard !records.isEmpty else {
+            banner = "还没有备份可以删。"
+            return
+        }
+        for record in records {
+            try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
+        }
+        store.file.backups = []
+        store.save()
+        backups = []
+        log("已清空全部备份：\(records.count) 份", .notice)
+        banner = "已清空全部备份：\(records.count) 份。"
     }
 
     // MARK: - Before/after diff
