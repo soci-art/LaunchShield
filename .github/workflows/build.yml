@@ -49,11 +49,16 @@ jobs:
           unzip -l LaunchShield-0.1.0-unsigned.ipa | head -20
           ls -la LaunchShield-0.1.0-unsigned.ipa
 
-      - name: Publish prerelease
+      - name: Publish prerelease (standing test release, replace IPA only)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v0.1.0-test.${{ github.run_number }}"
+          TAG="v0.1.0-test"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" LaunchShield-0.1.0-unsigned.ipa --clobber
+            echo "Replaced the IPA on the standing prerelease $TAG"
+            exit 0
+          fi
           cat > /tmp/notes.md << 'NOTES'
           LaunchShield 0.1.0 测试版（功能版）
 
