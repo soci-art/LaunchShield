@@ -132,7 +132,7 @@ final class GuardService: NSObject, ObservableObject {
 
         let source = AVPictureInPictureController.ContentSource(activeVideoCallSourceView: anchor,
                                                                contentViewController: controller)
-        guard let pip = AVPictureInPictureController(contentSource: source) else { return false }
+        let pip = AVPictureInPictureController(contentSource: source)
         pip.delegate = self
         pip.canStartPictureInPictureAutomaticallyFromInline = true
         pipController = pip
