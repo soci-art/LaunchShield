@@ -3,6 +3,8 @@ import SwiftUI
 struct BackupsView: View {
     @EnvironmentObject private var state: AppState
     @State private var showRestoreAll = false
+    @State private var showDeleteAll = false
+    @State private var recordToDelete: BackupRecord?
 
     var body: some View {
         SheetPage("备份记录") {
@@ -22,6 +24,12 @@ struct BackupsView: View {
                                 .foregroundStyle(Color.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer()
+                            Button("全部删除") {
+                                showDeleteAll = true
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.red)
+                            .buttonStyle(.plain)
                             Button("全部还原") {
                                 showRestoreAll = true
                             }
@@ -44,6 +52,26 @@ struct BackupsView: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("请先完全退出目标应用。")
+        }
+        .confirmationDialog("确定要删除全部备份吗？", isPresented: $showDeleteAll, titleVisibility: .visible) {
+            Button("全部删除", role: .destructive) {
+                state.deleteAllBackups()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("删了之后，这些素材就没有备份了，之后想还原也还原不了。")
+        }
+        .confirmationDialog("确定要删除这份备份吗？", isPresented: Binding(
+            get: { recordToDelete != nil },
+            set: { if !$0 { recordToDelete = nil } }
+        ), titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                if let record = recordToDelete { state.deleteBackup(record) }
+                recordToDelete = nil
+            }
+            Button("取消", role: .cancel) { recordToDelete = nil }
+        } message: {
+            Text("删了之后，这条素材就没有备份了，之后想还原也还原不了。")
         }
     }
 
@@ -75,6 +103,12 @@ struct BackupsView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(Color.secondaryText)
                 Spacer()
+                Button("删除") {
+                    recordToDelete = record
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .buttonStyle(.plain)
                 Button("恢复这个") {
                     state.restore(record)
                 }
