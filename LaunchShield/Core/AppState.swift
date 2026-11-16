@@ -265,20 +265,18 @@ final class AppState: ObservableObject {
                                                      lastState: RecipeState.normal.rawValue))
                         }
                     }
-                    // 优量汇补货最快：清零后顺手把整组冻上，它就写不回这些文件了。
+                    // 清零后顺手把每个文件都冻上，广告就写不回这些文件了。
                     // 冻结失败不算清零失败，只记下来在总结里说明。
-                    if targetFile.group == "优量汇" {
-                        if self.channel.isImmutable(targetFile.path) {
+                    if self.channel.isImmutable(targetFile.path) {
+                        frozenCount += 1
+                    } else {
+                        do {
+                            try self.channel.setImmutable(targetFile.path, true)
                             frozenCount += 1
-                        } else {
-                            do {
-                                try self.channel.setImmutable(targetFile.path, true)
-                                frozenCount += 1
-                                self.log("已冻结：\(targetFile.relativePath)", .success)
-                            } catch {
-                                freezeFailureCount += 1
-                                self.log("冻结失败：\(targetFile.relativePath)：\(error.localizedDescription)", .warning)
-                            }
+                            self.log("已冻结：\(targetFile.relativePath)", .success)
+                        } catch {
+                            freezeFailureCount += 1
+                            self.log("冻结失败：\(targetFile.relativePath)：\(error.localizedDescription)", .warning)
                         }
                     }
                 } catch {
@@ -309,13 +307,13 @@ final class AppState: ObservableObject {
                 } else {
                     self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
                     if frozenCount > 0 {
-                        self.log("优量汇已冻结：\(frozenCount) 个文件", .success)
+                        self.log("清零的文件已全部冻结：\(frozenCount) 个", .success)
                     }
                     if freezeFailureCount > 0 {
-                        self.log("优量汇有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
+                        self.log("有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
                     }
                     self.banner = frozenCount > 0
-                        ? "清零完成：\(done) 个文件已截断为 0 字节，优量汇已冻结。请强退百度网盘再冷启动看看。"
+                        ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请强退百度网盘再冷启动看看。"
                         : "清零完成：\(done) 个文件已截断为 0 字节。请强退百度网盘再冷启动看看。"
                     self.scanTargets = []
                 }
