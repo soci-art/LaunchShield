@@ -4,6 +4,10 @@
 <dict>
     <key>CFBundleDisplayName</key>
     <string>LaunchShield</string>
+    <key>CFBundleExecutable</key>
+    <string>LaunchShield</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
     <key>CFBundleIdentifier</key>
     <string>com.sociart.launchshield</string>
     <key>CFBundleName</key>
