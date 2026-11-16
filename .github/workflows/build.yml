@@ -55,17 +55,29 @@ jobs:
         run: |
           TAG="v0.1.0-test.${{ github.run_number }}"
           cat > /tmp/notes.md << 'NOTES'
-          LaunchShield 0.1.0 测试版（界面原型）
+          LaunchShield 0.1.0 测试版（功能版）
 
           本版内容：
-          - SwiftUI 界面：目标应用（百度网盘）、素材来源分类（百度自营 / 优量汇 / 穿山甲 / BeiZi）、数量摘要
-          - 「全部清零」「全部还原」操作入口与运行日志界面
+          - 跨应用文件通道：移植 kolbicz/WQFiles 的 WQAccess（worse_query，Taj C / forcequit），保留 GPL-3.0-or-later
+          - 容器浏览：按应用列出容器，查看路径、大小、修改时间，图片/视频缩略图
+          - 找广告：前后快照对比，列出刚新增或变大的候选，用户勾选确认后才处理
+          - 0 字节替换：原地截断，先备份（原路径/大小/MD5），一键还原并核对 MD5
+          - 配方：已守护应用列表，0 字节＝正常，变大＝复发，可一键重新清零，每次启动自动复查
+          - 百度网盘配方：按 kBDNCSplashLastAdsFormat_ 记录动态推导 MD5 文件名；优量汇/穿山甲/BeiZi 全清零清单
+          - 上锁：chmod、chflags 冻结/解冻、同名文件夹占位与取消
+          - 守护模式：画中画保活，每 3 秒查大小、每 30 秒比对目录，中断有记录
+          - 图标：浅色/深色两版成品图标已接入
 
-          当前阶段说明：
-          - 本版只有界面与流程外壳，按钮会明确提示尚未接入，不会修改任何应用的数据
-          - 跨应用文件访问能力不在本版内，后续接入后另行发布
+          相对 WQFiles 上游新增/修改了什么：
+          - 只移植容器访问层（WQAccess 及其直接依赖 WQAccessSafety、WQScanJournal、WQCore、WQLocalization），
+            未引入其界面、归档、SQLite、网页服务、主题、分享等模块
+          - App Group 改为运行时发现：先读 embedded.mobileprovision 的 application-groups 列表，
+            再读签名 entitlements，逐个尝试打开并取第一个能用的；没有可用组时用中文明确报错，不静默失败
+          - 新增接口：wq_chmod、wq_set_immutable、wq_is_immutable、wq_list_containers
+          - 新增 WQChannel、WQAppCatalog 两个适配层，供 Swift 调用
+          - 未改动 WQAccess 的备份优先、原地写回、失败回滚与版本校验流程
 
-          安装：未签名 IPA，请用证书签名后安装；系统要求 iOS 26.0 或更新版本。
+          安装：未签名 IPA，请用带 App Group 的证书和描述文件签名后安装；系统要求 iOS 26.0 或更新版本。
           NOTES
           gh release create "$TAG" LaunchShield-0.1.0-unsigned.ipa \
             --prerelease \
