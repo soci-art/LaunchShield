@@ -84,10 +84,33 @@
 
 #pragma mark - Containers
 
-// Fallback for systems where the container-manager query returns nothing
-// (seen on iOS 27.x): walk the app-data container folder and resolve each
-// folder's bundle id through wq_container_label, whose sources include the
-// LaunchServices database registered in +shared.
+// Last-resort label: read the container's own metadata plist through the
+// channel, without the permission pre-check the shared helper applies (on
+// iOS 27.x that pre-check guesses "unreadable" for files the channel can in
+// fact read).
+- (NSString *)metadataLabelForPath:(NSString *)path
+{
+    NSString *meta = [path stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+    NSError *error = nil;
+    NSData *data = wq_read(meta, &error);
+    if (!data.length) return nil;
+    id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
+    if (![plist isKindOfClass:NSDictionary.class]) return nil;
+    NSString *identifier = plist[@"MCMMetadataIdentifier"];
+    if (![identifier isKindOfClass:NSString.class] || ![identifier containsString:@"."]) return nil;
+    if ([identifier hasPrefix:@"com.apple."]) return nil;
+    return identifier;
+}
+
+- (NSString *)labelForPath:(NSString *)path
+{
+    NSString *label = wq_container_label(path);
+    if (label.length) return label;
+    return [self metadataLabelForPath:path];
+}
+
+// Fallback for systems where the scan machinery returns nothing: walk the
+// app-data container folder and resolve each folder's bundle id.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)fallbackContainerRows
 {
     wq_load_display_names();
@@ -102,7 +125,7 @@
     }
     NSMutableArray<NSDictionary<NSString *, NSString *> *> *rows = [NSMutableArray array];
     for (NSString *path in paths) {
-        NSString *identifier = wq_container_label(path);
+        NSString *identifier = [self labelForPath:path];
         if (identifier.length) [rows addObject:@{ @"identifier": identifier, @"path": path }];
     }
     wq_log(@"containers: query empty, fallback resolved %lu of %lu folders",
@@ -115,8 +138,22 @@
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
     if (_containers && now - _containersAt < 30) return _containers;
 
-    NSArray<NSDictionary<NSString *, NSString *> *> *rows = wq_list_containers(2);
-    if (!rows.count) rows = [self fallbackContainerRows];
+    // Primary: the original scan machinery over both container roots (asks
+    // the container manager every class, then the LaunchServices database,
+    // then a bounded id scan). The single-class query below returns nothing
+    // on iOS 27.2, which is why this goes first.
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *rows = [NSMutableArray array];
+    wq_load_display_names();
+    for (NSString *root in @[@"/private/var/mobile/Containers/Data/Application",
+                             @"/private/var/mobile/Containers/Data/PluginKitPlugin"]) {
+        for (NSString *path in wq_enumerate(root, 0, nil, nil) ?: @[]) {
+            NSString *identifier = [self labelForPath:path];
+            if (identifier.length) [rows addObject:@{ @"identifier": identifier, @"path": path }];
+        }
+    }
+    wq_log(@"containers: scan machinery resolved %lu", (unsigned long)rows.count);
+    if (!rows.count) rows = [wq_list_containers(2) mutableCopy] ?: [NSMutableArray array];
+    if (!rows.count) rows = [[self fallbackContainerRows] mutableCopy];
     NSDictionary<NSString *, NSString *> *names = wq_app_display_names();
     NSMutableArray<WQAppContainer *> *result = [NSMutableArray array];
     for (NSDictionary<NSString *, NSString *> *row in rows) {

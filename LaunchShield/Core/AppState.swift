@@ -114,7 +114,7 @@ final class AppState: ObservableObject {
     }
 
     func exportLogText() -> String {
-        logs.exportText(header: [
+        var text = logs.exportText(header: [
             "LaunchShield 运行日志",
             "应用版本：\(appVersionText)",
             "系统版本：\(systemText)",
@@ -122,6 +122,13 @@ final class AppState: ObservableObject {
             "共享组：\(channel.groupID ?? "没有拿到")",
             "导出时间：\(Format.fullDate(Date()))"
         ])
+        // The channel layer keeps its own detailed log (wq_log); include it so
+        // a failure inside the machinery is visible in the export.
+        let accessLog = wq_log_text()
+        if !accessLog.isEmpty {
+            text += "\n\n———— 底层通道日志 ————\n" + accessLog
+        }
+        return text
     }
 
     // MARK: - Containers and target
