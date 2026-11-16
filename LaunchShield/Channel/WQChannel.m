@@ -91,8 +91,8 @@
 - (NSString *)metadataLabelForPath:(NSString *)path
 {
     NSString *meta = [path stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
-    NSError *error = nil;
-    NSData *data = wq_read(meta, &error);
+    NSString *error = nil;
+    NSData *data = wq_read(meta, 64 * 1024, &error);
     if (!data.length) return nil;
     id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
     if (![plist isKindOfClass:NSDictionary.class]) return nil;
