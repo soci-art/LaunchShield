@@ -24,7 +24,8 @@ enum BaiduNetdisk {
     static let splashKeyPrefix = "kBDNCSplashLastAdsFormat_"
 
     static let thirdPartyCacheGroups: [(group: String, directories: [String])] = [
-        ("优量汇", ["Library/Caches/default/tencent_gdtimg", "Library/Caches/default/tencent_gdtres"]),
+        ("优量汇", ["Library/Caches/default/tencent_gdtimg", "Library/Caches/default/tencent_gdtres",
+                    "tmp/gdtMedia"]),
         ("穿山甲", ["Library/Caches/com.hackemist.CSJSDImageCache/default",
                     "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache"]),
         ("BeiZi", ["Library/Caches/BeiZiMaterial"])
