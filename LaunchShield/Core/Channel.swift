@@ -71,13 +71,13 @@ final class Channel {
         // Overwriting needs the existing inode; a file that was deleted (for a
         // same-name placeholder, or a recipe that lost it) has to be created.
         let op = raw.fileExists(path)
-            ? raw.writeFromLocalFile(path, source: localPath)
-            : raw.createFromLocalFile(path, source: localPath)
+            ? raw.write(fromLocalFile: path, source: localPath)
+            : raw.create(fromLocalFile: path, source: localPath)
         guard op.ok else { throw ChannelFailure(op.error ?? "写回失败") }
     }
 
     func copyToLocal(path: String, destination: String) throws {
-        let op = raw.copyToLocalFile(path, destination: destination)
+        let op = raw.copy(toLocalFile: path, destination: destination)
         guard op.ok else { throw ChannelFailure(op.error ?? "备份失败") }
     }
 
@@ -111,7 +111,7 @@ final class Channel {
     }
 
     func md5(_ path: String) throws -> String {
-        let op = raw.md5OfFile(path)
+        let op = raw.md5(ofFile: path)
         guard op.ok, let digest = op.value as? String else {
             throw ChannelFailure(op.error ?? "算不了校验值")
         }
