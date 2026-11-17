@@ -91,11 +91,24 @@ struct DiffCandidate: Identifiable, Hashable {
     let reason: String
     let isNew: Bool
     let delta: Int64
+    var appName: String = ""
+    var bundleID: String = ""
+    var containerRoot: String = ""
 
-    var id: String { relativePath }
+    var id: String { bundleID.isEmpty ? relativePath : bundleID + "|" + relativePath }
     var kind: FileKind { FileKind.of(relativePath) }
     var sizeText: String { Format.bytes(size) }
     var modifiedText: String { Format.date(modified) }
+
+    /// Rough call on whether this file is ad material: it sits in a known ad
+    /// SDK's territory, or it is a brand-new image/video.
+    var likelyAd: Bool {
+        let path = relativePath.lowercased()
+        let markers = ["csj", "gdt", "beizi", "msadsdk", "ubix", "qumeng",
+                       "admob", "advertise", "splash", "buadsdk", "pangolin"]
+        if markers.contains(where: { path.contains($0) }) { return true }
+        return isNew && kind != .other
+    }
 }
 
 struct BackupRecord: Codable, Identifiable, Hashable {

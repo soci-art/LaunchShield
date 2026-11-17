@@ -9,8 +9,11 @@ struct FindAdView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     guideCard
+                    if !state.checkedIDs.isEmpty {
+                        appsWithAdsCard
+                    }
                     snapshotCard
-                    if state.beforeSnapshot != nil && state.candidates.isEmpty {
+                    if !state.beforeSnapshots.isEmpty && state.candidates.isEmpty {
                         instructionCard
                     }
                     if !state.candidates.isEmpty {
@@ -29,7 +32,9 @@ struct FindAdView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("请先完全退出 \(state.target.name)。")
+            Text(state.checkedIDs.isEmpty
+                 ? "请先完全退出 \(state.target.name)。"
+                 : "请先完全退出要处理的应用。")
         }
     }
 
@@ -38,10 +43,34 @@ struct FindAdView: View {
             Text("怎么找")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
-            Text("① 拍第一次快照  →  ② 去 \(state.target.name) 里让开屏广告完整播一次  →  ③ 回来拍第二次快照  →  ④ 勾选刚出现或明显变大的文件。")
+            Text(state.checkedIDs.isEmpty
+                 ? "① 拍第一次快照  →  ② 去 \(state.target.name) 里让开屏广告完整播一次  →  ③ 回来拍第二次快照  →  ④ 勾选刚出现或明显变大的文件。"
+                 : "① 拍第一次快照（勾选的应用一起拍）  →  ② 去有广告的应用里让开屏广告完整播一次  →  ③ 回来拍第二次快照  →  ④ 勾选刚出现或明显变大的文件。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel()
+    }
+
+    private var appsWithAdsCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("有广告的应用")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.primaryText)
+            if state.appsWithAds.isEmpty {
+                Text("先在主页点一次「扫描」，这里会列出扫到广告素材的应用。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(state.appsWithAds.joined(separator: "、"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,11 +84,11 @@ struct FindAdView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Spacer()
-                if let before = state.beforeSnapshot {
-                    StatusBadge(text: "第一次 \(before.fileCount) 个文件", tint: .cyan)
+                if !state.beforeSnapshots.isEmpty {
+                    StatusBadge(text: "第一次 \(state.beforeSnapshots.values.reduce(0) { $0 + $1.fileCount }) 个文件", tint: .cyan)
                 }
-                if let after = state.afterSnapshot {
-                    StatusBadge(text: "第二次 \(after.fileCount) 个文件", tint: .green)
+                if !state.afterSnapshots.isEmpty {
+                    StatusBadge(text: "第二次 \(state.afterSnapshots.values.reduce(0) { $0 + $1.fileCount }) 个文件", tint: .green)
                 }
             }
             HStack(spacing: 10) {
@@ -75,10 +104,10 @@ struct FindAdView: View {
                     actionLabel("拍第二次快照", symbol: "camera.viewfinder")
                 }
                 .buttonStyle(.plain)
-                .disabled(state.beforeSnapshot == nil)
-                .opacity(state.beforeSnapshot == nil ? 0.45 : 1)
+                .disabled(state.beforeSnapshots.isEmpty)
+                .opacity(state.beforeSnapshots.isEmpty ? 0.45 : 1)
             }
-            if let before = state.beforeSnapshot {
+            if let before = state.beforeSnapshots.values.first {
                 Text("第一次快照时间：\(Format.fullDate(before.createdAt))")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Color.secondaryText)
@@ -95,7 +124,7 @@ struct FindAdView: View {
                 .font(.system(size: 15))
                 .foregroundStyle(.cyan)
             VStack(alignment: .leading, spacing: 4) {
-                Text("现在去打开\(state.target.name)")
+                Text(state.checkedIDs.isEmpty ? "现在去打开\(state.target.name)" : "现在去打开有广告的应用")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Text("让开屏广告完整播一次，然后回到这里拍第二次快照。不要先强退本应用。")
@@ -182,15 +211,30 @@ struct FindAdView: View {
             Image(systemName: state.selectedCandidatePaths.contains(candidate.id) ? "checkmark.square.fill" : "square")
                 .font(.system(size: 16))
                 .foregroundStyle(state.selectedCandidatePaths.contains(candidate.id) ? Color.accentCyan : Color.secondaryText)
-            ThumbnailView(path: state.containerPath.map { $0 + "/" + candidate.relativePath } ?? candidate.relativePath,
+            ThumbnailView(path: candidate.containerRoot.isEmpty ? candidate.relativePath : candidate.containerRoot + "/" + candidate.relativePath,
                           kind: candidate.kind,
                           side: 34)
             VStack(alignment: .leading, spacing: 3) {
-                Text(candidate.relativePath)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.primaryText)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    Text(candidate.relativePath)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.primaryText)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    if candidate.likelyAd {
+                        Text("疑似广告")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.14), in: Capsule())
+                    }
+                }
+                if !state.checkedIDs.isEmpty && !candidate.appName.isEmpty {
+                    Text(candidate.appName)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.accentCyan)
+                }
                 HStack(spacing: 6) {
                     Text(candidate.reason)
                         .font(.system(size: 10, weight: .semibold))
@@ -212,6 +256,7 @@ struct FindAdView: View {
             Spacer()
         }
         .padding(.vertical, 9)
+        .contentShape(Rectangle())
     }
 
     private func actionLabel(_ title: String, symbol: String) -> some View {

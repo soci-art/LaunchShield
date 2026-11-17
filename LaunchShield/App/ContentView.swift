@@ -132,8 +132,8 @@ struct ContentView: View {
                 Button {
                     showAppPicker = true
                 } label: {
-                    Text("更换")
-                        .font(.system(size: 14, weight: .semibold))
+                    Text(state.checkedIDs.isEmpty ? "更换" : "浏览应用列表")
+                        .font(.system(size: state.checkedIDs.isEmpty ? 14 : 13, weight: .semibold))
                         .foregroundStyle(Color.accentCyan)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 7)
@@ -150,24 +150,29 @@ struct ContentView: View {
                         .font(.system(size: 25))
                         .foregroundStyle(Color.primaryText.opacity(0.88))
                 }
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(state.target.name)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
-                    Text(state.target.bundleID)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Color.secondaryText)
+                if state.checkedIDs.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(state.target.name)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        Text(state.target.bundleID)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(Color.secondaryText)
+                    }
+                    Spacer()
+                    StatusBadge(text: state.targetPath == nil ? "没有容器" : "已找到",
+                                tint: state.targetPath == nil ? .orange : .green)
+                } else {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("已勾选 \(state.checkedIDs.count) 个应用")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        Text("游戏除外，扫描和清零会一起处理")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.secondaryText)
+                    }
+                    Spacer()
                 }
-                Spacer()
-                StatusBadge(text: state.targetPath == nil ? "没有容器" : "已找到",
-                            tint: state.targetPath == nil ? .orange : .green)
-            }
-            if let path = state.targetPath {
-                Text(path)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(Color.secondaryText.opacity(0.8))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
             Divider().overlay(Color.primaryText.opacity(0.07))
             HStack(spacing: 10) {
@@ -175,11 +180,6 @@ struct ContentView: View {
                     state.toggleCheckAllUserApps()
                 }
                 smallButton("找广告", symbol: "magnifyingglass") { showFindAd = true }
-            }
-            if !state.checkedIDs.isEmpty {
-                Text("已勾选 \(state.checkedIDs.count) 个应用（游戏除外），扫描和清零会一起处理")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.accentCyan)
             }
             Label("操作前请先完全退出目标应用", systemImage: "info.circle")
                 .font(.system(size: 12))
@@ -244,16 +244,8 @@ struct ContentView: View {
                     state.uploadRecognition(stillSeesAds: false)
                 } label: {
                     Label("上传识别数据", systemImage: "arrow.up.circle")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.accentCyan)
-                }
-                .buttonStyle(.plain)
-                Button {
-                    state.uploadRecognition(stillSeesAds: true)
-                } label: {
-                    Label("还出广告", systemImage: "exclamationmark.bubble")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.orange)
                 }
                 .buttonStyle(.plain)
                 Spacer()
@@ -417,7 +409,7 @@ struct ContentView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            Toggle("锁屏后用静音音频补强（默认关，更耗电）",
+            Toggle("锁屏后用静音音频补强（默认关，打开会增加电耗）",
                    isOn: Binding(get: { guardService.silentBoost },
                                  set: { guardService.silentBoost = $0 }))
                 .font(.system(size: 11))
@@ -551,7 +543,7 @@ struct ContentView: View {
 
     private var footer: some View {
         HStack {
-            Text("LaunchShield · 测试版")
+            Text("LaunchShield")
             Spacer()
             Text("版本 \(state.appVersionText)")
         }

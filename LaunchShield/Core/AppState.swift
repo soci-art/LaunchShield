@@ -29,6 +29,10 @@ final class AppState: ObservableObject {
     @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
+    /// Per-app snapshots for the find-ad flow, keyed by bundle ID. The scope
+    /// follows the check state: every checked app, or the single target.
+    @Published var beforeSnapshots: [String: ContainerSnapshot] = [:]
+    @Published var afterSnapshots: [String: ContainerSnapshot] = [:]
     @Published var candidates: [DiffCandidate] = []
     @Published var selectedCandidatePaths: Set<String> = []
 
@@ -193,6 +197,8 @@ final class AppState: ObservableObject {
         selectedCandidatePaths = []
         beforeSnapshot = nil
         afterSnapshot = nil
+        beforeSnapshots = [:]
+        afterSnapshots = [:]
         targetPath = container.path
         log("目标应用切换为 \(container.name)（\(container.bundleID)）", .notice)
     }
@@ -201,6 +207,28 @@ final class AppState: ObservableObject {
 
     var checkedContainers: [ContainerInfo] {
         containers.filter { checkedIDs.contains($0.bundleID) }
+    }
+
+    /// 找广告的范围：一键勾选时是全部勾选的应用，否则是当前单个目标。
+    var findAdScope: [ContainerInfo] {
+        if !checkedContainers.isEmpty { return checkedContainers }
+        if let match = containers.first(where: { $0.bundleID == target.bundleID }) { return [match] }
+        if let path = targetPath {
+            return [ContainerInfo(bundleID: target.bundleID, path: path, name: target.name,
+                                  isSystem: false, category: "")]
+        }
+        return []
+    }
+
+    /// Names of apps the latest scan found ad material in (for the find-ad guide).
+    var appsWithAds: [String] {
+        let fromRecognition = lastRecognition.filter { $0.total > 0 }.map { $0.name }
+        if !fromRecognition.isEmpty { return fromRecognition }
+        var seen: [String] = []
+        for file in scanTargets where !seen.contains(file.appName) {
+            seen.append(file.appName)
+        }
+        return seen
     }
 
     var allUserAppsChecked: Bool {
@@ -219,6 +247,10 @@ final class AppState: ObservableObject {
         }
         if allUserAppsChecked {
             checkedIDs = []
+            beforeSnapshots = [:]
+            afterSnapshots = [:]
+            candidates = []
+            selectedCandidatePaths = []
             log("一键勾选已取消，回到单个目标", .notice)
             banner = "已取消一键勾选，现在按单个目标应用处理。"
             return
@@ -226,6 +258,10 @@ final class AppState: ObservableObject {
         let userApps = containers.filter { !$0.isSystem && !$0.isGame }
         let games = containers.filter { !$0.isSystem && $0.isGame }
         checkedIDs = Set(userApps.map { $0.bundleID })
+        beforeSnapshots = [:]
+        afterSnapshots = [:]
+        candidates = []
+        selectedCandidatePaths = []
         scanTargets = []
         log("一键勾选：勾上 \(userApps.count) 个应用，跳过游戏 \(games.count) 个", .notice)
         banner = "已勾选 \(userApps.count) 个应用（游戏除外）。点「扫描」会一起扫，点「全部清零」会一起清。"
@@ -602,47 +638,72 @@ final class AppState: ObservableObject {
 
     func takeSnapshot(before: Bool) {
         guard requireChannel() else { return }
-        guard let root = channel.containerPath(for: target.bundleID) else {
-            banner = "找不到 \(target.name) 的数据容器，请先打开一次这个应用。"
+        let scope = findAdScope
+        guard !scope.isEmpty else {
+            banner = "先选一个目标应用，或先用一键勾选。"
             return
         }
-        let bundleID = target.bundleID
-        let appName = target.name
+        if !before && beforeSnapshots.isEmpty {
+            banner = "请先拍第一次快照。"
+            return
+        }
+        let multi = scope.count > 1
         isBusy = true
         busyText = before ? "正在拍第一次快照…" : "正在拍第二次快照…"
         work.async {
-            do {
-                let snapshot = try SnapshotDiff.take(bundleID: bundleID, root: root, channel: self.channel)
-                DispatchQueue.main.async {
-                    self.isBusy = false
-                    self.busyText = ""
-                    if before {
-                        self.beforeSnapshot = snapshot
-                        self.afterSnapshot = nil
-                        self.candidates = []
-                        self.selectedCandidatePaths = []
-                        self.log("第一次快照完成：\(snapshot.fileCount) 个文件，共 \(Format.bytes(snapshot.totalBytes))", .success)
-                        self.banner = "现在去打开\(appName)，让开屏广告播一次，再回来拍第二次快照。"
-                    } else {
-                        guard let first = self.beforeSnapshot else {
-                            self.banner = "请先拍第一次快照。"
-                            return
-                        }
-                        self.afterSnapshot = snapshot
-                        self.candidates = SnapshotDiff.diff(before: first, after: snapshot)
-                        self.selectedCandidatePaths = Set(self.candidates.filter { $0.kind != .other }.map { $0.id })
-                        self.log("第二次快照完成：\(snapshot.fileCount) 个文件，\(self.candidates.count) 个候选", .success)
-                        self.banner = self.candidates.isEmpty
-                            ? "这次没有发现新文件或变大的文件。可以再让广告播一次试试。"
-                            : "请勾选确实是广告素材的文件，再点清零。"
-                    }
+            var snaps: [String: ContainerSnapshot] = [:]
+            var failedNames: [String] = []
+            for container in scope {
+                guard let root = self.channel.containerPath(for: container.bundleID) else {
+                    failedNames.append(container.name)
+                    continue
                 }
-            } catch {
-                DispatchQueue.main.async {
-                    self.isBusy = false
-                    self.busyText = ""
-                    self.log("快照失败：\(error.localizedDescription)", .warning)
-                    self.banner = "快照失败：\(error.localizedDescription)"
+                do {
+                    snaps[container.bundleID] = try SnapshotDiff.take(bundleID: container.bundleID,
+                                                                       root: root,
+                                                                       channel: self.channel)
+                } catch {
+                    failedNames.append(container.name)
+                }
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                let totalFiles = snaps.values.reduce(0) { $0 + $1.fileCount }
+                if before {
+                    self.beforeSnapshots = snaps
+                    self.afterSnapshots = [:]
+                    self.beforeSnapshot = snaps.values.first
+                    self.afterSnapshot = nil
+                    self.candidates = []
+                    self.selectedCandidatePaths = []
+                    self.log("第一次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件", .success)
+                    self.banner = multi
+                        ? "现在去打开有广告的应用，让开屏广告播一次，再回来拍第二次快照。"
+                        : "现在去打开\(scope[0].name)，让开屏广告播一次，再回来拍第二次快照。"
+                } else {
+                    self.afterSnapshots = snaps
+                    self.afterSnapshot = snaps.values.first
+                    var all: [DiffCandidate] = []
+                    for container in scope {
+                        guard let first = self.beforeSnapshots[container.bundleID],
+                              let second = snaps[container.bundleID] else { continue }
+                        all += SnapshotDiff.diff(before: first, after: second, appName: container.name)
+                    }
+                    all.sort { first, second in
+                        if first.isNew != second.isNew { return first.isNew }
+                        if first.isNew { return first.modified > second.modified }
+                        return first.delta > second.delta
+                    }
+                    self.candidates = Array(all.prefix(400))
+                    self.selectedCandidatePaths = Set(self.candidates.filter { $0.likelyAd }.map { $0.id })
+                    self.log("第二次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件，\(self.candidates.count) 个候选", .success)
+                    self.banner = self.candidates.isEmpty
+                        ? "这次没有发现新文件或变大的文件。可以再让广告播一次试试。"
+                        : "请勾选确实是广告素材的文件，再点清零。"
+                }
+                if !failedNames.isEmpty {
+                    self.log("这些应用没拍上快照（找不到容器）：\(failedNames.joined(separator: "、"))", .warning)
                 }
             }
         }
@@ -650,16 +711,11 @@ final class AppState: ObservableObject {
 
     func clearSelectedCandidates() {
         guard requireChannel() else { return }
-        guard let root = containerPath else {
-            banner = "找不到目标应用的数据容器。"
-            return
-        }
         let selected = candidates.filter { selectedCandidatePaths.contains($0.id) }
         guard !selected.isEmpty else {
             banner = "请先勾选要清零的文件。"
             return
         }
-        let app = target
         isBusy = true
         busyText = "正在清零确认的素材…"
         work.async {
@@ -668,6 +724,15 @@ final class AppState: ObservableObject {
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
             for candidate in selected {
+                let root = candidate.containerRoot.isEmpty
+                    ? (self.channel.containerPath(for: candidate.bundleID) ?? "")
+                    : candidate.containerRoot
+                guard !root.isEmpty else {
+                    failure = "\(candidate.appName)：找不到容器"
+                    continue
+                }
+                let appBundleID = candidate.bundleID.isEmpty ? self.target.bundleID : candidate.bundleID
+                let appName = candidate.appName.isEmpty ? self.target.name : candidate.appName
                 let full = root + "/" + candidate.relativePath
                 do {
                     if self.channel.isImmutable(full) {
@@ -675,17 +740,17 @@ final class AppState: ObservableObject {
                     }
                     let record = try self.backupManager.backup(path: full,
                                                                relativePath: candidate.relativePath,
-                                                               bundleID: app.bundleID,
-                                                               appName: app.name,
+                                                               bundleID: appBundleID,
+                                                               appName: appName,
                                                                source: "前后对比确认",
                                                                channel: self.channel)
                     newBackups.append(record)
                     try self.channel.truncate(full)
                     done += 1
-                    self.log("已清零确认的素材：\(candidate.relativePath)", .success)
+                    self.log("已清零确认的素材：\(appName) \(candidate.relativePath)", .success)
                     newRecipes.append(Recipe(id: UUID(),
-                                             bundleID: app.bundleID,
-                                             appName: app.name,
+                                             bundleID: appBundleID,
+                                             appName: appName,
                                              relativePath: candidate.relativePath,
                                              createdAt: Date(),
                                              frozen: false,
@@ -693,8 +758,10 @@ final class AppState: ObservableObject {
                                              lastCheckedAt: Date(),
                                              lastState: RecipeState.normal.rawValue))
                 } catch {
-                    failure = "\(candidate.relativePath)：\(error.localizedDescription)"
-                    break
+                    if failure == nil {
+                        failure = "\(candidate.relativePath)：\(error.localizedDescription)"
+                    }
+                    self.log("清零这个文件失败：\(appName) \(candidate.relativePath)：\(error.localizedDescription)", .warning)
                 }
             }
             DispatchQueue.main.async {

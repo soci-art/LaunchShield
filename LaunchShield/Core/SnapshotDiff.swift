@@ -42,7 +42,7 @@ enum SnapshotDiff {
 
     /// New files first, then the ones that clearly grew. Unchanged files are
     /// not candidates; a candidate is only a suggestion until the user picks it.
-    static func diff(before: ContainerSnapshot, after: ContainerSnapshot) -> [DiffCandidate] {
+    static func diff(before: ContainerSnapshot, after: ContainerSnapshot, appName: String = "") -> [DiffCandidate] {
         var result: [DiffCandidate] = []
         for (path, entry) in after.entries {
             if let old = before.entries[path] {
@@ -52,14 +52,20 @@ enum SnapshotDiff {
                                             modified: Date(timeIntervalSince1970: entry.modified),
                                             reason: "变大了 \(Format.bytes(entry.size - old.size))",
                                             isNew: false,
-                                            delta: Int64(entry.size - old.size)))
+                                            delta: Int64(entry.size - old.size),
+                                            appName: appName,
+                                            bundleID: after.bundleID,
+                                            containerRoot: after.root))
             } else {
                 result.append(DiffCandidate(relativePath: path,
                                             size: entry.size,
                                             modified: Date(timeIntervalSince1970: entry.modified),
                                             reason: "刚新增",
                                             isNew: true,
-                                            delta: Int64(entry.size)))
+                                            delta: Int64(entry.size),
+                                            appName: appName,
+                                            bundleID: after.bundleID,
+                                            containerRoot: after.root))
             }
         }
         result.sort { first, second in
