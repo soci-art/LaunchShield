@@ -24,6 +24,8 @@ final class AppState: ObservableObject {
     @Published var checkedIDs: Set<String> = []
     /// 最近一次扫描的识别数据（供上传攒指纹库用）。
     @Published var lastRecognition: [AppRecognition] = []
+    /// 最近一次扫描跳过的已冻结 0 字节文件数（去重：不重复清零、不重复备份）。
+    @Published var lastScanSkippedFrozen = 0
     @Published var updateStatus = ""
     @Published var rulesStatus = ""
     @Published var availableVersion: String?
@@ -221,6 +223,7 @@ final class AppState: ObservableObject {
         target = AppTarget(bundleID: container.bundleID, name: container.name)
         targetChosen = true
         scanTargets = []
+        lastScanSkippedFrozen = 0
         splash = nil
         candidates = []
         selectedCandidatePaths = []
@@ -329,13 +332,23 @@ final class AppState: ObservableObject {
             var allTargets: [TargetFile] = []
             var baiduSplash: SplashResolution?
             var recognition: [AppRecognition] = []
+            var skippedFrozen = 0
             for info in scanSet {
                 let isBaidu = info.bundleID == BaiduNetdisk.bundleID
                 let splash = isBaidu ? BaiduNetdisk.resolveSplash(container: info.path, channel: self.channel) : nil
                 if isBaidu { baiduSplash = splash }
                 let found = BaiduNetdisk.targets(container: info.path, channel: self.channel, splash: splash,
                                                  ownerBundleID: info.bundleID, ownerName: info.name)
-                allTargets.append(contentsOf: found)
+                // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
+                // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
+                // 识别计数仍按全量 found 算，攒指纹库的数据不失真。
+                for file in found {
+                    if file.size == 0, self.channel.isImmutable(file.path) {
+                        skippedFrozen += 1
+                    } else {
+                        allTargets.append(file)
+                    }
+                }
                 recognition.append(AppRecognition(bundleID: info.bundleID,
                                                   name: info.name,
                                                   groups: Dictionary(grouping: found, by: { $0.group }).mapValues { $0.count },
@@ -347,6 +360,10 @@ final class AppState: ObservableObject {
                 self.splash = baiduSplash
                 self.scanTargets = allTargets
                 self.lastRecognition = recognition
+                self.lastScanSkippedFrozen = skippedFrozen
+                if skippedFrozen > 0 {
+                    self.log("扫描跳过已冻结的 0 字节文件 \(skippedFrozen) 个（不重复清零、不重复备份）", .info)
+                }
                 if singleBaidu, let splash = baiduSplash {
                     let root = scanSet[0].path
                     if splash.exists {

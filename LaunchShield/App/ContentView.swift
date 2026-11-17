@@ -263,6 +263,11 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 SectionHeader(title: "素材清单", subtitle: "扫描到的文件会按来源分类显示")
+                if state.lastScanSkippedFrozen > 0 {
+                    Text("已冻结的跳过了 \(state.lastScanSkippedFrozen) 个，不会重复清零、不会重复备份。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
                 Spacer()
                 Button {
                     state.scanBaidu()
