@@ -104,7 +104,6 @@ struct ContentView: View {
                     Text("LaunchShield")
                         .font(.system(size: 25, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.primaryText)
-                    StatusBadge(text: "测试版", tint: .cyan)
                 }
                 Text("启动素材管理工具")
                     .font(.system(size: 13))
