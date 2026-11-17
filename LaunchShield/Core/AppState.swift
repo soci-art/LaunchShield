@@ -384,9 +384,6 @@ final class AppState: ObservableObject {
                 // 关联的共享组容器一并扫，素材算在所属应用名下。
                 if !info.isGroup {
                     let groups = self.associatedGroups(for: info.bundleID)
-                    if !groups.isEmpty {
-                        self.log("\(info.name)：一并扫描关联的共享组容器 \(groups.count) 个", .info)
-                    }
                     for group in groups {
                         let groupFound = BaiduNetdisk.targets(container: group.path, channel: self.channel, splash: nil,
                                                               ownerBundleID: info.bundleID, ownerName: info.name)
@@ -909,25 +906,30 @@ final class AppState: ObservableObject {
     /// （上限 500 条），keyword 为空时全收（供大文件榜排序）。
     private func walkFoundFiles(scope: [ContainerInfo], keyword: String) -> [FoundFile] {
         var results: [FoundFile] = []
-        var visited = 0
         let needle = keyword.lowercased()
-        func walk(container: ContainerInfo, dir: String) {
-            guard visited < 6000 else { return }
-            guard let items = try? channel.children(of: dir) else { return }
-            for item in items {
-                visited += 1
-                if item.isDirectory {
-                    walk(container: container, dir: item.path)
-                } else if needle.isEmpty || item.name.lowercased().contains(needle) {
-                    let relative = String(item.path.dropFirst(container.path.count + 1))
-                    results.append(FoundFile(path: item.path, containerPath: container.path,
-                                             relativePath: relative, size: item.size,
-                                             bundleID: container.bundleID, appName: container.name))
-                    if !needle.isEmpty && results.count >= 500 { return }
+        // 走访上限按容器分别算：一键勾选几十个应用时，每个容器都有自己的
+        // 6000 条预算，不会排前面的先耗光、后面的扫不到。
+        for container in scope {
+            var visited = 0
+            func walk(dir: String) {
+                guard visited < 6000 else { return }
+                guard let items = try? channel.children(of: dir) else { return }
+                for item in items {
+                    visited += 1
+                    if item.isDirectory {
+                        walk(dir: item.path)
+                    } else if needle.isEmpty || item.name.lowercased().contains(needle) {
+                        let relative = String(item.path.dropFirst(container.path.count + 1))
+                        results.append(FoundFile(path: item.path, containerPath: container.path,
+                                                 relativePath: relative, size: item.size,
+                                                 bundleID: container.bundleID, appName: container.name))
+                        if !needle.isEmpty && results.count >= 500 { return }
+                    }
                 }
             }
+            walk(dir: container.path)
+            if !needle.isEmpty && results.count >= 500 { break }
         }
-        for container in scope { walk(container: container, dir: container.path) }
         return results
     }
 
