@@ -33,6 +33,7 @@ struct FindAdView: View {
                 .padding(20)
             }
         }
+        .appAlert(state, active: !showFileTools)
         .confirmationDialog("先清掉\(state.target.name)的缓存？", isPresented: $showClearCacheConfirm, titleVisibility: .visible) {
             Button("清掉缓存，并拍第一次快照", role: .destructive) {
                 state.clearCacheBeforeSnapshot()

@@ -76,6 +76,7 @@ struct RecipesView: View {
                 .padding(20)
             }
         }
+        .appAlert(state)
         .confirmationDialog("清除文件不见了的条目？", isPresented: $showClearMissing, titleVisibility: .visible) {
             Button("清除 \(missingCount) 个", role: .destructive) {
                 state.clearMissingRecipes()

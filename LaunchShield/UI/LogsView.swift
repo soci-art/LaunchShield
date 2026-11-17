@@ -32,6 +32,7 @@ struct LogsView: View {
             }
             .padding(20)
         }
+        .appAlert(state, active: shareItem == nil)
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.url])
         }

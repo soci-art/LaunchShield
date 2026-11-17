@@ -172,6 +172,7 @@ struct FileToolsView: View {
             }
             .padding(20)
         }
+        .appAlert(state)
         .onAppear {
             if state.bigFiles.isEmpty && !state.findAdScope.isEmpty {
                 state.loadBigFiles()

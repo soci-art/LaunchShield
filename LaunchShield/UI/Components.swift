@@ -129,13 +129,15 @@ struct SummaryTile: View {
 }
 
 extension View {
-    /// 全局提示弹窗：原来顶部横幅条的文字现在都用弹窗提醒。
-    /// 只在主页挂这一份：同一个提示在子页面里再各挂一份会互相打架，
-    /// 实测在日志页上传后弹窗和页面会被一起关掉。挂在主页的弹窗会
-    /// 盖在子页面上面弹，子页面不用再挂。
-    func appAlert(_ state: AppState) -> some View {
+    /// 全局提示弹窗：同一时间只许最上面那一页的那一份是活的（active）。
+    /// 教训：七份一起活，系统挑了主页那份弹，子页面被连带关掉（构建 15
+    /// 日志页实测）；只留主页一份，子页面里出结果时主页那份一弹，子页面
+    /// 照样被关（构建 19 找广告页实测）。所以每页都挂，但靠 active 保证
+    /// 只有最上层那份能弹：主页在任一子页面打开时不活，子页面在它自己的
+    /// 下级页面打开时不活。
+    func appAlert(_ state: AppState, active: Bool = true) -> some View {
         alert("提醒", isPresented: Binding(
-            get: { state.alertText != nil },
+            get: { active && state.alertText != nil },
             set: { if !$0 { state.alertText = nil } }
         )) {
             Button("好") { state.alertText = nil }

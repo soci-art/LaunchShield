@@ -71,6 +71,7 @@ struct AppPickerView: View {
             }
             .padding(20)
         }
+        .appAlert(state)
         .onAppear {
             if state.containers.isEmpty {
                 state.refreshContainers()

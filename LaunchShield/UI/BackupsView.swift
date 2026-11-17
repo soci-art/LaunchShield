@@ -46,6 +46,7 @@ struct BackupsView: View {
                 .padding(20)
             }
         }
+        .appAlert(state)
         .confirmationDialog("确定要全部还原吗？", isPresented: $showRestoreAll, titleVisibility: .visible) {
             Button("逐个写回并核对 MD5", role: .destructive) {
                 state.restoreAll()

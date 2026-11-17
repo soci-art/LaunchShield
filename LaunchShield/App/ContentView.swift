@@ -48,7 +48,7 @@ struct ContentView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .appAlert(state)
+        .appAlert(state, active: !(showAppPicker || showTutorial || showFindAd || showRecipes || showBackups || showLogs))
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
         }
