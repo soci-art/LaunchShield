@@ -22,6 +22,7 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
+                        fullScanCards
                         tutorialEntry
                         targetCard
                         summarySection
@@ -152,6 +153,96 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+
+    // MARK: - Full scan (iOS 26 fallback)
+
+    /// iOS 26 这类系统上直接查不到应用列表，底层要先全盘扫描一次：
+    /// 确认卡（开始/先不）、进度卡（可停止）、还没扫时的入口卡，三选一。
+    private var fullScanCards: some View {
+        Group {
+            if let prompt = state.fullScanPrompt {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("需要先全盘扫描一次")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.primaryText)
+                    Text("这台设备读不到应用列表（系统把直接查的路关了）。全盘扫描能把所有应用找出来，大约要 \(max(1, Int(ceil(prompt.seconds / 60)))) 分钟，只用完整扫这一次，之后会记住；中途停下，下次能接着扫。扫描时请让应用留在前台，最好插着电。")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Button { state.answerFullScan(false) } label: {
+                            Text("先不扫")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(Color.primaryText)
+                                .padding(.horizontal, 16).padding(.vertical, 9)
+                                .background(Color.primaryText.opacity(0.08), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        Button { state.answerFullScan(true) } label: {
+                            Text("开始扫描")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 16).padding(.vertical, 9)
+                                .background(Color.accentCyan, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                    }
+                }
+                .padding(15)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else if let progress = state.fullScanProgress {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("正在全盘扫描，找齐所有应用…")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.primaryText)
+                    if progress.total > 0 {
+                        ProgressView(value: Double(progress.done), total: Double(progress.total))
+                            .tint(Color.accentCyan)
+                        Text("已扫 \(progress.done) / \(progress.total)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.secondaryText)
+                    } else {
+                        ProgressView()
+                            .tint(Color.accentCyan)
+                    }
+                    Button { state.stopFullScan() } label: {
+                        Text("停止")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                            .padding(.horizontal, 16).padding(.vertical, 9)
+                            .background(Color.primaryText.opacity(0.08), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(15)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .panel(radius: 18)
+            } else if state.didLoadContainers && state.containers.isEmpty && state.channelReady {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("还没读到应用列表")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.primaryText)
+                    Text("这台设备需要全盘扫描一次，才能把应用找齐。")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Color.secondaryText)
+                    Button { state.refreshContainers() } label: {
+                        Text("开始全盘扫描")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16).padding(.vertical, 9)
+                            .background(Color.accentCyan, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(15)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+        }
     }
 
     // MARK: - Target

@@ -52,6 +52,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)shared;
 
+/// Full-scan UI bridge: on systems where the quick container queries
+/// answer nothing, the scan machinery waits (on a background thread)
+/// for the user to OK a long full scan. The app answers with this.
+- (void)answerFullScan:(BOOL)yes;
+- (void)stopFullScan;
+
 /// Whether the signature gave a usable App Group. When NO, every other call
 /// fails and `unavailableReason` says why, in Chinese.
 @property (nonatomic, readonly) BOOL available;

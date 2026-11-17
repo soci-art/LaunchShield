@@ -18,6 +18,10 @@ final class Channel {
     var groupID: String? { raw.groupID }
     var unavailableReason: String { raw.unavailableReason }
 
+    /// 全盘扫描：把界面的答复（开始/先不）递给底层等着的那条线；停止同理。
+    func answerFullScan(_ yes: Bool) { raw.answerFullScan(yes) }
+    func stopFullScan() { raw.stopFullScan() }
+
     func containers() -> [ContainerInfo] {
         raw.appContainers().map {
             ContainerInfo(bundleID: $0.identifier, path: $0.path, name: $0.name, isSystem: $0.isSystem, category: $0.category ?? "")

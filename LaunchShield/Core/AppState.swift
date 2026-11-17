@@ -57,11 +57,51 @@ final class AppState: ObservableObject {
 
     private let backupManager: BackupManager
     private let work = DispatchQueue(label: "com.sociart.launchshield.work", qos: .userInitiated)
+    /// 全盘扫描（iOS 26 这类系统读不到应用列表时的兜底）：底层开扫前
+    /// 先发通知问界面，用户点了开始才扫；进度也经通知回来。
+    struct FullScanPrompt {
+        let ids: Int64
+        let seconds: Double
+    }
+    @Published var fullScanPrompt: FullScanPrompt?
+    @Published var fullScanProgress: (done: Int64, total: Int64)?
+    @Published var didLoadContainers = false
+    private var fullScanTotalIds: Int64 = 0
+
     private var didBootstrap = false
     private var reportedNewFiles = Set<String>()
 
     init() {
         backupManager = BackupManager(store: store)
+        NotificationCenter.default.addObserver(forName: Notification.Name("LSFullScanConfirmRequested"),
+                                               object: nil, queue: .main) { [weak self] note in
+            let ids = (note.userInfo?["ids"] as? NSNumber)?.int64Value ?? 0
+            let seconds = (note.userInfo?["seconds"] as? NSNumber)?.doubleValue ?? 0
+            self?.fullScanTotalIds = ids
+            self?.fullScanPrompt = FullScanPrompt(ids: ids, seconds: seconds)
+        }
+        NotificationCenter.default.addObserver(forName: Notification.Name("LSFullScanProgress"),
+                                               object: nil, queue: .main) { [weak self] note in
+            guard let self else { return }
+            if (note.userInfo?["finished"] as? NSNumber)?.boolValue ?? false {
+                self.fullScanProgress = nil
+            } else {
+                let done = (note.userInfo?["done"] as? NSNumber)?.int64Value ?? 0
+                let total = (note.userInfo?["total"] as? NSNumber)?.int64Value ?? 0
+                self.fullScanProgress = (done: done, total: total)
+            }
+        }
+    }
+
+    /// 用户在全盘扫描确认卡上点了开始/先不：把答复递给底层等着的那条线。
+    func answerFullScan(_ yes: Bool) {
+        fullScanPrompt = nil
+        if yes { fullScanProgress = (done: 0, total: fullScanTotalIds) }
+        channel.answerFullScan(yes)
+    }
+
+    func stopFullScan() {
+        channel.stopFullScan()
     }
 
     // MARK: - Derived values
@@ -104,6 +144,7 @@ final class AppState: ObservableObject {
         recipes = store.file.recipes
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
         loadMarks()
+        checkUpdateOnLaunch()
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
@@ -141,7 +182,7 @@ final class AppState: ObservableObject {
                 // 上次守护还开着、是被杀进程/装新版断掉的：自动续上，
                 // 不用用户再手动开一遍。手动关掉的不会续（标记在关的时候就清了）。
                 if self.guardService.wasActiveAtLaunch, !self.guardService.isRunning {
-                    if let error = self.guardService.start() {
+                    if let error = self.guardService.start(hidden: true) {
                         self.log("守护没能自动续上：\(error)", .warning)
                     } else {
                         self.guardInterruption = nil
@@ -237,6 +278,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.containers = list
                 self.groupContainers = groups
+                self.didLoadContainers = true
                 if list.isEmpty {
                     self.log("没有读到应用容器列表，可能是系统版本不支持或权限被拒", .warning)
                 }
@@ -2140,6 +2182,25 @@ final class AppState: ObservableObject {
             self.log(message, ok ? .success : .warning)
             // 成功失败都弹窗：只写在按钮下面那行小字里，用户容易看不见。
             self.alertText = message
+        }
+    }
+
+    /// 启动时悄悄查一次正式版：有新版才提醒（同一个版本一天最多提醒
+    /// 一次），没有就什么都不说——像 Drift 那样，不用用户自己去点。
+    private func checkUpdateOnLaunch() {
+        CollectUploader.fetchVersion { [weak self] info, _ in
+            guard let self, let info, info.version != "0.0.0" else { return }
+            let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
+            guard Self.isVersion(info.version, newerThan: current) else { return }
+            let day = DateFormatter()
+            day.dateFormat = "yyyy-MM-dd"
+            let stamp = "\(info.version)@\(day.string(from: Date()))"
+            guard UserDefaults.standard.string(forKey: "app.updateReminded") != stamp else { return }
+            UserDefaults.standard.set(stamp, forKey: "app.updateReminded")
+            self.availableVersion = info.version
+            self.updateStatus = "有新版本 \(info.version)"
+            self.alertText = "正式版有新版本：\(info.version)。\(info.notes)"
+            self.log("启动检测更新：正式版 \(info.version)，当前 \(current)", .info)
         }
     }
 

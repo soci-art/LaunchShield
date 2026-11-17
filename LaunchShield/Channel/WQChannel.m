@@ -39,6 +39,40 @@
 @implementation WQAppContainer
 @end
 
+// Full-scan confirmation bridge. On systems where the quick container
+// queries answer nothing (iOS 26), the scan machinery needs the user's
+// OK before a long full scan. The C hooks forward to the app UI via
+// notifications; the wait happens on the caller's background thread.
+static NSCondition *gFullScanCondition;
+static BOOL gFullScanAnswer;
+static BOOL gFullScanWaiting;
+
+static BOOL LSFullScanConfirm(NSString *what, int64_t ids, double seconds)
+{
+    if ([NSThread isMainThread]) return NO;
+    if (!gFullScanCondition) gFullScanCondition = [NSCondition new];
+    [gFullScanCondition lock];
+    gFullScanWaiting = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:@"LSFullScanConfirmRequested" object:nil
+            userInfo:@{ @"ids": @(ids), @"seconds": @(seconds) }];
+    });
+    while (gFullScanWaiting) [gFullScanCondition wait];
+    BOOL answer = gFullScanAnswer;
+    [gFullScanCondition unlock];
+    return answer;
+}
+
+static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:@"LSFullScanProgress" object:nil
+            userInfo:@{ @"done": @(done), @"total": @(total), @"finished": @(finished) }];
+    });
+}
+
 @implementation WQChannel {
     NSArray<WQAppContainer *> *_containers;
     NSTimeInterval _containersAt;
@@ -55,9 +89,25 @@
         // container label resolver and the container list provider.
         wq_set_container_label_resolver(wq_bundle_id_for_container);
         wq_set_container_list_provider(wq_ls_container_paths);
+        wq_set_full_scan_ui(LSFullScanConfirm, LSFullScanProgress);
         channel = [WQChannel new];
     });
     return channel;
+}
+
+- (void)answerFullScan:(BOOL)yes
+{
+    if (!gFullScanCondition) return;
+    [gFullScanCondition lock];
+    gFullScanAnswer = yes;
+    gFullScanWaiting = NO;
+    [gFullScanCondition signal];
+    [gFullScanCondition unlock];
+}
+
+- (void)stopFullScan
+{
+    wq_full_scan_stop();
 }
 
 - (BOOL)available
@@ -138,7 +188,7 @@
 - (NSArray<WQAppContainer *> *)appContainers
 {
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    if (_containers && now - _containersAt < 30) return _containers;
+    if (_containers.count && now - _containersAt < 30) return _containers;
 
     // Primary: the original scan machinery over both container roots (asks
     // the container manager every class, then the LaunchServices database,
