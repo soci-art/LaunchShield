@@ -649,32 +649,16 @@ final class AppState: ObservableObject {
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
                 self.store.save()
-                self.recipes = self.store.file.recipes
-                self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
-
-                self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
-                if frozenCount > 0 {
-                    self.log("清零的文件已全部冻结：\(frozenCount) 个", .success)
-                }
-                if freezeFailureCount > 0 {
-                    self.log("有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
-                }
-                if frozenDirCount > 0 {
-                    self.log("广告商的文件夹已冻结：\(frozenDirCount) 个", .success)
-                }
-                if freezeDirFailureCount > 0 {
-                    self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
-                }
-                if failures.isEmpty {
-                    self.presentCompletionAlert(frozenCount > 0
-                        ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
-                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。")
-                } else {
+                // 【诊断版 34】界面重影二分定位：清零本身与数据存盘照常，
+                // 但收尾时所有「动界面」的动作全部停掉——不刷配方/备份清单、
+                // 不清空素材清单、不复查配方、不弹完成弹窗。
+                // 干完后界面上的数字是旧的，重启 App 后按存盘数据恢复。
+                // 这版不犯 → 元凶在停掉的这几件里，下一版逐件放回；
+                // 这版还犯 → 元凶在清零干活本身或更早的环节。
+                self.log("清零完成（诊断版）：\(done) 个文件已截断为 0 字节、\(frozenCount) 个已冻结，数据已存盘，界面暂不刷新", .success)
+                if !failures.isEmpty {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    self.presentCompletionAlert("清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。")
                 }
-                self.scanTargets = []
-                self.checkRecipes(silent: true)
             }
         }
     }
