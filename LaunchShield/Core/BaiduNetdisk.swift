@@ -30,12 +30,14 @@ enum BaiduNetdisk {
         ("穿山甲", ["Library/Caches/com.hackemist.CSJSDImageCache/default",
                     "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache",
                     "Library/Caches/CSJLottieResources", "Library/Caches/buadsdk",
-                    "Library/com.bytedance.buadsdk.root", "Library/po_csj_dt", "Library/csj_alog"]),
-        ("BeiZi", ["Library/Caches/BeiZiMaterial", "Library/Caches/BeiZiDirectory"]),
+                    "Library/com.bytedance.buadsdk.root", "Library/po_csj_dt", "Library/csj_alog",
+                    "Library/Caches/com.csj.plist.v4"]),
+        ("BeiZi", ["Library/Caches/BeiZiMaterial", "Library/Caches/BeiZiDirectory",
+                    "Library/Caches/beizi_cookie_sql"]),
         ("美数", ["Library/Caches/MSAdSDK"]),
         ("UBIX", ["Library/ubixad"]),
         ("趣盟", ["Library/Caches/com.qumeng.yykit"]),
-        ("AdMob", ["Library/Caches/AdMob"]),
+        ("AdMob", ["Library/Caches/AdMob", "Library/Application Support/GoogleMobileAds"]),
         ("其他广告", ["Library/Advertises"])
     ]
 
