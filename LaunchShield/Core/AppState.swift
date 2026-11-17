@@ -45,6 +45,8 @@ final class AppState: ObservableObject {
     @Published var isBusy = false
     @Published var busyText = ""
     @Published var alertText: String?
+    /// 界面重建代号：加 1 就让根视图整棵推倒重建（清零写入后界面出双份的对策）。
+    @Published var uiEpoch = 0
     @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
@@ -543,15 +545,16 @@ final class AppState: ObservableObject {
             return
         }
         let targets = scanTargets
-        // 【诊断版 35/36/37】二分开关：干跑不犯（35）、真清零不冻仍犯（36）
-        // ——冻结无罪，剩备份拷贝与清零写入二选一。
-        // 构建 37：只真备份，清零与冻结都关（对文件零破坏）。
+        // 【诊断版 35–38】二分结论：干跑不犯（35）、不冻仍犯（36）、
+        // 只备份不犯（37）——往别的 App 文件里写那一下（清零写入）是元凶。
+        // 构建 38：全套真做（备份＋清零＋冻结），收尾时 uiEpoch += 1
+        // 把整页界面推倒重建，验重建能否清掉写完之后的双份合成。
         let dryRunClear = false
-        let skipFreeze = true
-        let skipTruncate = true
+        let skipFreeze = false
+        let skipTruncate = false
         isBusy = true
-        busyText = "正在备份 \(targets.count) 个文件…"
-        log("【诊断版 37】本次只备份不清零：备份照常，清零与冻结都关", .warning)
+        busyText = "正在清零 \(targets.count) 个文件…"
+        log("【诊断版 38】全套真做（备份＋清零＋冻结），收尾整页重建界面", .warning)
 
         work.async {
             var done = 0
@@ -656,6 +659,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.uiEpoch += 1
                 if !newBackups.isEmpty {
                     self.store.file.backups.append(contentsOf: newBackups)
                 }
@@ -672,7 +676,7 @@ final class AppState: ObservableObject {
                 // 干完后界面上的数字是旧的，重启 App 后按存盘数据恢复。
                 // 这版不犯 → 元凶在停掉的这几件里，下一版逐件放回；
                 // 这版还犯 → 元凶在清零干活本身或更早的环节。
-                self.log("备份完成（诊断版 37）：\(done) 个文件已备份，本版未清零未冻结，界面暂不刷新", .success)
+                self.log("清零完成（诊断版 38）：\(done) 个文件已清零、\(frozenCount) 个已冻结，已整页重建界面", .success)
                 if !failures.isEmpty {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
                 }
