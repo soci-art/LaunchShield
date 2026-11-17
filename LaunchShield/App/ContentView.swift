@@ -6,7 +6,6 @@ struct ContentView: View {
     @ObservedObject private var guardService = GuardService.shared
 
     @State private var showAppPicker = false
-    @State private var showBrowser = false
     @State private var showFindAd = false
     @State private var showRecipes = false
     @State private var showBackups = false
@@ -31,6 +30,7 @@ struct ContentView: View {
                         guardCard
                         recipesSection
                         logSection
+                        updateSection
                         footer
                     }
                     .padding(.horizontal, 20)
@@ -47,10 +47,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
-        }
-        .sheet(isPresented: $showBrowser) {
-            ContainerBrowserView(bundleID: state.target.bundleID, appName: state.target.name)
-                .environmentObject(state)
         }
         .sheet(isPresented: $showFindAd) {
             FindAdView().environmentObject(state)
@@ -70,7 +66,7 @@ struct ContentView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("请先完全退出百度网盘（上滑关闭）。每个文件都会先备份，任何一步失败就停下，并告诉你停在哪个文件。")
+            Text("请先完全退出目标应用（上滑关闭）。每个文件都会先备份，任何一步失败就停下，并告诉你停在哪个文件。")
         }
         .confirmationDialog("确定要全部还原吗？", isPresented: $showRestoreConfirm, titleVisibility: .visible) {
             Button("逐个写回并核对 MD5", role: .destructive) {
@@ -100,7 +96,7 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     Text("LaunchShield")
                         .font(.system(size: 25, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primaryText)
                     StatusBadge(text: "测试版", tint: .cyan)
                 }
                 Text("启动素材管理工具")
@@ -113,7 +109,7 @@ struct ContentView: View {
                     Circle()
                         .fill(state.channelReady ? Color.green : Color.orange)
                         .frame(width: 7, height: 7)
-                    Text(state.channelReady ? "通道就绪" : "通道不可用")
+                    Text(state.channelChecking ? "正在准备…" : (state.channelReady ? "通道就绪" : "通道不可用"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                 }
@@ -137,43 +133,53 @@ struct ContentView: View {
                     showAppPicker = true
                 } label: {
                     Text("更换")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.accentCyan)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Color.accentCyan.opacity(0.10), in: Capsule())
                 }
                 .buttonStyle(.plain)
             }
             HStack(spacing: 13) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(Color.white.opacity(0.08))
+                        .fill(Color.primaryText.opacity(0.08))
                         .frame(width: 54, height: 54)
                     Image(systemName: "cloud.fill")
                         .font(.system(size: 25))
-                        .foregroundStyle(Color.white.opacity(0.88))
+                        .foregroundStyle(Color.primaryText.opacity(0.88))
                 }
                 VStack(alignment: .leading, spacing: 5) {
                     Text(state.target.name)
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primaryText)
                     Text(state.target.bundleID)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Color.secondaryText)
                 }
                 Spacer()
-                StatusBadge(text: state.containerPath == nil ? "没有容器" : "已找到",
-                            tint: state.containerPath == nil ? .orange : .green)
+                StatusBadge(text: state.targetPath == nil ? "没有容器" : "已找到",
+                            tint: state.targetPath == nil ? .orange : .green)
             }
-            if let path = state.containerPath {
+            if let path = state.targetPath {
                 Text(path)
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(Color.secondaryText.opacity(0.8))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Divider().overlay(Color.white.opacity(0.07))
+            Divider().overlay(Color.primaryText.opacity(0.07))
             HStack(spacing: 10) {
-                smallButton("浏览容器", symbol: "folder") { showBrowser = true }
+                smallButton(state.allUserAppsChecked ? "取消勾选" : "一键勾选", symbol: "checklist") {
+                    state.toggleCheckAllUserApps()
+                }
                 smallButton("找广告", symbol: "magnifyingglass") { showFindAd = true }
+            }
+            if !state.checkedIDs.isEmpty {
+                Text("已勾选 \(state.checkedIDs.count) 个应用（游戏除外），扫描和清零会一起处理")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.accentCyan)
             }
             Label("操作前请先完全退出目标应用", systemImage: "info.circle")
                 .font(.system(size: 12))
@@ -233,65 +239,72 @@ struct ContentView: View {
                             symbol: "externaldrive",
                             tint: .green)
             }
+            HStack(spacing: 18) {
+                Button {
+                    state.uploadRecognition(stillSeesAds: false)
+                } label: {
+                    Label("上传识别数据", systemImage: "arrow.up.circle")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+                Button {
+                    state.uploadRecognition(stillSeesAds: true)
+                } label: {
+                    Label("还出广告", systemImage: "exclamationmark.bubble")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.orange)
+                }
+                .buttonStyle(.plain)
+                Spacer()
+            }
         }
     }
 
     private var sourceSection: some View {
         VStack(spacing: 0) {
-            sourceRow(name: "百度自营开屏素材",
-                      path: "SDImageCache · 按广告记录动态推导",
-                      symbol: "building.2.crop.circle",
-                      tint: .cyan,
-                      group: "百度自营")
+            sourceRow(name: "软件自营", symbol: "building.2.crop.circle", tint: .cyan, group: "软件自营")
             rowDivider
-            sourceRow(name: "优量汇",
-                      path: "tencent_gdtimg · tencent_gdtres",
-                      symbol: "rectangle.stack",
-                      tint: .blue,
-                      group: "优量汇")
+            sourceRow(name: "优量汇", symbol: "rectangle.stack", tint: .blue, group: "优量汇")
             rowDivider
-            sourceRow(name: "穿山甲",
-                      path: "CSJDImageCache",
-                      symbol: "leaf",
-                      tint: .green,
-                      group: "穿山甲")
+            sourceRow(name: "穿山甲", symbol: "leaf", tint: .green, group: "穿山甲")
             rowDivider
-            sourceRow(name: "BeiZi",
-                      path: "BeiZiMaterial · 清单小文件会单列",
-                      symbol: "square.grid.2x2",
-                      tint: .orange,
-                      group: "BeiZi")
+            sourceRow(name: "BeiZi", symbol: "square.grid.2x2", tint: .orange, group: "BeiZi")
+            rowDivider
+            sourceRow(name: "美数", symbol: "target", tint: .purple, group: "美数")
+            rowDivider
+            sourceRow(name: "UBIX", symbol: "cube", tint: .teal, group: "UBIX")
+            rowDivider
+            sourceRow(name: "趣盟", symbol: "link", tint: .yellow, group: "趣盟")
+            rowDivider
+            sourceRow(name: "AdMob", symbol: "globe", tint: .pink, group: "AdMob")
+            rowDivider
+            sourceRow(name: "其他广告", symbol: "ellipsis.circle", tint: .gray, group: "其他广告")
         }
         .padding(.horizontal, 15)
         .panel()
     }
 
-    private func sourceRow(name: String, path: String, symbol: String, tint: Color, group: String) -> some View {
+    private func sourceRow(name: String, symbol: String, tint: Color, group: String) -> some View {
         let count = state.targetCount(for: group)
         return HStack(spacing: 11) {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(tint)
                 .frame(width: 28, height: 34)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(name)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
-                Text(path)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.secondaryText)
-                    .lineLimit(1)
-            }
+            Text(name)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.primaryText)
             Spacer()
             Text(state.scanTargets.isEmpty ? "未扫描" : "\(count) 个")
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(state.scanTargets.isEmpty ? Color.secondaryText : Color.accentCyan)
         }
         .padding(.vertical, 11)
     }
 
     private var rowDivider: some View {
-        Divider().overlay(Color.white.opacity(0.06)).padding(.leading, 39)
+        Divider().overlay(Color.primaryText.opacity(0.06)).padding(.leading, 39)
     }
 
     // MARK: - Actions
@@ -344,7 +357,7 @@ struct ContentView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.secondaryText)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.primaryText)
                 .padding(.horizontal, 17)
                 .frame(height: 68)
                 .panel(radius: 17)
@@ -356,17 +369,19 @@ struct ContentView: View {
             } label: {
                 HStack {
                     Label("备份记录", systemImage: "externaldrive")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.secondaryText)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
                     Spacer()
                     Text("\(state.backups.count) 份")
-                        .font(.system(size: 11))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.secondaryText.opacity(0.7))
                 }
                 .padding(.horizontal, 4)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -392,13 +407,13 @@ struct ContentView: View {
                     .frame(width: 7, height: 7)
                 Text(guardService.statusText)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                 Spacer()
                 Text(guardService.silentBoost ? "静音补强 开" : "静音补强 关")
                     .font(.system(size: 10))
                     .foregroundStyle(Color.secondaryText)
             }
-            Text("靠一个小画中画窗口让系统保持本应用运行。值守每 3 秒看一次配方文件大小，每 30 秒比对一次目录。进程被系统杀掉或画中画被关掉后就会停，需要你回来手动再开，不会承诺永久守护。")
+            Text("靠一个小画中画窗口让系统保持本应用运行。值守每 3 秒看一次配方文件大小，每 30 秒深查一次目录：广告目录里冒出新文件会自动清零冻结。进程被系统杀掉或画中画被关掉后就会停，需要你回来手动再开，不会承诺永久守护。")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -445,7 +460,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
             if state.recipes.isEmpty {
-                Text("还没有配方。找广告确认素材后，或清零百度自营开屏素材后，会自动存进来。")
+                Text("还没有配方。找广告确认素材后，或清零软件自营开屏素材后，会自动存进来。")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.secondaryText)
                     .padding(16)
@@ -477,7 +492,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(recipe.appName)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                 Text(recipe.relativePath)
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(Color.secondaryText)
@@ -498,14 +513,6 @@ struct ContentView: View {
                 SectionHeader(title: "运行日志", subtitle: "记录操作结果与失败原因")
                 Spacer()
                 Button {
-                    UIPasteboard.general.string = state.exportLogText()
-                } label: {
-                    Label("复制", systemImage: "doc.on.doc")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.accentCyan)
-                }
-                .buttonStyle(.plain)
-                Button {
                     showLogs = true
                 } label: {
                     Text("全部")
@@ -516,6 +523,30 @@ struct ContentView: View {
             }
             LogPreview(logs: state.logs)
         }
+    }
+
+    private var updateSection: some View {
+        HStack {
+            Label("应用更新", systemImage: "arrow.down.circle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.secondaryText)
+            Spacer()
+            if !state.updateStatus.isEmpty {
+                Text(state.updateStatus)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            Button {
+                state.checkForUpdate()
+            } label: {
+                Text("检测更新")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.accentCyan)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .panel()
     }
 
     private var footer: some View {

@@ -11,17 +11,18 @@ struct LogsView: View {
 
     @State private var shareItem: ShareItem?
     @State private var showClear = false
+    @State private var showExportOptions = false
 
     var body: some View {
         SheetPage("运行日志") {
             VStack(spacing: 12) {
                 diagnostics
                 HStack(spacing: 10) {
-                    actionButton("复制", symbol: "doc.on.doc") {
+                    actionButton("复制全部", symbol: "doc.on.doc") {
                         UIPasteboard.general.string = state.exportLogText()
                     }
                     actionButton("导出", symbol: "square.and.arrow.up") {
-                        export()
+                        showExportOptions = true
                     }
                     actionButton("清空", symbol: "trash") {
                         showClear = true
@@ -33,6 +34,15 @@ struct LogsView: View {
         }
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.url])
+        }
+        .confirmationDialog("导出日志", isPresented: $showExportOptions, titleVisibility: .visible) {
+            Button("分享或保存") {
+                export()
+            }
+            Button("上传") {
+                state.uploadLog()
+            }
+            Button("取消", role: .cancel) { }
         }
         .confirmationDialog("清空日志？", isPresented: $showClear, titleVisibility: .visible) {
             Button("清空", role: .destructive) {
@@ -104,7 +114,7 @@ struct LogTable: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(line.message)
                                     .font(.system(size: 12))
-                                    .foregroundStyle(Color.white.opacity(0.9))
+                                    .foregroundStyle(Color.primaryText.opacity(0.9))
                                     .fixedSize(horizontal: false, vertical: true)
                                 Text("\(Format.fullDate(line.date)) · \(line.level.label)")
                                     .font(.system(size: 9, design: .monospaced))

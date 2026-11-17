@@ -131,7 +131,10 @@ enum BaiduNetdisk {
 
     // MARK: - Clear list
 
-    static func targets(container: String, channel: Channel, splash: SplashResolution?) -> [TargetFile] {
+    /// 扫一个应用的容器：软件自营只对百度网盘推导（传 splash），
+    /// 第三方 SDK 分组对任何应用都一样适用（传该应用的归属信息即可）。
+    static func targets(container: String, channel: Channel, splash: SplashResolution?,
+                        ownerBundleID: String = bundleID, ownerName: String = displayName) -> [TargetFile] {
         var result: [TargetFile] = []
         var seen = Set<String>()
 
@@ -143,12 +146,14 @@ enum BaiduNetdisk {
                                      group: group,
                                      note: note,
                                      size: item.size,
-                                     isSmallConfig: group == "BeiZi" && item.size < 4096))
+                                     isSmallConfig: group == "BeiZi" && item.size < 4096,
+                                     bundleID: ownerBundleID,
+                                     appName: ownerName))
         }
 
         if let splash, splash.exists, let item = channel.item(at: splash.path), !item.isDirectory {
             append(item,
-                   group: "百度自营",
+                   group: "软件自营",
                    note: "按广告记录动态推导")
         }
 

@@ -13,7 +13,11 @@ struct ContainerInfo: Identifiable, Hashable {
     let path: String
     let name: String
     let isSystem: Bool
+    var category: String = ""
+
     var id: String { bundleID }
+    /// 商店分类里带 game 的就是游戏；分类拿不到时按不是游戏算，不误伤。
+    var isGame: Bool { category.lowercased().contains("game") }
 }
 
 enum FileKind {
@@ -156,10 +160,21 @@ struct TargetFile: Identifiable, Hashable {
     let note: String
     let size: UInt64
     let isSmallConfig: Bool
+    var bundleID: String = ""
+    var appName: String = ""
 
     var id: String { path }
     var kind: FileKind { FileKind.of(path) }
     var sizeText: String { Format.bytes(size) }
+}
+
+/// 一次扫描里某个应用的识别结果：认出了哪几家广告商、各多少个文件，
+/// 以及指纹库没登记过的目录名。上传后用来攒指纹库。
+struct AppRecognition {
+    let bundleID: String
+    let name: String
+    let groups: [String: Int]
+    let unknownDirs: [String]
 }
 
 struct SplashResolution {

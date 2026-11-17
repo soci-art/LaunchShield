@@ -23,7 +23,7 @@ struct AppPickerView: View {
                         .foregroundStyle(Color.secondaryText)
                     TextField("搜索应用名或 Bundle ID", text: $query)
                         .font(.system(size: 13))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primaryText)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
@@ -59,7 +59,7 @@ struct AppPickerView: View {
                             .buttonStyle(.plain)
                             if container.id != filtered.last?.id {
                                 Divider()
-                                    .overlay(Color.white.opacity(0.06))
+                                    .overlay(Color.primaryText.opacity(0.06))
                                     .padding(.leading, 46)
                             }
                         }
@@ -81,16 +81,16 @@ struct AppPickerView: View {
         HStack(spacing: 11) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
+                    .fill(Color.primaryText.opacity(0.06))
                     .frame(width: 34, height: 34)
                 Image(systemName: container.isSystem ? "gearshape" : "app")
                     .font(.system(size: 14))
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(Color.primaryText.opacity(0.7))
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(container.name)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.primaryText)
                     .lineLimit(1)
                 Text(container.bundleID)
                     .font(.system(size: 9, design: .monospaced))
@@ -103,5 +103,6 @@ struct AppPickerView: View {
             }
         }
         .padding(.vertical, 11)
+        .contentShape(Rectangle())
     }
 }

@@ -18,7 +18,7 @@ struct ContainerBrowserView: View {
                 breadcrumb
                 if isLoading {
                     ProgressView()
-                        .tint(.white)
+                        .tint(Color.primaryText)
                         .padding(.top, 20)
                 }
                 if let errorText {
@@ -40,7 +40,7 @@ struct ContainerBrowserView: View {
                             .buttonStyle(.plain)
                             if item.id != items.last?.id {
                                 Divider()
-                                    .overlay(Color.white.opacity(0.06))
+                                    .overlay(Color.primaryText.opacity(0.06))
                                     .padding(.leading, 56)
                             }
                         }
@@ -135,7 +135,7 @@ struct ContainerBrowserView: View {
                     } label: {
                         Text(component)
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.85))
+                            .foregroundStyle(Color.primaryText.opacity(0.85))
                             .lineLimit(1)
                     }
                     .buttonStyle(.plain)
@@ -152,7 +152,7 @@ struct ContainerBrowserView: View {
             if item.isDirectory {
                 ZStack {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Color.primaryText.opacity(0.06))
                         .frame(width: 34, height: 34)
                     Image(systemName: "folder.fill")
                         .font(.system(size: 14))
@@ -164,7 +164,7 @@ struct ContainerBrowserView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
@@ -225,7 +225,7 @@ struct FilePreviewSheet: View {
                         .panel()
                     } else {
                         ProgressView()
-                            .tint(.white)
+                            .tint(Color.primaryText)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 40)
                     }

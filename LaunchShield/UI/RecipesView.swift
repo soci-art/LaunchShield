@@ -28,8 +28,8 @@ struct RecipesView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("还没有配方")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-            Text("用「找广告」确认素材并清零后，会自动把「Bundle ID ＋ 相对路径」存成配方。百度自营开屏素材清零时也会自动存。")
+                .foregroundStyle(Color.primaryText)
+            Text("用「找广告」确认素材并清零后，会自动把「Bundle ID ＋ 相对路径」存成配方。软件自营开屏素材清零时也会自动存。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -52,7 +52,7 @@ struct RecipesView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(recipe.appName)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primaryText)
                     Text(recipe.bundleID)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(Color.secondaryText)
@@ -62,7 +62,7 @@ struct RecipesView: View {
             }
             Text(recipe.relativePath)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.8))
+                .foregroundStyle(Color.primaryText.opacity(0.8))
                 .lineLimit(3)
                 .truncationMode(.middle)
             HStack(spacing: 8) {

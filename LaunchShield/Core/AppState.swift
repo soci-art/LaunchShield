@@ -9,6 +9,16 @@ final class AppState: ObservableObject {
 
     @Published var target: AppTarget = .baidu
     @Published var containers: [ContainerInfo] = []
+    /// 通道就绪改成异步探明：冷启动先出界面，不再被通道发现堵住首帧。
+    @Published private(set) var channelReady = false
+    @Published private(set) var channelChecking = true
+    /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
+    @Published private(set) var targetPath: String?
+    /// 一键勾选选中的应用（批量扫描/清零的目标集）；为空时按单个目标走。
+    @Published var checkedIDs: Set<String> = []
+    /// 最近一次扫描的识别数据（供上传攒指纹库用）。
+    @Published var lastRecognition: [AppRecognition] = []
+    @Published var updateStatus = ""
     @Published var recipes: [Recipe] = []
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
@@ -33,7 +43,6 @@ final class AppState: ObservableObject {
 
     // MARK: - Derived values
 
-    var channelReady: Bool { channel.isAvailable }
     var channelDetail: String {
         channel.isAvailable ? (channel.groupID ?? "共享组已就绪") : channel.unavailableReason
     }
@@ -73,11 +82,6 @@ final class AppState: ObservableObject {
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
-        if channel.isAvailable {
-            log("文件通道就绪，共享组：\(channel.groupID ?? "未命名")", .success)
-        } else {
-            log(channel.unavailableReason, .warning)
-        }
         if let when = guardService.interruption {
             guardInterruption = when
             log("守护曾在 \(Format.fullDate(when)) 中断；上次不是一直运行", .warning)
@@ -90,8 +94,38 @@ final class AppState: ObservableObject {
             guard let self = self else { return }
             self.guardTick(deep: deep)
         }
-        refreshContainers()
-        checkRecipes(silent: true)
+        // 通道发现放到后台：界面先出来，就绪后再补上容器、配方复查和启动补扫。
+        work.async {
+            let ok = self.channel.isAvailable
+            let group = ok ? self.channel.groupID : nil
+            DispatchQueue.main.async {
+                self.channelReady = ok
+                self.channelChecking = false
+                if ok {
+                    self.log("文件通道就绪，共享组：\(group ?? "未命名")", .success)
+                } else {
+                    self.log(self.channel.unavailableReason, .warning)
+                }
+                guard ok else { return }
+                self.refreshTargetPath()
+                self.refreshContainers {
+                    self.work.async { self.sweepAdDirectories(reason: "启动补扫") }
+                }
+                self.checkRecipes(silent: true)
+            }
+        }
+    }
+
+    func refreshTargetPath() {
+        let bundleID = target.bundleID
+        work.async {
+            let path = self.channel.containerPath(for: bundleID)
+            DispatchQueue.main.async {
+                if self.target.bundleID == bundleID {
+                    self.targetPath = path
+                }
+            }
+        }
     }
 
     func refresh() {
@@ -133,9 +167,10 @@ final class AppState: ObservableObject {
 
     // MARK: - Containers and target
 
-    func refreshContainers() {
+    func refreshContainers(completion: (() -> Void)? = nil) {
         guard channel.isAvailable else {
             containers = []
+            completion?()
             return
         }
         work.async {
@@ -145,6 +180,7 @@ final class AppState: ObservableObject {
                 if list.isEmpty {
                     self.log("没有读到应用容器列表，可能是系统版本不支持或权限被拒", .warning)
                 }
+                completion?()
             }
         }
     }
@@ -157,53 +193,148 @@ final class AppState: ObservableObject {
         selectedCandidatePaths = []
         beforeSnapshot = nil
         afterSnapshot = nil
+        targetPath = container.path
         log("目标应用切换为 \(container.name)（\(container.bundleID)）", .notice)
+    }
+
+    // MARK: - 一键勾选
+
+    var checkedContainers: [ContainerInfo] {
+        containers.filter { checkedIDs.contains($0.bundleID) }
+    }
+
+    var allUserAppsChecked: Bool {
+        let userApps = containers.filter { !$0.isSystem && !$0.isGame }
+        return !userApps.isEmpty && userApps.allSatisfy { checkedIDs.contains($0.bundleID) }
+    }
+
+    /// 一键勾选：把用户安装的应用全勾上（游戏除外，系统应用不算）；
+    /// 已经全勾上时再点一次就是全部取消。
+    func toggleCheckAllUserApps() {
+        guard requireChannel() else { return }
+        if containers.isEmpty {
+            banner = "应用列表还没读到，稍等一下再点。"
+            refreshContainers()
+            return
+        }
+        if allUserAppsChecked {
+            checkedIDs = []
+            log("一键勾选已取消，回到单个目标", .notice)
+            banner = "已取消一键勾选，现在按单个目标应用处理。"
+            return
+        }
+        let userApps = containers.filter { !$0.isSystem && !$0.isGame }
+        let games = containers.filter { !$0.isSystem && $0.isGame }
+        checkedIDs = Set(userApps.map { $0.bundleID })
+        scanTargets = []
+        log("一键勾选：勾上 \(userApps.count) 个应用，跳过游戏 \(games.count) 个", .notice)
+        banner = "已勾选 \(userApps.count) 个应用（游戏除外）。点「扫描」会一起扫，点「全部清零」会一起清。"
     }
 
     // MARK: - Scan and batch clear
 
+    /// 扫描范围：一键勾选有勾选时扫全部勾选的应用，否则只扫当前单个目标。
+    /// 软件自营的推导目前只对百度网盘成立，其余应用只扫第三方 SDK 分组。
     func scanBaidu(completion: (() -> Void)? = nil) {
         guard requireChannel() else { return }
-        guard let root = channel.containerPath(for: BaiduNetdisk.bundleID) else {
-            banner = "没有找到百度网盘，请先安装并打开一次。"
-            log("没有找到百度网盘的数据容器", .warning)
+        let scanSet: [ContainerInfo]
+        if !checkedIDs.isEmpty {
+            scanSet = checkedContainers
+            if scanSet.isEmpty {
+                banner = "勾选的应用一个都没读到容器，先等应用列表出来再扫。"
+                return
+            }
+        } else if let info = channel.container(for: target.bundleID) {
+            scanSet = [info]
+        } else {
+            banner = "没有找到\(target.name)，请先安装并打开一次。"
+            log("没有找到\(target.name)的数据容器", .warning)
             return
         }
+        let singleBaidu = scanSet.count == 1 && scanSet[0].bundleID == BaiduNetdisk.bundleID
         isBusy = true
-        busyText = "正在扫描百度网盘的素材…"
+        busyText = scanSet.count == 1 ? "正在扫描\(scanSet[0].name)的素材…" : "正在扫描 \(scanSet.count) 个应用的素材…"
         work.async {
-            let splash = BaiduNetdisk.resolveSplash(container: root, channel: self.channel)
-            let targets = BaiduNetdisk.targets(container: root, channel: self.channel, splash: splash)
+            var allTargets: [TargetFile] = []
+            var baiduSplash: SplashResolution?
+            var recognition: [AppRecognition] = []
+            for info in scanSet {
+                let isBaidu = info.bundleID == BaiduNetdisk.bundleID
+                let splash = isBaidu ? BaiduNetdisk.resolveSplash(container: info.path, channel: self.channel) : nil
+                if isBaidu { baiduSplash = splash }
+                let found = BaiduNetdisk.targets(container: info.path, channel: self.channel, splash: splash,
+                                                 ownerBundleID: info.bundleID, ownerName: info.name)
+                allTargets.append(contentsOf: found)
+                recognition.append(AppRecognition(bundleID: info.bundleID,
+                                                  name: info.name,
+                                                  groups: Dictionary(grouping: found, by: { $0.group }).mapValues { $0.count },
+                                                  unknownDirs: self.unknownDirectories(container: info.path)))
+            }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                self.splash = splash
-                self.scanTargets = targets
-                if let splash {
+                self.splash = baiduSplash
+                self.scanTargets = allTargets
+                self.lastRecognition = recognition
+                if singleBaidu, let splash = baiduSplash {
+                    let root = scanSet[0].path
                     if splash.exists {
                         let relative = BaiduNetdisk.relativePath(container: root, path: splash.path)
-                        self.log("自营开屏素材：\(relative)", .info)
+                        self.log("软件自营开屏素材：\(relative)", .info)
                         self.log("推导依据：\(splash.url) → MD5 \(splash.md5)", .info)
                     } else {
                         let relative = BaiduNetdisk.relativePath(container: root, path: splash.path)
                         self.log("按广告记录算出了素材路径，但那个文件现在不存在：\(relative)（网址 \(splash.url)）", .notice)
                     }
-                } else {
+                } else if singleBaidu {
                     self.log("没有读到开屏广告记录，可能广告还没缓存过，或记录文件暂时读不到", .notice)
                 }
-                let groups = Dictionary(grouping: targets, by: { $0.group })
-                var groupOrder = ["百度自营"] + BaiduNetdisk.thirdPartyCacheGroups.map { $0.group }
-                for name in groups.keys where !groupOrder.contains(name) { groupOrder.append(name) }
-                for name in groupOrder {
-                    guard let list = groups[name], !list.isEmpty else { continue }
-                    let small = list.filter { $0.isSmallConfig }.count
-                    let suffix = small > 0 ? "，其中清单小文件 \(small) 个" : ""
-                    self.log("\(name)：\(list.count) 个文件\(suffix)", .info)
+                if scanSet.count == 1 {
+                    let groups = Dictionary(grouping: allTargets, by: { $0.group })
+                    var groupOrder = ["软件自营"] + BaiduNetdisk.thirdPartyCacheGroups.map { $0.group }
+                    for name in groups.keys where !groupOrder.contains(name) { groupOrder.append(name) }
+                    for name in groupOrder {
+                        guard let list = groups[name], !list.isEmpty else { continue }
+                        let small = list.filter { $0.isSmallConfig }.count
+                        let suffix = small > 0 ? "，其中清单小文件 \(small) 个" : ""
+                        self.log("\(name)：\(list.count) 个文件\(suffix)", .info)
+                    }
+                } else {
+                    for info in scanSet {
+                        let mine = allTargets.filter { $0.bundleID == info.bundleID }
+                        self.log("\(info.name)：\(mine.count) 个素材文件", .info)
+                    }
                 }
-                self.log("扫描完成，共 \(targets.count) 个素材文件", .success)
+                self.log("扫描完成，共 \(allTargets.count) 个素材文件", .success)
                 completion?()
             }
         }
+    }
+
+    /// 指纹库没登记过的顶层目录名（只记名字，供上传攒指纹库时人工核对）。
+    private func unknownDirectories(container: String) -> [String] {
+        var known = Set<String>()
+        for group in BaiduNetdisk.thirdPartyCacheGroups {
+            for directory in group.directories {
+                var prefix = ""
+                for part in directory.components(separatedBy: "/") {
+                    prefix = prefix.isEmpty ? part : prefix + "/" + part
+                    known.insert(prefix)
+                }
+            }
+        }
+        known.insert(BaiduNetdisk.splashCacheRoot)
+        var result: [String] = []
+        for parent in ["Library/Caches", "Library", "tmp", "Library/Application Support"] {
+            guard let items = try? channel.children(of: container + "/" + parent) else { continue }
+            for item in items where item.isDirectory {
+                let relative = parent + "/" + item.name
+                if !known.contains(relative) {
+                    result.append(relative)
+                }
+            }
+        }
+        return Array(result.prefix(80))
     }
 
     func clearAllAfterScan() {
@@ -245,20 +376,22 @@ final class AppState: ObservableObject {
                     if size == 0 {
                         self.log("已经是 0 字节，跳过：\(targetFile.relativePath)", .info)
                     } else {
+                        let ownerID = targetFile.bundleID.isEmpty ? BaiduNetdisk.bundleID : targetFile.bundleID
+                        let ownerName = targetFile.appName.isEmpty ? BaiduNetdisk.displayName : targetFile.appName
                         let record = try self.backupManager.backup(path: targetFile.path,
                                                                    relativePath: targetFile.relativePath,
-                                                                   bundleID: BaiduNetdisk.bundleID,
-                                                                   appName: BaiduNetdisk.displayName,
+                                                                   bundleID: ownerID,
+                                                                   appName: ownerName,
                                                                    source: targetFile.group,
                                                                    channel: self.channel)
                         newBackups.append(record)
                         try self.channel.truncate(targetFile.path)
                         done += 1
                         self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
-                        if targetFile.group == "百度自营" {
+                        if targetFile.group == "软件自营" {
                             newRecipes.append(Recipe(id: UUID(),
-                                                     bundleID: BaiduNetdisk.bundleID,
-                                                     appName: BaiduNetdisk.displayName,
+                                                     bundleID: ownerID,
+                                                     appName: ownerName,
                                                      relativePath: targetFile.relativePath,
                                                      createdAt: Date(),
                                                      frozen: false,
@@ -291,20 +424,24 @@ final class AppState: ObservableObject {
             // 这样它们连新建文件备货都做不到。文件夹冻结失败只警告，不算清零失败。
             var frozenDirCount = 0
             var freezeDirFailureCount = 0
-            if failure == nil, let root = self.channel.containerPath(for: BaiduNetdisk.bundleID) {
-                for relative in BaiduNetdisk.freezeDirectories(container: root, channel: self.channel) {
-                    let full = root + "/" + relative
-                    if self.channel.isImmutable(full) {
-                        frozenDirCount += 1
-                        continue
-                    }
-                    do {
-                        try self.channel.setImmutable(full, true)
-                        frozenDirCount += 1
-                        self.log("已冻结文件夹：\(relative)", .success)
-                    } catch {
-                        freezeDirFailureCount += 1
-                        self.log("冻结文件夹失败：\(relative)：\(error.localizedDescription)", .warning)
+            if failure == nil {
+                let owners = Set(targets.map { $0.bundleID.isEmpty ? BaiduNetdisk.bundleID : $0.bundleID })
+                for owner in owners {
+                    guard let root = self.channel.containerPath(for: owner) else { continue }
+                    for relative in BaiduNetdisk.freezeDirectories(container: root, channel: self.channel) {
+                        let full = root + "/" + relative
+                        if self.channel.isImmutable(full) {
+                            frozenDirCount += 1
+                            continue
+                        }
+                        do {
+                            try self.channel.setImmutable(full, true)
+                            frozenDirCount += 1
+                            self.log("已冻结文件夹：\(relative)", .success)
+                        } catch {
+                            freezeDirFailureCount += 1
+                            self.log("冻结文件夹失败：\(relative)：\(error.localizedDescription)", .warning)
+                        }
                     }
                 }
             }
@@ -343,8 +480,8 @@ final class AppState: ObservableObject {
                         self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
                     }
                     self.banner = frozenCount > 0
-                        ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请强退百度网盘再冷启动看看。"
-                        : "清零完成：\(done) 个文件已截断为 0 字节。请强退百度网盘再冷启动看看。"
+                        ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
+                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。"
                     self.scanTargets = []
                 }
                 self.checkRecipes(silent: true)
@@ -369,7 +506,8 @@ final class AppState: ObservableObject {
             var restored = 0
             var failure: String?
             // 文件夹冻着的话先解开，还原才算全套撤销。
-            if let root = self.channel.containerPath(for: BaiduNetdisk.bundleID) {
+            for owner in Set(records.map { $0.bundleID }) {
+                guard let root = self.channel.containerPath(for: owner) else { continue }
                 for relative in BaiduNetdisk.freezeDirectories(container: root, channel: self.channel) {
                     let full = root + "/" + relative
                     if self.channel.isImmutable(full) {
@@ -809,7 +947,128 @@ final class AppState: ObservableObject {
 
         if deep {
             compareRecipeDirectories(list)
+            sweepAdDirectories(reason: "值守")
         }
+    }
+
+    // MARK: - 目录补扫（守护深查与启动时共用）
+
+    /// 把已知广告目录里新冒出来的非零文件当场清零冻结（不备份，跟值守
+    /// 重新清零一个口径）。范围：有配方的应用＋当前目标＋一键勾选的应用。
+    /// 必须在后台队列调用。
+    private func sweepAdDirectories(reason: String) {
+        guard channel.isAvailable else { return }
+        var bundleIDs = Set(recipes.map { $0.bundleID })
+        bundleIDs.insert(target.bundleID)
+        bundleIDs.formUnion(checkedIDs)
+        var cleared = 0
+        for bundleID in bundleIDs {
+            guard cleared < 300, let info = channel.container(for: bundleID) else { continue }
+            let files = BaiduNetdisk.targets(container: info.path, channel: channel, splash: nil,
+                                             ownerBundleID: info.bundleID, ownerName: info.name)
+            for file in files where file.size > 0 {
+                guard cleared < 300 else { break }
+                do {
+                    if channel.isImmutable(file.path) {
+                        try channel.setImmutable(file.path, false)
+                    }
+                    try channel.truncate(file.path)
+                    try channel.setImmutable(file.path, true)
+                    cleared += 1
+                    log("\(reason)清掉新文件：\(info.name) · \(file.relativePath)", .success)
+                } catch {
+                    log("\(reason)清新文件失败：\(file.relativePath)：\(error.localizedDescription)", .warning)
+                }
+            }
+        }
+        if cleared > 0 {
+            log("\(reason)：共清掉 \(cleared) 个新冒出来的广告文件，已冻结", .notice)
+            DispatchQueue.main.async { self.checkRecipes(silent: true) }
+        }
+    }
+
+    // MARK: - 上传与更新
+
+    /// 日志页「导出 → 上传」：把运行日志传到收集箱。
+    func uploadLog() {
+        let text = exportLogText()
+        CollectUploader.upload(kind: "log", contentType: "text/plain; charset=utf-8", body: Data(text.utf8)) { [weak self] ok, message in
+            guard let self = self else { return }
+            self.log(ok ? "日志已上传" : "日志上传失败：\(message)", ok ? .success : .warning)
+            self.banner = ok ? "日志已上传。" : "日志上传失败：\(message)"
+        }
+    }
+
+    /// 上传识别数据：哪个应用认出了哪几家广告商、没认出的目录名、
+    /// 以及用户反馈的「清完还出广告」。只传名字和计数，不传文件内容。
+    func uploadRecognition(stillSeesAds: Bool) {
+        guard !lastRecognition.isEmpty else {
+            banner = "先点一次「扫描」，有了识别结果才能上传。"
+            return
+        }
+        let apps: [[String: Any]] = lastRecognition.map { item in
+            ["bundleID": item.bundleID,
+             "name": item.name,
+             "groups": item.groups,
+             "unknownDirs": item.unknownDirs]
+        }
+        let payload: [String: Any] = [
+            "appVersion": appVersionText,
+            "system": systemText,
+            "device": UIDevice.current.model,
+            "time": Format.fullDate(Date()),
+            "stillSeesAds": stillSeesAds,
+            "apps": apps
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else { return }
+        CollectUploader.upload(kind: "recognition", contentType: "application/json", body: data) { [weak self] ok, message in
+            guard let self = self else { return }
+            if ok {
+                self.log(stillSeesAds ? "已反馈：清完还出广告（附识别数据）" : "识别数据已上传", .success)
+                self.banner = stillSeesAds ? "已反馈，我们会照着这份数据找漏掉的广告商。" : "识别数据已上传，谢谢帮忙攒指纹库。"
+            } else {
+                self.log("识别数据上传失败：\(message)", .warning)
+                self.banner = "上传失败：\(message)"
+            }
+        }
+    }
+
+    /// 检测应用更新：只查正式版，测试版不算。
+    func checkForUpdate() {
+        updateStatus = "正在检查…"
+        CollectUploader.fetchVersion { [weak self] info, message in
+            guard let self = self else { return }
+            guard let info else {
+                self.updateStatus = "检查失败"
+                self.banner = "检测更新失败：\(message)"
+                return
+            }
+            do {
+                let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
+                if info.version == "0.0.0" {
+                    self.updateStatus = "还没有正式版"
+                    self.banner = "还没有发布过正式版，你现在用的就是最新的测试版。"
+                } else if Self.isVersion(info.version, newerThan: current) {
+                    self.updateStatus = "有新版本 \(info.version)"
+                    self.banner = "正式版有新版本：\(info.version)。\(info.notes)"
+                } else {
+                    self.updateStatus = "已是最新"
+                    self.banner = "已经是最新版本（\(current)）。"
+                }
+                self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
+            }
+        }
+    }
+
+    private static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
+        let a = candidate.split(separator: ".").map { Int($0) ?? 0 }
+        let b = current.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0
+            let y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
     }
 
     private func compareRecipeDirectories(_ list: [Recipe]) {

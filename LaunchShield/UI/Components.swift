@@ -3,9 +3,27 @@ import UIKit
 import AVFoundation
 
 extension Color {
-    static let appBackground = Color(red: 0.045, green: 0.055, blue: 0.075)
-    static let panel = Color(red: 0.085, green: 0.10, blue: 0.13)
-    static let secondaryText = Color(red: 0.58, green: 0.63, blue: 0.70)
+    /// 界面颜色跟着系统走：浅色模式下自动变浅，不再写死深色。
+    static let appBackground = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.045, green: 0.055, blue: 0.075, alpha: 1)
+            : UIColor(red: 0.945, green: 0.953, blue: 0.965, alpha: 1)
+    })
+    static let panel = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.085, green: 0.10, blue: 0.13, alpha: 1)
+            : UIColor.white
+    })
+    static let secondaryText = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.58, green: 0.63, blue: 0.70, alpha: 1)
+            : UIColor(red: 0.38, green: 0.42, blue: 0.48, alpha: 1)
+    })
+    static let primaryText = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor.white
+            : UIColor(red: 0.07, green: 0.09, blue: 0.12, alpha: 1)
+    })
     static let accentCyan = Color(red: 0.35, green: 0.85, blue: 0.95)
 }
 
@@ -37,7 +55,7 @@ struct PanelModifier: ViewModifier {
             .background(Color.panel, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                    .stroke(Color.primaryText.opacity(0.08), lineWidth: 1)
             )
     }
 }
@@ -56,7 +74,7 @@ struct SectionHeader: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.primaryText)
             if let subtitle {
                 Text(subtitle)
                     .font(.system(size: 11))
@@ -94,11 +112,11 @@ struct SummaryTile: View {
                 .foregroundStyle(tint)
             Text(value)
                 .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.primaryText)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.88))
+                    .foregroundStyle(Color.primaryText.opacity(0.88))
                 Text(detail)
                     .font(.system(size: 9))
                     .foregroundStyle(Color.secondaryText)
@@ -122,7 +140,7 @@ struct BannerCard: View {
                 .padding(.top, 1)
             Text(text)
                 .font(.system(size: 12))
-                .foregroundStyle(Color.white.opacity(0.9))
+                .foregroundStyle(Color.primaryText.opacity(0.9))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             Button(action: onClose) {
@@ -192,7 +210,7 @@ struct LogPreview: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(line.message)
                                 .font(.system(size: 12))
-                                .foregroundStyle(Color.white.opacity(0.88))
+                                .foregroundStyle(Color.primaryText.opacity(0.88))
                                 .fixedSize(horizontal: false, vertical: true)
                             Text(Format.time(line.date))
                                 .font(.system(size: 9, design: .monospaced))
@@ -219,7 +237,7 @@ struct ThumbnailView: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(Color.primaryText.opacity(0.06))
             if let image {
                 Image(uiImage: image)
                     .resizable()
@@ -316,7 +334,6 @@ struct SheetPage<Content: View>: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
     }
 }
 

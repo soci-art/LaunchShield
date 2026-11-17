@@ -37,7 +37,7 @@ struct FindAdView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("怎么找")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.primaryText)
             Text("① 拍第一次快照  →  ② 去 \(state.target.name) 里让开屏广告完整播一次  →  ③ 回来拍第二次快照  →  ④ 勾选刚出现或明显变大的文件。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
@@ -53,7 +53,7 @@ struct FindAdView: View {
             HStack {
                 Text("快照")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                 Spacer()
                 if let before = state.beforeSnapshot {
                     StatusBadge(text: "第一次 \(before.fileCount) 个文件", tint: .cyan)
@@ -97,7 +97,7 @@ struct FindAdView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("现在去打开\(state.target.name)")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                 Text("让开屏广告完整播一次，然后回到这里拍第二次快照。不要先强退本应用。")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
@@ -114,7 +114,7 @@ struct FindAdView: View {
             HStack {
                 Text("候选（\(state.candidates.count)）")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                 Spacer()
                 Button(state.selectedCandidatePaths.count == state.candidates.count ? "全不选" : "全选") {
                     if state.selectedCandidatePaths.count == state.candidates.count {
@@ -137,7 +137,7 @@ struct FindAdView: View {
                     .buttonStyle(.plain)
                     if candidate.id != state.candidates.last?.id {
                         Divider()
-                            .overlay(Color.white.opacity(0.06))
+                            .overlay(Color.primaryText.opacity(0.06))
                             .padding(.leading, 48)
                     }
                 }
@@ -155,7 +155,7 @@ struct FindAdView: View {
                         .font(.system(size: 15, weight: .semibold))
                     Spacer()
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.primaryText)
                 .padding(.horizontal, 17)
                 .frame(height: 56)
                 .background(LinearGradient(colors: [Color.cyan.opacity(0.88), Color.blue.opacity(0.82)],
@@ -188,7 +188,7 @@ struct FindAdView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(candidate.relativePath)
                     .font(.system(size: 11))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                     .lineLimit(2)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {

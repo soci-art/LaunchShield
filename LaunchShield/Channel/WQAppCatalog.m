@@ -10,12 +10,21 @@
 #import "WQAccess.h"
 
 static NSDictionary<NSString *, NSString *> *gNames;
+static NSDictionary<NSString *, NSString *> *gCategories;
+
+NSDictionary<NSString *, NSString *> *wq_app_categories(void)
+{
+    // Populated as a side effect of the display-name pass below.
+    (void)wq_app_display_names();
+    return gCategories ?: @{};
+}
 
 NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
 {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSMutableDictionary<NSString *, NSString *> *names = [NSMutableDictionary dictionary];
+        NSMutableDictionary<NSString *, NSString *> *categories = [NSMutableDictionary dictionary];
         @try {
             Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
             if (workspaceClass) {
@@ -37,6 +46,15 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
                         bundleID = [app valueForKey:@"bundleIdentifier"];
                         name = [app valueForKey:@"localizedName"];
                         if (![name isKindOfClass:NSString.class] || !name.length) name = [app valueForKey:@"itemName"];
+                        id category = nil;
+                        @try { category = [app valueForKey:@"applicationCategory"]; } @catch (NSException *e) { }
+                        if (![category isKindOfClass:NSString.class] || ![category length]) {
+                            @try { category = [app valueForKey:@"category"]; } @catch (NSException *e) { }
+                        }
+                        if ([bundleID isKindOfClass:NSString.class] && bundleID.length &&
+                            [category isKindOfClass:NSString.class] && [category length]) {
+                            categories[bundleID] = category;
+                        }
                     } @catch (NSException *exception) {
                         continue;
                     }
@@ -50,6 +68,7 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
             wq_log(@"app names: LaunchServices unavailable (%@)", exception.reason);
         }
         gNames = [names copy];
+        gCategories = [categories copy];
     });
     return gNames;
 }

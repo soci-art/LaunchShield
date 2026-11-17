@@ -80,7 +80,7 @@ struct BackupsView: View {
             HStack(spacing: 8) {
                 Text(record.appName)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.primaryText)
                 StatusBadge(text: record.source, tint: .cyan)
                 Spacer()
                 Text(record.sizeText)
@@ -89,7 +89,7 @@ struct BackupsView: View {
             }
             Text(record.relativePath)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.8))
+                .foregroundStyle(Color.primaryText.opacity(0.8))
                 .lineLimit(3)
                 .truncationMode(.middle)
             HStack(spacing: 8) {

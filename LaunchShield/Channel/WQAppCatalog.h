@@ -12,4 +12,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 NSDictionary<NSString *, NSString *> *wq_app_display_names(void);
 
+/// App Store category per bundle id (e.g. "public.app-category.games"),
+/// best effort like the display names. Missing entries mean "unknown".
+NSDictionary<NSString *, NSString *> *wq_app_categories(void);
+
 NS_ASSUME_NONNULL_END

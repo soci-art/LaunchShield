@@ -8,7 +8,6 @@ struct LaunchShieldApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(state)
-                .preferredColorScheme(.dark)
                 .onAppear {
                     state.bootstrap()
                 }

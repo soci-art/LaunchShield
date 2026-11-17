@@ -155,6 +155,7 @@
     if (!rows.count) rows = [wq_list_containers(2) mutableCopy] ?: [NSMutableArray array];
     if (!rows.count) rows = [[self fallbackContainerRows] mutableCopy];
     NSDictionary<NSString *, NSString *> *names = wq_app_display_names();
+    NSDictionary<NSString *, NSString *> *categories = wq_app_categories();
     NSMutableArray<WQAppContainer *> *result = [NSMutableArray array];
     for (NSDictionary<NSString *, NSString *> *row in rows) {
         NSString *identifier = row[@"identifier"];
@@ -164,6 +165,7 @@
         container.identifier = identifier;
         container.path = path;
         container.name = names[identifier] ?: wq_display_name(identifier) ?: identifier;
+        container.category = categories[identifier] ?: @"";
         container.isSystem = [identifier hasPrefix:@"com.apple."];
         [result addObject:container];
     }

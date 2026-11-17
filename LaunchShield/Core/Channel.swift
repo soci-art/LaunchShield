@@ -20,13 +20,13 @@ final class Channel {
 
     func containers() -> [ContainerInfo] {
         raw.appContainers().map {
-            ContainerInfo(bundleID: $0.identifier, path: $0.path, name: $0.name, isSystem: $0.isSystem)
+            ContainerInfo(bundleID: $0.identifier, path: $0.path, name: $0.name, isSystem: $0.isSystem, category: $0.category ?? "")
         }
     }
 
     func container(for bundleID: String) -> ContainerInfo? {
         guard let item = raw.container(forBundleID: bundleID) else { return nil }
-        return ContainerInfo(bundleID: item.identifier, path: item.path, name: item.name, isSystem: item.isSystem)
+        return ContainerInfo(bundleID: item.identifier, path: item.path, name: item.name, isSystem: item.isSystem, category: item.category ?? "")
     }
 
     func containerPath(for bundleID: String) -> String? {

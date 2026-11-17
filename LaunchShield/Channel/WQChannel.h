@@ -43,6 +43,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *identifier;
 @property (nonatomic, copy) NSString *path;
 @property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *category;
 @property (nonatomic) BOOL isSystem;
 
 @end
