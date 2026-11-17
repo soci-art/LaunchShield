@@ -64,6 +64,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy, nullable) NSString *groupID;
 @property (nonatomic, readonly, copy) NSString *unavailableReason;
 
+/// "bad_query" on iOS 26.0-26.6.1, "worse_query" on newer builds.
+@property (nonatomic, readonly, copy) NSString *routeName;
+/// Chinese one-liner with the detected system version.
+@property (nonatomic, readonly, copy) NSString *routeDetail;
+/// App Group description for the UI; says so when the route needs none.
+@property (nonatomic, readonly, copy) NSString *groupText;
+@property (nonatomic, readonly) BOOL usesBadQuery;
+
 /// Every app data container (the container manager's class 2).
 - (NSArray<WQAppContainer *> *)appContainers;
 - (nullable WQAppContainer *)containerForBundleID:(NSString *)bundleID;

@@ -107,7 +107,7 @@ final class AppState: ObservableObject {
     // MARK: - Derived values
 
     var channelDetail: String {
-        channel.isAvailable ? (channel.groupID ?? "共享组已就绪") : channel.unavailableReason
+        channel.isAvailable ? "\(channel.routeName)：\(channel.groupText)" : channel.unavailableReason
     }
     var containerPath: String? { channel.containerPath(for: target.bundleID) }
     var targetContainer: ContainerInfo? { channel.container(for: target.bundleID) }
@@ -164,12 +164,14 @@ final class AppState: ObservableObject {
         // 通道发现放到后台：界面先出来，就绪后再补上容器、配方复查和启动补扫。
         work.async {
             let ok = self.channel.isAvailable
-            let group = ok ? self.channel.groupID : nil
+            let route = self.channel.routeDetail
+            let group = self.channel.groupText
             DispatchQueue.main.async {
                 self.channelReady = ok
                 self.channelChecking = false
+                self.log("访问路线：\(route)", .info)
                 if ok {
-                    self.log("文件通道就绪，共享组：\(group ?? "未命名")", .success)
+                    self.log("文件通道就绪（\(self.channel.routeName)），\(group)", .success)
                 } else {
                     self.log(self.channel.unavailableReason, .warning)
                 }
@@ -246,7 +248,8 @@ final class AppState: ObservableObject {
             "应用版本：\(appVersionText)",
             "系统版本：\(systemText)",
             "设备：\(UIDevice.current.model)",
-            "共享组：\(channel.groupID ?? "没有拿到")",
+            "访问路线：\(channel.routeDetail)",
+            "共享组：\(channel.groupText)",
             "导出时间：\(Format.fullDate(Date()))"
         ])
         // The channel layer keeps its own detailed log (wq_log); include it so

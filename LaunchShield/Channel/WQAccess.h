@@ -50,6 +50,12 @@ NSArray<NSDictionary<NSString *, NSString *> *> *_Nullable wq_list_containers(ui
 // failure errno holds the reason (EACCES/EPERM for a refusal).
 NSArray<NSString *> *_Nullable wq_list(NSString *dir, NSString *_Nullable *_Nullable errorText);
 
+/// One readdir pass on an opened (and granted) folder: every entry with its
+/// stat, so the browser needs a single grant per directory instead of one per
+/// file. Keys: name, directory, symlink, size, modified, immutable, mode.
+NSArray<NSDictionary<NSString *, id> *> *_Nullable wq_list_detailed(NSString *dir,
+                                                                  NSString *_Nullable *_Nullable errorText);
+
 // Reads a whole file (up to maxBytes; 0 = no limit).
 NSData *_Nullable wq_read(NSString *path, NSUInteger maxBytes, NSString *_Nullable *_Nullable errorText);
 

@@ -17,6 +17,7 @@
 #import "WQCore.h"
 #import "WQAccessSafety.h"
 #import "WQLocalization.h"
+#import "WQRoute.h"
 #import <dlfcn.h>
 #import <objc/message.h>
 #import <dirent.h>
@@ -465,47 +466,65 @@ BOOL wq_grant(NSString *path)
         [gGrantOrder removeObjectAtIndex:0];
     }
     struct stat st;
-    if (lstat(key.fileSystemRepresentation, &st) != 0) {
+    BOOL badQuery = wq_route_is_bad_query();
+    if (!badQuery && lstat(key.fileSystemRepresentation, &st) != 0) {
         [gGrantLock unlock];
         return NO;  // worse_query needs an existing target
     }
-    // iOS 26 needs the alternative query flags; try the likely ones first so
-    // a grant costs one query, and the other set only when that fails. A
-    // token can also be issued and consumed yet not open the target (seen on
-    // 27.0.1 with an AltStore app group): check, and then try the other flags.
-    // The set that works is remembered for the rest of the run.
-    static int preferAlt = -1;
-    BOOL altFirst = preferAlt >= 0 ? (BOOL)preferAlt : !wq_system_areas_reachable();
-    int64_t handle = wq_query(key, altFirst);
-    BOOL usedAlt = altFirst;
-    if (handle >= 0 && !wq_grant_opens(key)) {
-        static BOOL logged;
-        if (!logged) {
-            logged = YES;
-            wq_log(@"grant: the token for %@ doesn't open it (%@ query flags); trying the other flags", key,
-                   altFirst ? @"alternative" : @"standard");
+    int64_t handle = -1;
+    BOOL usedAlt = NO;
+    if (badQuery) {
+        // bad_query resolves the target inside containermanagerd from the
+        // SystemGroup query, so a deep path does not have to be statable first.
+        handle = wq_route_bad_grant(key.fileSystemRepresentation);
+        if (handle >= 0 && !wq_grant_opens(key)) {
+            static BOOL loggedBad;
+            if (!loggedBad) {
+                loggedBad = YES;
+                wq_log(@"grant: the bad_query token for %@ doesn't open it", key);
+            }
+            wq_release_handle(handle);
+            handle = -8;
         }
-        wq_release_handle(handle);
-        handle = -8;
-    }
-    if (handle < 0 && handle != -1 && handle != -2) {
-        int64_t alt = wq_query(key, !altFirst);
-        if (alt >= 0 && !wq_grant_opens(key)) {
-            wq_release_handle(alt);
-            alt = -8;
+    } else {
+        // iOS 26 needs the alternative query flags; try the likely ones first so
+        // a grant costs one query, and the other set only when that fails. A
+        // token can also be issued and consumed yet not open the target (seen on
+        // 27.0.1 with an AltStore app group): check, and then try the other flags.
+        // The set that works is remembered for the rest of the run.
+        static int preferAlt = -1;
+        BOOL altFirst = preferAlt >= 0 ? (BOOL)preferAlt : !wq_system_areas_reachable();
+        handle = wq_query(key, altFirst);
+        usedAlt = altFirst;
+        if (handle >= 0 && !wq_grant_opens(key)) {
+            static BOOL logged;
+            if (!logged) {
+                logged = YES;
+                wq_log(@"grant: the token for %@ doesn't open it (%@ query flags); trying the other flags", key,
+                       altFirst ? @"alternative" : @"standard");
+            }
+            wq_release_handle(handle);
+            handle = -8;
         }
-        if (alt >= 0) {
-            handle = alt;
-            usedAlt = !altFirst;
+        if (handle < 0 && handle != -1 && handle != -2) {
+            int64_t alt = wq_query(key, !altFirst);
+            if (alt >= 0 && !wq_grant_opens(key)) {
+                wq_release_handle(alt);
+                alt = -8;
+            }
+            if (alt >= 0) {
+                handle = alt;
+                usedAlt = !altFirst;
+            }
         }
-    }
-    // Decided once, by the first grant that works: some targets refuse to
-    // open for their own reasons, and a per-target fallback already covers
-    // the rest, so flipping the preference back and forth only costs queries.
-    if (handle >= 0 && preferAlt < 0) {
-        preferAlt = usedAlt;
-        if (usedAlt != !wq_system_areas_reachable())
-            wq_log(@"grant: the %@ query flags work on this device", usedAlt ? @"alternative" : @"standard");
+        // Decided once, by the first grant that works: some targets refuse to
+        // open for their own reasons, and a per-target fallback already covers
+        // the rest, so flipping the preference back and forth only costs queries.
+        if (handle >= 0 && preferAlt < 0) {
+            preferAlt = usedAlt;
+            if (usedAlt != !wq_system_areas_reachable())
+                wq_log(@"grant: the %@ query flags work on this device", usedAlt ? @"alternative" : @"standard");
+        }
     }
     if (handle >= 0) {  // failures are retried next time
         gGrants[key] = @(handle);
@@ -932,6 +951,48 @@ NSArray<NSString *> *wq_list(NSString *dir, NSString **errorText)
         }
         errno = err;
     }
+    return items;
+}
+
+NSArray<NSDictionary<NSString *, id> *> *wq_list_detailed(NSString *dir, NSString **errorText)
+{
+    if (!WQAbsolutePathGrammar(WQCanonicalVarPath(dir))) {
+        if (errorText) *errorText = WQLocalized(@"Invalid folder path");
+        return nil;
+    }
+    int fd = wq_open_directory_flags(dir, O_RDONLY);
+    if (fd < 0) {
+        if (errorText) *errorText = wq_errno(errno);
+        return nil;
+    }
+    DIR *listing = fdopendir(fd);
+    if (!listing) {
+        int err = errno;
+        close(fd);
+        if (errorText) *errorText = wq_errno(err);
+        return nil;
+    }
+    int dfd = dirfd(listing);
+    NSMutableArray<NSDictionary<NSString *, id> *> *items = [NSMutableArray array];
+    struct dirent *entry;
+    while ((entry = readdir(listing)) != NULL) {
+        const char *name = entry->d_name;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        struct stat st;
+        if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        NSString *entryName = [NSString stringWithUTF8String:name];
+        if (!entryName.length) continue;
+        [items addObject:@{
+            @"name": entryName,
+            @"directory": @(S_ISDIR(st.st_mode)),
+            @"symlink": @(S_ISLNK(st.st_mode)),
+            @"size": @((unsigned long long)st.st_size),
+            @"modified": @((double)st.st_mtimespec.tv_sec + (double)st.st_mtimespec.tv_nsec / 1e9),
+            @"immutable": @((st.st_flags & UF_IMMUTABLE) != 0),
+            @"mode": @((unsigned int)(st.st_mode & 07777)),
+        }];
+    }
+    closedir(listing);
     return items;
 }
 

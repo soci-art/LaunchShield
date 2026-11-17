@@ -29,3 +29,20 @@ LaunchShield 的跨应用文件通道移植自开源项目 **WQFiles**，并沿�
 
 WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优先、失败回滚、
 `_if_unchanged` 版本校验）没有改动。
+
+## bad_query 路线（iOS 26.0–26.6.1）
+
+- **bad_query** — 作者 Taj C（forcequit），<https://github.com/forcequitOS/bad_query>，
+  GPL-3.0-or-later。`bad_query.c` / `bad_query.h` 取自该项目（经 3106 收录的版本），
+  去掉了其中的 fsgetpath 暴力扫描，只保留 `bad_query` / `bad_query_release`。
+- **3106** — 作者 QuinnTang74，<https://github.com/QuinnTang74/3106>，GPL-3.0。
+  按系统版本分流的范围参考该项目：26.0–26.6.1 用 bad_query，26.7+/27.x 用 worse_query。
+
+本工程的改动：
+
+1. 新增 `WQRoute` 分流层，按系统版本自动选路线；界面、日志和导出都会显示当前路线。
+2. bad_query 路线使用 class 13（SystemGroup）下发授权，不需要 App Group，因此普通签名即可；
+   worse_query 路线仍按共享组申请。
+3. bad_query 路线跳过“先 lstat 再授权”的前置检查（深路径在授权前无法 stat）。
+4. 目录列表改为一次授权 + 一次 `readdir` + `fstatat`（`wq_list_detailed`），不再逐文件申请授权；
+   bad_query 路线下应用容器根目录也直接列，不再等待全盘扫描。

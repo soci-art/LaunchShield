@@ -10,6 +10,8 @@
 #import "WQAppCatalog.h"
 #import "WQLaunchServices.h"
 #import "WQAccess.h"
+#import "WQRoute.h"
+#import "bad_query.h"
 #import <CommonCrypto/CommonDigest.h>
 #import <sys/stat.h>
 
@@ -110,8 +112,23 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     wq_full_scan_stop();
 }
 
+- (BOOL)badQueryGrantWorks
+{
+    static NSInteger cached = -1;
+    static NSTimeInterval checkedAt;
+    NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
+    if (cached >= 0 && now - checkedAt < 30) return cached == 1;
+    int64_t handle = wq_route_bad_grant("/private/var/mobile/Containers/Data/Application");
+    BOOL ok = handle >= 0;
+    if (ok) bad_query_release(handle);
+    cached = ok ? 1 : 0;
+    checkedAt = now;
+    return ok;
+}
+
 - (BOOL)available
 {
+    if (wq_route_is_bad_query()) return [self badQueryGrantWorks];
     return wq_app_group() != nil;
 }
 
@@ -120,8 +137,32 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     return wq_app_group();
 }
 
+- (NSString *)groupText
+{
+    if (wq_route_is_bad_query()) return @"不需要（bad_query 走系统组）";
+    return wq_app_group() ?: @"没有拿到";
+}
+
+- (NSString *)routeName
+{
+    return wq_route_name();
+}
+
+- (NSString *)routeDetail
+{
+    return wq_route_detail();
+}
+
+- (BOOL)usesBadQuery
+{
+    return wq_route_is_bad_query();
+}
+
 - (NSString *)unavailableReason
 {
+    if (wq_route_is_bad_query()) {
+        return @"bad_query 在这台设备上没拿到访问权限。请确认系统版本（26.0–26.6.1）和签名方式后再试。";
+    }
     NSString *reason = wq_app_group_error();
     return reason.length ? reason : @"文件通道不可用。";
 }
@@ -196,8 +237,23 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     // on iOS 27.2, which is why this goes first.
     NSMutableArray<NSDictionary<NSString *, NSString *> *> *rows = [NSMutableArray array];
     wq_load_display_names();
-    for (NSString *root in @[@"/private/var/mobile/Containers/Data/Application",
-                             @"/private/var/mobile/Containers/Data/PluginKitPlugin"]) {
+    NSArray<NSString *> *roots = @[@"/private/var/mobile/Containers/Data/Application",
+                                   @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
+    if (wq_route_is_bad_query()) {
+        // bad_query grants a folder in one query, so both roots can be listed
+        // directly instead of waiting for a full inode scan.
+        for (NSString *root in roots) {
+            for (NSString *name in wq_list(root, NULL) ?: @[]) {
+                if (!name.length || [name hasPrefix:@"."]) continue;
+                NSString *path = [root stringByAppendingPathComponent:name];
+                NSString *identifier = [self labelForPath:path];
+                if (identifier.length) [rows addObject:@{ @"identifier": identifier, @"path": path }];
+            }
+        }
+        wq_log(@"containers: bad_query listed %lu directly", (unsigned long)rows.count);
+    }
+    for (NSString *root in roots) {
+        if (rows.count) break;
         for (NSString *path in wq_enumerate(root, 0, nil, nil) ?: @[]) {
             NSString *identifier = [self labelForPath:path];
             if (identifier.length) [rows addObject:@{ @"identifier": identifier, @"path": path }];
@@ -308,14 +364,36 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 - (WQOp *)listDirectory:(NSString *)path
 {
     NSString *error = nil;
-    NSArray<NSString *> *names = wq_list(path, &error);
-    if (!names) return [WQOp fail:[self messageFor:error fallback:@"打不开这个文件夹"]];
-    NSMutableArray<WQFileItem *> *items = [NSMutableArray array];
-    for (NSString *name in names) {
-        if (!name.length || [name isEqualToString:@"."] || [name isEqualToString:@".."]) continue;
-        NSString *child = [path stringByAppendingPathComponent:name];
-        WQFileItem *item = [self itemAtPath:child name:name];
-        if (item) [items addObject:item];
+    NSArray<NSDictionary<NSString *, id> *> *rows = wq_list_detailed(path, &error);
+    if (!rows) return [WQOp fail:[self messageFor:error fallback:@"打不开这个文件夹"]];
+    if (rows.count == 0) {
+        // Safety net: if the single-grant readdir saw entries but could not stat
+        // them, fall back to the per-entry path so a folder never looks empty.
+        NSArray<NSString *> *names = wq_list(path, &error);
+        if (names.count) {
+            NSMutableArray<WQFileItem *> *fallback = [NSMutableArray array];
+            for (NSString *name in names) {
+                if (!name.length || [name isEqualToString:@"."] || [name isEqualToString:@".."]) continue;
+                WQFileItem *item = [self itemAtPath:[path stringByAppendingPathComponent:name] name:name];
+                if (item) [fallback addObject:item];
+            }
+            return [WQOp ok:fallback];
+        }
+    }
+    NSMutableArray<WQFileItem *> *items = [NSMutableArray arrayWithCapacity:rows.count];
+    for (NSDictionary<NSString *, id> *row in rows) {
+        NSString *name = row[@"name"];
+        if (!name.length) continue;
+        WQFileItem *item = [WQFileItem new];
+        item.name = name;
+        item.path = [path stringByAppendingPathComponent:name];
+        item.isDirectory = [row[@"directory"] boolValue];
+        item.isSymlink = [row[@"symlink"] boolValue];
+        item.size = [row[@"size"] unsignedLongLongValue];
+        item.modified = [row[@"modified"] doubleValue];
+        item.isImmutable = [row[@"immutable"] boolValue];
+        item.posixMode = [row[@"mode"] unsignedIntValue];
+        [items addObject:item];
     }
     [items sortUsingComparator:^NSComparisonResult(id first, id second) {
         WQFileItem *a = (WQFileItem *)first;

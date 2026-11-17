@@ -58,7 +58,8 @@ struct LogsView: View {
             InfoLine(label: "应用版本", value: state.appVersionText)
             InfoLine(label: "系统版本", value: state.systemText)
             InfoLine(label: "设备", value: UIDevice.current.model)
-            InfoLine(label: "共享组", value: state.channel.groupID ?? "没有拿到")
+            InfoLine(label: "访问路线", value: state.channel.routeDetail)
+            InfoLine(label: "共享组", value: state.channel.groupText)
             InfoLine(label: "应用容器", value: "\(state.containers.count) 个")
         }
         .padding(16)

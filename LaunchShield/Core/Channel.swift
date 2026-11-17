@@ -18,6 +18,11 @@ final class Channel {
     var groupID: String? { raw.groupID }
     var unavailableReason: String { raw.unavailableReason }
 
+    /// "bad_query" on iOS 26.0-26.6.1, "worse_query" on newer builds.
+    var routeName: String { raw.routeName }
+    var routeDetail: String { raw.routeDetail }
+    var groupText: String { raw.groupText }
+
     /// 全盘扫描：把界面的答复（开始/先不）递给底层等着的那条线；停止同理。
     func answerFullScan(_ yes: Bool) { raw.answerFullScan(yes) }
     func stopFullScan() { raw.stopFullScan() }
