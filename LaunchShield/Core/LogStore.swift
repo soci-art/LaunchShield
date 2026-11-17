@@ -28,6 +28,13 @@ struct LogLine: Identifiable, Codable {
 final class LogStore: ObservableObject {
     @Published private(set) var lines: [LogLine] = []
 
+    /// 待发布的日志行（只在 queue 上碰）：批量干活时日志逐行狂刷，
+    /// 逐行发布会让界面几秒内被迫重画几百上千次——iOS 27.2 beta 2 上
+    /// 这会把界面合成弄出重影（真机对照实验：清零必犯、扫描日志少就不犯）。
+    /// 改成先攒着、每 0.3 秒合并发布一次；存盘仍逐行立刻写，记录不丢。
+    private var pendingLines: [LogLine] = []
+    private var flushScheduled = false
+
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.sociart.launchshield.log")
     private let formatter: DateFormatter
@@ -49,16 +56,28 @@ final class LogStore: ObservableObject {
 
     func add(_ message: String, level: LogLevel = .info) {
         let line = LogLine(id: UUID(), date: Date(), message: message, level: level)
-        DispatchQueue.main.async {
-            self.lines.append(line)
-            if self.lines.count > 600 {
-                self.lines.removeFirst(self.lines.count - 600)
+        persist(line)
+        queue.async {
+            self.pendingLines.append(line)
+            guard !self.flushScheduled else { return }
+            self.flushScheduled = true
+            self.queue.asyncAfter(deadline: .now() + 0.3) {
+                let batch = self.pendingLines
+                self.pendingLines.removeAll()
+                self.flushScheduled = false
+                guard !batch.isEmpty else { return }
+                DispatchQueue.main.async {
+                    self.lines.append(contentsOf: batch)
+                    if self.lines.count > 600 {
+                        self.lines.removeFirst(self.lines.count - 600)
+                    }
+                }
             }
         }
-        persist(line)
     }
 
     func clear() {
+        queue.async { self.pendingLines.removeAll() }
         DispatchQueue.main.async { self.lines.removeAll() }
         queue.async {
             try? FileManager.default.removeItem(at: self.fileURL)
