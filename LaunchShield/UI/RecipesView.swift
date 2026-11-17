@@ -5,6 +5,7 @@ struct RecipesView: View {
     @State private var expandedApps: Set<String> = []
     @State private var showClearMissing = false
     @State private var showRefreeze = false
+    @State private var appToEndGuard: String?
 
     var body: some View {
         SheetPage("已守护应用") {
@@ -93,6 +94,18 @@ struct RecipesView: View {
         } message: {
             Text("会先备份，再把这些又变大的文件清零并冻结。")
         }
+        .confirmationDialog("结束这个应用的守护？", isPresented: Binding(
+            get: { appToEndGuard != nil },
+            set: { if !$0 { appToEndGuard = nil } }
+        ), titleVisibility: .visible) {
+            Button("结束守护", role: .destructive) {
+                if let bundleID = appToEndGuard { state.endGuard(forApp: bundleID) }
+                appToEndGuard = nil
+            }
+            Button("取消", role: .cancel) { appToEndGuard = nil }
+        } message: {
+            Text("只结束这一个应用：它的条目会从守护列表全部移除，冻结的文件和文件夹都会解冻。文件还是 0 字节，应用自己会重新生成，广告可能再出现。")
+        }
     }
 
     private var missingCount: Int {
@@ -115,39 +128,47 @@ struct RecipesView: View {
         let recurred = group.items.filter { $0.lastState == RecipeState.recurred.rawValue }.count
         let missing = group.items.filter { $0.lastState == RecipeState.missing.rawValue }.count
         return VStack(alignment: .leading, spacing: 10) {
-            Button {
-                if expandedApps.contains(group.bundleID) {
-                    expandedApps.remove(group.bundleID)
-                } else {
-                    expandedApps.insert(group.bundleID)
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: expandedApps.contains(group.bundleID) ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.secondaryText)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(group.name)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color.primaryText)
-                        Text("共 \(group.items.count) 个 · 已冻结 \(frozen) 个" + (recurred > 0 ? " · 复发 \(recurred) 个" : "") + (missing > 0 ? " · 不见了 \(missing) 个" : ""))
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.secondaryText)
-                    }
-                    Spacer()
-                    if recurred > 0 {
-                        StatusBadge(text: "有复发", tint: .orange)
-                    } else if missing == group.items.count {
-                        StatusBadge(text: "文件不见了", tint: .red)
+            HStack(spacing: 10) {
+                Button {
+                    if expandedApps.contains(group.bundleID) {
+                        expandedApps.remove(group.bundleID)
                     } else {
-                        StatusBadge(text: "守护中", tint: .green)
+                        expandedApps.insert(group.bundleID)
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: expandedApps.contains(group.bundleID) ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.secondaryText)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(group.name)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.primaryText)
+                            Text("共 \(group.items.count) 个 · 已冻结 \(frozen) 个" + (recurred > 0 ? " · 复发 \(recurred) 个" : "") + (missing > 0 ? " · 不见了 \(missing) 个" : ""))
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.secondaryText)
+                        }
                     }
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .panel()
+                .buttonStyle(.plain)
+                Spacer()
+                if recurred > 0 {
+                    StatusBadge(text: "有复发", tint: .orange)
+                } else if missing == group.items.count {
+                    StatusBadge(text: "文件不见了", tint: .red)
+                } else {
+                    StatusBadge(text: "守护中", tint: .green)
+                }
+                Button("结束守护") {
+                    appToEndGuard = group.bundleID
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .panel()
             if expandedApps.contains(group.bundleID) {
                 ForEach(group.items) { recipe in
                     card(recipe)

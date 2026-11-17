@@ -4,6 +4,11 @@ import ImageIO
 import AVFoundation
 
 final class AppState: ObservableObject {
+    /// LaunchShield 自己的 Bundle ID：永远排除在扫描/勾选/守护范围之外。
+    /// 备份就存在自己的容器里，扫自己会把存着的别家广告图备份当素材
+    /// 再备份一遍（备份套备份）；自己的容器一律不碰。
+    static let ownBundleID = Bundle.main.bundleIdentifier ?? "com.sociart.launchshield"
+
     let channel = Channel.shared
     let logs = LogStore()
     let store = LibraryStore()
@@ -210,7 +215,13 @@ final class AppState: ObservableObject {
             return
         }
         work.async {
-            let list = self.channel.containers()
+            let all = self.channel.containers()
+            // 把自己从容器列表里拿掉：选择应用、一键勾选、扫描、找广告、
+            // 文件工具、守护补扫的范围全从这份列表来，一处排除处处生效。
+            let list = all.filter { $0.bundleID != AppState.ownBundleID }
+            if list.count != all.count {
+                self.log("已把 LaunchShield 自己排除在处理范围外（不扫自己的容器）", .info)
+            }
             let groups = self.channel.groupContainers()
             DispatchQueue.main.async {
                 self.containers = list
@@ -754,6 +765,24 @@ final class AppState: ObservableObject {
         backups = []
         log("已清空全部备份：\(records.count) 份", .notice)
         alertText = "已清空全部备份：\(records.count) 份。"
+    }
+
+    /// 按应用删除备份：只删这一个应用的全部备份，其他应用的不动。
+    func deleteBackups(forApp bundleID: String) {
+        let records = store.file.backups.filter { $0.bundleID == bundleID }
+        guard !records.isEmpty else {
+            alertText = "这个应用没有备份可以删。"
+            return
+        }
+        for record in records {
+            try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
+        }
+        store.file.backups.removeAll { $0.bundleID == bundleID }
+        store.save()
+        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
+        let name = records.first?.appName ?? bundleID
+        log("已删除 \(name) 的全部备份：\(records.count) 份", .notice)
+        alertText = "已删除 \(name) 的全部备份：\(records.count) 份。"
     }
 
     // MARK: - Before/after diff
@@ -1385,6 +1414,57 @@ final class AppState: ObservableObject {
         store.save()
         log("已清除 \(missing.count) 个「文件不见了」的守护条目", .notice)
         alertText = "已清除 \(missing.count) 个文件不见了的条目。"
+    }
+
+    /// 按应用结束守护：这个应用的条目一次全移除，冻结的文件默认解冻、
+    /// 占位文件夹删掉、广告文件夹也一并解冻（跟移出单个文件的口径一致，
+    /// 不能把文件还冻在原地没人管）。其他应用的守护不动。
+    func endGuard(forApp bundleID: String) {
+        guard requireChannel() else { return }
+        let targets = recipes.filter { $0.bundleID == bundleID }
+        guard !targets.isEmpty else {
+            alertText = "这个应用没有在守护的条目。"
+            return
+        }
+        let name = targets.first?.appName ?? bundleID
+        isBusy = true
+        busyText = "正在结束 \(name) 的守护…"
+        work.async {
+            var unfrozen = 0, dirs = 0, failures = 0
+            if let info = self.channel.container(for: bundleID) {
+                for recipe in targets {
+                    let full = RecipeEngine.fullPath(recipe, container: info.path)
+                    if recipe.frozen {
+                        do {
+                            try self.channel.setImmutable(full, false)
+                            unfrozen += 1
+                        } catch { failures += 1 }
+                    }
+                    if recipe.placeholder {
+                        try? self.channel.delete(full)
+                    }
+                }
+                for relative in self.adDirectoryTree(container: info.path) {
+                    let full = info.path + "/" + relative
+                    guard self.channel.isImmutable(full) else { continue }
+                    do {
+                        try self.channel.setImmutable(full, false)
+                        dirs += 1
+                    } catch { failures += 1 }
+                }
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                self.recipes.removeAll { $0.bundleID == bundleID }
+                self.store.file.recipes = self.recipes
+                self.store.save()
+                self.log("已结束 \(name) 的守护：移除 \(targets.count) 个条目，解冻文件 \(unfrozen) 个、文件夹 \(dirs) 个，失败 \(failures) 个",
+                         failures == 0 ? .success : .warning)
+                self.alertText = "已结束 \(name) 的守护：\(targets.count) 个条目已移除，文件和文件夹都解冻了。文件还是 0 字节，应用自己会重新生成。"
+                self.checkRecipes(silent: true)
+            }
+        }
     }
 
     /// 全部解冻：所有配方文件 + 广告商文件夹一起解，不依赖备份。
