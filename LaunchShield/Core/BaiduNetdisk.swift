@@ -26,12 +26,45 @@ enum BaiduNetdisk {
     static let thirdPartyCacheGroups: [(group: String, directories: [String])] = [
         ("优量汇", ["Library/Caches/default/tencent_gdtimg", "Library/Caches/default/tencent_gdtres",
                     "tmp/gdtMedia",
-                    "Library/tencent_gdtmob", "Library/Caches/GDT"]),
+                    "Library/tencent_gdtmob", "Library/Caches/GDT", "Library/Caches/GDTMEC"]),
         ("穿山甲", ["Library/Caches/com.hackemist.CSJSDImageCache/default",
-                    "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache"]),
-        ("BeiZi", ["Library/Caches/BeiZiMaterial"]),
-        ("美数", ["Library/Caches/MSAdSDK"])
+                    "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache",
+                    "Library/Caches/CSJLottieResources", "Library/Caches/buadsdk",
+                    "Library/com.bytedance.buadsdk.root", "Library/po_csj_dt", "Library/csj_alog"]),
+        ("BeiZi", ["Library/Caches/BeiZiMaterial", "Library/Caches/BeiZiDirectory"]),
+        ("美数", ["Library/Caches/MSAdSDK"]),
+        ("UBIX", ["Library/ubixad"]),
+        ("趣盟", ["Library/Caches/com.qumeng.yykit"]),
+        ("AdMob", ["Library/Caches/AdMob"]),
+        ("其他广告", ["Library/Advertises"])
     ]
+
+    /// 广告商的专属文件夹本身（包括空文件夹和所有子文件夹），相对路径，深的在前。
+    /// 清零后把这些文件夹也冻上，广告商就没法在里面新建文件备货。
+    /// 只含上面各家的专属目录，绝不含公共目录（图片缓存、default、tmp 本身都不在内）。
+    static func freezeDirectories(container: String, channel: Channel) -> [String] {
+        var result: [String] = []
+        for group in thirdPartyCacheGroups {
+            for directory in group.directories {
+                let root = container + "/" + directory
+                guard channel.isDirectory(root) else { continue }
+                result.append(directory)
+                collectSubdirectories(container: container, relative: directory, channel: channel, into: &result)
+            }
+        }
+        let unique = Array(Set(result))
+        // 深的先冻：先冻子文件夹，再冻外层文件夹。
+        return unique.sorted { $0.components(separatedBy: "/").count > $1.components(separatedBy: "/").count }
+    }
+
+    private static func collectSubdirectories(container: String, relative: String, channel: Channel, into: inout [String]) {
+        guard let items = try? channel.children(of: container + "/" + relative) else { return }
+        for item in items where item.isDirectory {
+            let child = relative + "/" + item.name
+            into.append(child)
+            collectSubdirectories(container: container, relative: child, channel: channel, into: &into)
+        }
+    }
 
     // MARK: - Splash derivation
 

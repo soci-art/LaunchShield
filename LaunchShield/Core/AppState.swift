@@ -192,7 +192,9 @@ final class AppState: ObservableObject {
                     self.log("没有读到开屏广告记录，可能广告还没缓存过，或记录文件暂时读不到", .notice)
                 }
                 let groups = Dictionary(grouping: targets, by: { $0.group })
-                for name in ["百度自营", "优量汇", "穿山甲", "BeiZi"] {
+                var groupOrder = ["百度自营"] + BaiduNetdisk.thirdPartyCacheGroups.map { $0.group }
+                for name in groups.keys where !groupOrder.contains(name) { groupOrder.append(name) }
+                for name in groupOrder {
                     guard let list = groups[name], !list.isEmpty else { continue }
                     let small = list.filter { $0.isSmallConfig }.count
                     let suffix = small > 0 ? "，其中清单小文件 \(small) 个" : ""
@@ -285,6 +287,28 @@ final class AppState: ObservableObject {
                 }
             }
 
+            // 文件都清完后，把广告商的专属文件夹本身也冻上（空文件夹也算），
+            // 这样它们连新建文件备货都做不到。文件夹冻结失败只警告，不算清零失败。
+            var frozenDirCount = 0
+            var freezeDirFailureCount = 0
+            if failure == nil, let root = self.channel.containerPath(for: BaiduNetdisk.bundleID) {
+                for relative in BaiduNetdisk.freezeDirectories(container: root, channel: self.channel) {
+                    let full = root + "/" + relative
+                    if self.channel.isImmutable(full) {
+                        frozenDirCount += 1
+                        continue
+                    }
+                    do {
+                        try self.channel.setImmutable(full, true)
+                        frozenDirCount += 1
+                        self.log("已冻结文件夹：\(relative)", .success)
+                    } catch {
+                        freezeDirFailureCount += 1
+                        self.log("冻结文件夹失败：\(relative)：\(error.localizedDescription)", .warning)
+                    }
+                }
+            }
+
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
@@ -312,6 +336,12 @@ final class AppState: ObservableObject {
                     if freezeFailureCount > 0 {
                         self.log("有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
                     }
+                    if frozenDirCount > 0 {
+                        self.log("广告商的文件夹已冻结：\(frozenDirCount) 个", .success)
+                    }
+                    if freezeDirFailureCount > 0 {
+                        self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
+                    }
                     self.banner = frozenCount > 0
                         ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请强退百度网盘再冷启动看看。"
                         : "清零完成：\(done) 个文件已截断为 0 字节。请强退百度网盘再冷启动看看。"
@@ -338,6 +368,16 @@ final class AppState: ObservableObject {
         work.async {
             var restored = 0
             var failure: String?
+            // 文件夹冻着的话先解开，还原才算全套撤销。
+            if let root = self.channel.containerPath(for: BaiduNetdisk.bundleID) {
+                for relative in BaiduNetdisk.freezeDirectories(container: root, channel: self.channel) {
+                    let full = root + "/" + relative
+                    if self.channel.isImmutable(full) {
+                        try? self.channel.setImmutable(full, false)
+                        self.log("已解冻文件夹：\(relative)", .notice)
+                    }
+                }
+            }
             for record in records {
                 do {
                     guard let root = self.channel.containerPath(for: record.bundleID) else {
