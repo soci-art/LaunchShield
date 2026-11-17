@@ -45,36 +45,6 @@ final class AppState: ObservableObject {
     @Published var isBusy = false
     @Published var busyText = ""
     @Published var alertText: String?
-    /// 写文件操作（清零/还原等）完成后，把主窗口短暂隐藏再显示，逼系统
-    /// 把这个窗口的画面拆掉重建：iOS 27.2 beta 2 上写完别的 App 的文件
-    /// 后，系统合成层会把界面画成双份（App 自己的图层树是干净的），
-    /// 切后台、锁屏、下拉通知中心都能治好，靠的都是同一种重建，
-    /// 这里在 App 内模拟。then 在窗口恢复显示后才调用——完成弹窗要
-    /// 等窗口回来再弹。5 秒内重复调用只执行 then、不重复闪窗口。
-    private var lastWindowCycleAt: Date = .distantPast
-    func cycleKeyWindow(_ tag: String, then: (() -> Void)? = nil) {
-        DispatchQueue.main.async {
-            let now = Date()
-            guard now.timeIntervalSince(self.lastWindowCycleAt) > 5 else { then?(); return }
-            self.lastWindowCycleAt = now
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                let scene = UIApplication.shared.connectedScenes
-                    .compactMap { $0 as? UIWindowScene }
-                    .first { $0.activationState == .foregroundActive }
-                guard let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first else {
-                    then?()
-                    return
-                }
-                window.isHidden = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    window.isHidden = false
-                    window.makeKey()
-                    self.log("已重建界面显示（\(tag)）", .info)
-                    then?()
-                }
-            }
-        }
-    }
     @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
@@ -582,10 +552,19 @@ final class AppState: ObservableObject {
             var frozenCount = 0
             var freezeFailureCount = 0
             var failures: [String] = []
+            var skippedDB = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
 
             for targetFile in targets {
+                // 数据库文件被所属应用常驻锁着：写尝试必然失败，还会把
+                // 界面弄出双份（构建 43 定案），直接跳过——不备份、
+                // 不清零、不冻结，也不再反复往备份里堆。
+                if DatabaseFile.matches(relativePath: targetFile.relativePath) {
+                    skippedDB += 1
+                    self.log("跳过数据库文件：\(targetFile.relativePath)", .info)
+                    continue
+                }
                 do {
                     if self.channel.isImmutable(targetFile.path) {
                         try self.channel.setImmutable(targetFile.path, false)
@@ -695,20 +674,21 @@ final class AppState: ObservableObject {
                 if freezeDirFailureCount > 0 {
                     self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
                 }
+                let dbNote = skippedDB > 0
+                    ? "另有 \(skippedDB) 个数据库文件已跳过（被应用占用着、清不动，也不是广告素材）。"
+                    : ""
                 let completionText: String
                 if failures.isEmpty {
-                    completionText = frozenCount > 0
+                    completionText = (frozenCount > 0
                         ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
-                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。"
+                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。") + dbNote
                 } else {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    completionText = "清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。"
+                    completionText = "清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。" + dbNote
                 }
                 self.scanTargets = []
                 self.checkRecipes(silent: true)
-                self.cycleKeyWindow("清零后") {
-                    self.presentCompletionAlert(completionText)
-                }
+                self.presentCompletionAlert(completionText)
             }
         }
     }
@@ -746,6 +726,7 @@ final class AppState: ObservableObject {
         work.async {
             var restored = 0
             var failures: [String] = []
+            var skippedDB = 0
             // 文件夹冻着的话先解开，还原才算全套撤销。
             for owner in Set(records.map { $0.bundleID }) {
                 guard let root = self.channel.containerPath(for: owner) else { continue }
@@ -758,6 +739,12 @@ final class AppState: ObservableObject {
                 }
             }
             for record in records {
+                // 数据库文件同清零：写回必然失败、还会弄坏界面，跳过。
+                if DatabaseFile.matches(relativePath: record.relativePath) {
+                    skippedDB += 1
+                    self.log("跳过数据库文件的还原：\(record.relativePath)", .info)
+                    continue
+                }
                 do {
                     guard let root = self.channel.containerPath(for: record.bundleID) else {
                         throw ChannelFailure("找不到 \(record.appName) 的数据容器")
@@ -773,24 +760,29 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                let dbNote = skippedDB > 0
+                    ? "另有 \(skippedDB) 个数据库文件已跳过（被应用占用着，还原不了）。"
+                    : ""
                 let completionText: String
                 if failures.isEmpty {
                     self.log("还原完成：\(restored) 个文件已写回，MD5 全部一致", .success)
-                    completionText = "还原完成：\(restored) 个文件已写回，MD5 全部一致。"
+                    completionText = "还原完成：\(restored) 个文件已写回，MD5 全部一致。" + dbNote
                 } else {
                     self.log("还原完成：\(restored) 个已写回，\(failures.count) 个没还原成、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    completionText = "还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。"
+                    completionText = "还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。" + dbNote
                 }
                 self.checkRecipes(silent: true)
-                self.cycleKeyWindow("还原后") {
-                    self.presentCompletionAlert(completionText)
-                }
+                self.presentCompletionAlert(completionText)
             }
         }
     }
 
     func restore(_ record: BackupRecord) {
         guard requireChannel() else { return }
+        if DatabaseFile.matches(relativePath: record.relativePath) {
+            alertText = "这是数据库文件，正被应用占用着，还原不了，已跳过。"
+            return
+        }
         guard let root = channel.containerPath(for: record.bundleID) else {
             alertText = "找不到 \(record.appName) 的数据容器。"
             return
@@ -805,9 +797,7 @@ final class AppState: ObservableObject {
                     self.busyText = ""
                     self.log("已还原并核对 MD5：\(record.relativePath)", .success)
                     self.checkRecipes(silent: true)
-                    self.cycleKeyWindow("还原后") {
-                        self.alertText = "已还原：\(record.relativePath)，MD5 一致。"
-                    }
+                    self.alertText = "已还原：\(record.relativePath)，MD5 一致。"
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -975,6 +965,7 @@ final class AppState: ObservableObject {
         work.async {
             var done = 0
             var failure: String?
+            var skippedDB = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
             for candidate in selected {
@@ -988,6 +979,11 @@ final class AppState: ObservableObject {
                 let appBundleID = candidate.bundleID.isEmpty ? self.target.bundleID : candidate.bundleID
                 let appName = candidate.appName.isEmpty ? self.target.name : candidate.appName
                 let full = root + "/" + candidate.relativePath
+                if DatabaseFile.matches(relativePath: candidate.relativePath) {
+                    skippedDB += 1
+                    self.log("跳过数据库文件：\(appName) \(candidate.relativePath)", .info)
+                    continue
+                }
                 do {
                     if self.channel.isImmutable(full) {
                         try self.channel.setImmutable(full, false)
@@ -1031,19 +1027,20 @@ final class AppState: ObservableObject {
                 self.store.save()
                 self.recipes = self.store.file.recipes
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                let dbNote = skippedDB > 0
+                    ? "另有 \(skippedDB) 个数据库文件已跳过（被应用占用着、清不动，也不是广告素材）。"
+                    : ""
                 let completionText: String
                 if let failure {
                     self.log("清零候选没有全部完成，没清成的：\(failure)", .warning)
-                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。"
+                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。" + dbNote
                 } else {
                     self.log("确认的素材已清零：\(done) 个，配方已存入守护列表", .success)
-                    completionText = "已清零 \(done) 个素材，并加入已守护应用。"
+                    completionText = "已清零 \(done) 个素材，并加入已守护应用。" + dbNote
                     self.candidates = []
                     self.selectedCandidatePaths = []
                 }
-                self.cycleKeyWindow("找广告清零后") {
-                    self.alertText = completionText
-                }
+                self.alertText = completionText
             }
         }
     }
@@ -1163,9 +1160,7 @@ final class AppState: ObservableObject {
                 self.busyText = ""
                 self.log("先清缓存：\(info.name) 删掉 \(deleted) 个缓存文件，冻住的跳过 \(skippedFrozen) 个，删不掉的 \(failed) 个", .notice)
                 self.takeSnapshot(before: true)
-                self.cycleKeyWindow("清缓存后") {
-                    self.alertText = "缓存清完了，已顺手拍好第一次快照。现在去打开\(info.name)，让广告播一次，再回来拍第二次快照。"
-                }
+                self.alertText = "缓存清完了，已顺手拍好第一次快照。现在去打开\(info.name)，让广告播一次，再回来拍第二次快照。"
             }
         }
     }
@@ -1308,6 +1303,14 @@ final class AppState: ObservableObject {
         isBusy = true
         busyText = "正在重新清零…"
         work.async {
+            if DatabaseFile.matches(relativePath: recipe.relativePath) {
+                DispatchQueue.main.async {
+                    self.isBusy = false
+                    self.busyText = ""
+                    self.alertText = "这是数据库文件，正被应用占用着，重新清零不了，已跳过。"
+                }
+                return
+            }
             do {
                 let full = RecipeEngine.fullPath(recipe, container: root)
                 if self.channel.isImmutable(full) {
@@ -1328,16 +1331,13 @@ final class AppState: ObservableObject {
                     self.busyText = ""
                     self.log("已重新清零：\(recipe.relativePath)", .success)
                     self.checkRecipes(silent: true)
-                    self.cycleKeyWindow("重新清零后")
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("重新清零失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
-                    self.cycleKeyWindow("重新清零后") {
-                        self.alertText = "重新清零失败：\(error.localizedDescription)"
-                    }
+                    self.alertText = "重新清零失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -1524,6 +1524,7 @@ final class AppState: ObservableObject {
                 guard let root = self.channel.containerPath(for: recipe.bundleID) else { continue }
                 let full = RecipeEngine.fullPath(recipe, container: root)
                 guard let item = self.channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
+                if DatabaseFile.matches(relativePath: recipe.relativePath) { continue }
                 do {
                     if self.channel.isImmutable(full) { try self.channel.setImmutable(full, false) }
                     let record = try self.backupManager.backup(path: full,
@@ -1553,9 +1554,7 @@ final class AppState: ObservableObject {
                     ? "已把 \(done) 个复发文件重新清零并冻结。"
                     : "复发文件都没能处理，详情看日志。"
                 self.checkRecipes(silent: true)
-                self.cycleKeyWindow("复发重冻后") {
-                    self.alertText = completionText
-                }
+                self.alertText = completionText
             }
         }
     }
@@ -1771,6 +1770,7 @@ final class AppState: ObservableObject {
             guard let root = channel.containerPath(for: recipe.bundleID) else { continue }
             let full = RecipeEngine.fullPath(recipe, container: root)
             guard let item = channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
+            if DatabaseFile.matches(relativePath: recipe.relativePath) { continue }
             do {
                 if channel.isImmutable(full) {
                     try channel.setImmutable(full, false)
@@ -1785,7 +1785,6 @@ final class AppState: ObservableObject {
         if truncated > 0 {
             DispatchQueue.main.async {
                 self.checkRecipes(silent: true)
-                self.cycleKeyWindow("值守清零后")
             }
         }
 
@@ -1846,15 +1845,13 @@ final class AppState: ObservableObject {
         } else if cleared > 0 {
             DispatchQueue.main.async { self.checkRecipes(silent: true) }
         }
-        if cleared > 0 {
-            cycleKeyWindow("自动清零后")
-        }
     }
 
     /// 自动清一个文件：先备份（备份失败就跳过、不动原文件），再清零
     /// 冻结，并登记成配方。成功返回 true。
     private func autoClearFile(_ file: TargetFile, source: String,
                                newBackups: inout [BackupRecord], newRecipes: inout [Recipe]) -> Bool {
+        if DatabaseFile.matches(relativePath: file.relativePath) { return false }
         let ownerID = file.bundleID.isEmpty ? BaiduNetdisk.bundleID : file.bundleID
         let ownerName = file.appName.isEmpty ? BaiduNetdisk.displayName : file.appName
         do {
