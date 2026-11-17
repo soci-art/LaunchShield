@@ -5,6 +5,7 @@ struct FindAdView: View {
     @State private var showConfirm = false
     @State private var showFileTools = false
     @State private var showClearCacheConfirm = false
+    @State private var showAutoConfirm = false
 
     var body: some View {
         SheetPage("找广告（前后对比）") {
@@ -50,7 +51,17 @@ struct FindAdView: View {
                  ? "请先完全退出 \(state.target.name)。"
                  : "请先完全退出要处理的应用。")
         }
+        .confirmationDialog("清零自动判定的素材？", isPresented: $showAutoConfirm, titleVisibility: .visible) {
+            Button("先备份，再清零这一组", role: .destructive) {
+                state.selectAutoCandidates()
+                state.clearSelectedCandidates()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("这一组落在广告目录、名字带冷开/开屏，或是新下的大图/视频；应用自己的资源图已经排除。清之前会先备份。")
+        }
     }
+    .appAlert(state)
 
     private var fileToolsCard: some View {
         Button {
@@ -229,8 +240,46 @@ struct FindAdView: View {
         .opacity(state.selectedCandidatePaths.isEmpty ? 0.5 : 1)
     }
 
+    private var autoCandidates: [DiffCandidate] {
+        state.candidates.filter { $0.autoVerdict }
+    }
+
+    private var autoSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.accentCyan)
+                Text("自动判定是广告（\(autoCandidates.count) 个）")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+            }
+            Text("落在广告目录、名字带冷开/开屏，或新下的大图/视频；应用自己的资源图已排除，不用再手选。")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                showAutoConfirm = true
+            } label: {
+                Text("一键清零这一组")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .background(Color.accentCyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cyan.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
     private var candidateSection: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if !autoCandidates.isEmpty {
+                autoSection
+            }
             clearButton
             Button {
                 state.uploadFindings()

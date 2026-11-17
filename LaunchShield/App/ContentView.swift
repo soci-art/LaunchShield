@@ -23,9 +23,6 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 22) {
                         header
                         tutorialEntry
-                        if let banner = state.banner {
-                            BannerCard(text: banner) { state.dismissBanner() }
-                        }
                         targetCard
                         summarySection
                         sourceSection
@@ -48,6 +45,7 @@ struct ContentView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
+        .appAlert(state)
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
         }
@@ -517,6 +515,17 @@ struct ContentView: View {
                     .foregroundStyle(Color.primaryText)
                     .tint(.cyan)
                 Text("别的 App 开画中画把守护挤掉时，发通知提醒你")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("目录自动处理",
+                       isOn: Binding(get: { guardService.dirWatch },
+                                     set: { guardService.dirWatch = $0 }))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.primaryText)
+                    .tint(.cyan)
+                Text("广告目录和冷开目录里一有新文件，守护就自动清零冻结（先备份）")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             }

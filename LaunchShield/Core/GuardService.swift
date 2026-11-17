@@ -31,6 +31,13 @@ final class GuardService: NSObject, ObservableObject {
 
     /// 被挤通知：画中画被别的 App 占掉或被系统收回、守护意外停下时发一条
     /// 本地通知（默认开）。用户自己在界面里关守护不发。
+    /// 目录自动处理：守护盯着已确认的广告目录和冷开广告目录，里面一有
+    /// 新文件就自动清零冻结（先备份）。默认开。
+    var dirWatch: Bool {
+        get { defaults.object(forKey: Keys.dirWatch) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Keys.dirWatch) }
+    }
+
     var squeezeNotify: Bool {
         get { defaults.object(forKey: Keys.squeezeNotify) as? Bool ?? true }
         set {
@@ -50,6 +57,7 @@ final class GuardService: NSObject, ObservableObject {
         static let interruption = "guard.interruption"
         static let silentBoost = "guard.silentBoost"
         static let squeezeNotify = "guard.squeezeNotify"
+        static let dirWatch = "guard.dirWatch"
     }
 
     private let defaults = UserDefaults.standard

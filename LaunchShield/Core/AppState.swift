@@ -39,7 +39,7 @@ final class AppState: ObservableObject {
     @Published var splash: SplashResolution?
     @Published var isBusy = false
     @Published var busyText = ""
-    @Published var banner: String?
+    @Published var alertText: String?
     @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
@@ -169,8 +169,8 @@ final class AppState: ObservableObject {
         checkRecipes()
     }
 
-    func dismissBanner() {
-        banner = nil
+    func dismissAlert() {
+        alertText = nil
     }
 
     func dismissInterruption() {
@@ -316,7 +316,7 @@ final class AppState: ObservableObject {
     func toggleCheckAllUserApps() {
         guard requireChannel() else { return }
         if containers.isEmpty {
-            banner = "应用列表还没读到，稍等一下再点。"
+            alertText = "应用列表还没读到，稍等一下再点。"
             refreshContainers()
             return
         }
@@ -327,7 +327,7 @@ final class AppState: ObservableObject {
             candidates = []
             selectedCandidatePaths = []
             log("一键勾选已取消，回到单个目标", .notice)
-            banner = "已取消一键勾选，现在按单个目标应用处理。"
+            alertText = "已取消一键勾选，现在按单个目标应用处理。"
             return
         }
         let userApps = containers.filter { !$0.isSystem && !$0.isGame }
@@ -339,7 +339,7 @@ final class AppState: ObservableObject {
         selectedCandidatePaths = []
         scanTargets = []
         log("一键勾选：勾上 \(userApps.count) 个应用，跳过游戏 \(games.count) 个", .notice)
-        banner = "已勾选 \(userApps.count) 个应用（游戏除外）。点「扫描」会一起扫，点「全部清零」会一起清。"
+        alertText = "已勾选 \(userApps.count) 个应用（游戏除外）。点「扫描」会一起扫，点「全部清零」会一起清。"
     }
 
     // MARK: - Scan and batch clear
@@ -352,18 +352,18 @@ final class AppState: ObservableObject {
         if !checkedIDs.isEmpty {
             scanSet = checkedContainers
             if scanSet.isEmpty {
-                banner = "勾选的应用一个都没读到容器，先等应用列表出来再扫。"
+                alertText = "勾选的应用一个都没读到容器，先等应用列表出来再扫。"
                 return
             }
         } else if !targetChosen {
-            banner = "先选一个应用，或者点「一键勾选」，再扫描。"
+            alertText = "先选一个应用，或者点「一键勾选」，再扫描。"
             return
         } else if let group = groupContainers.first(where: { $0.bundleID == target.bundleID }) {
             scanSet = [group]
         } else if let info = channel.container(for: target.bundleID) {
             scanSet = [info]
         } else {
-            banner = "没有找到\(target.name)，请先安装并打开一次。"
+            alertText = "没有找到\(target.name)，请先安装并打开一次。"
             log("没有找到\(target.name)的数据容器", .warning)
             return
         }
@@ -507,7 +507,7 @@ final class AppState: ObservableObject {
     private func performClear() {
         guard requireChannel() else { return }
         guard !scanTargets.isEmpty else {
-            banner = "没有可清零的素材，先扫描一次。"
+            alertText = "没有可清零的素材，先扫描一次。"
             return
         }
         let targets = scanTargets
@@ -621,7 +621,7 @@ final class AppState: ObservableObject {
 
                 if let failure {
                     self.log("清零没有全部完成，停在：\(failure)", .warning)
-                    self.banner = "清零没有全部完成，已经停在出问题的文件，详情看日志。"
+                    self.alertText = "清零没有全部完成，已经停在出问题的文件，详情看日志。"
                 } else {
                     self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
                     if frozenCount > 0 {
@@ -636,7 +636,7 @@ final class AppState: ObservableObject {
                     if freezeDirFailureCount > 0 {
                         self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
                     }
-                    self.banner = frozenCount > 0
+                    self.alertText = frozenCount > 0
                         ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
                         : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。"
                     self.scanTargets = []
@@ -652,7 +652,7 @@ final class AppState: ObservableObject {
         guard requireChannel() else { return }
         let records = backupManager.originalBackups()
         guard !records.isEmpty else {
-            banner = "还没有备份可以还原。"
+            alertText = "还没有备份可以还原。"
             return
         }
         isBusy = true
@@ -691,10 +691,10 @@ final class AppState: ObservableObject {
                 self.busyText = ""
                 if let failure {
                     self.log("还原没有全部完成，停在：\(failure)", .warning)
-                    self.banner = "还原没有全部完成，已经停在出问题的文件，详情看日志。"
+                    self.alertText = "还原没有全部完成，已经停在出问题的文件，详情看日志。"
                 } else {
                     self.log("还原完成：\(restored) 个文件已写回，MD5 全部一致", .success)
-                    self.banner = "还原完成：\(restored) 个文件已写回，MD5 全部一致。"
+                    self.alertText = "还原完成：\(restored) 个文件已写回，MD5 全部一致。"
                 }
                 self.checkRecipes(silent: true)
             }
@@ -704,7 +704,7 @@ final class AppState: ObservableObject {
     func restore(_ record: BackupRecord) {
         guard requireChannel() else { return }
         guard let root = channel.containerPath(for: record.bundleID) else {
-            banner = "找不到 \(record.appName) 的数据容器。"
+            alertText = "找不到 \(record.appName) 的数据容器。"
             return
         }
         isBusy = true
@@ -716,7 +716,7 @@ final class AppState: ObservableObject {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("已还原并核对 MD5：\(record.relativePath)", .success)
-                    self.banner = "已还原：\(record.relativePath)，MD5 一致。"
+                    self.alertText = "已还原：\(record.relativePath)，MD5 一致。"
                     self.checkRecipes(silent: true)
                 }
             } catch {
@@ -724,7 +724,7 @@ final class AppState: ObservableObject {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("还原失败：\(error.localizedDescription)", .warning)
-                    self.banner = "还原失败：\(error.localizedDescription)"
+                    self.alertText = "还原失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -736,13 +736,13 @@ final class AppState: ObservableObject {
         store.save()
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
         log("已删除一份备份：\(record.relativePath)", .info)
-        banner = "已删除这份备份。"
+        alertText = "已删除这份备份。"
     }
 
     func deleteAllBackups() {
         let records = store.file.backups
         guard !records.isEmpty else {
-            banner = "还没有备份可以删。"
+            alertText = "还没有备份可以删。"
             return
         }
         for record in records {
@@ -752,7 +752,7 @@ final class AppState: ObservableObject {
         store.save()
         backups = []
         log("已清空全部备份：\(records.count) 份", .notice)
-        banner = "已清空全部备份：\(records.count) 份。"
+        alertText = "已清空全部备份：\(records.count) 份。"
     }
 
     // MARK: - Before/after diff
@@ -761,11 +761,11 @@ final class AppState: ObservableObject {
         guard requireChannel() else { return }
         let scope = findAdScope
         guard !scope.isEmpty else {
-            banner = "先选一个目标应用，或先用一键勾选。"
+            alertText = "先选一个目标应用，或先用一键勾选。"
             return
         }
         if !before && beforeSnapshots.isEmpty {
-            banner = "请先拍第一次快照。"
+            alertText = "请先拍第一次快照。"
             return
         }
         let multi = scope.count > 1
@@ -801,7 +801,7 @@ final class AppState: ObservableObject {
                     self.candidates = []
                     self.selectedCandidatePaths = []
                     self.log("第一次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件", .success)
-                    self.banner = multi
+                    self.alertText = multi
                         ? "现在去打开有广告的应用，让开屏广告播一次，再回来拍第二次快照。"
                         : "现在去打开\(scope[0].name)，让开屏广告播一次，再回来拍第二次快照。"
                 } else {
@@ -819,9 +819,9 @@ final class AppState: ObservableObject {
                         return first.delta > second.delta
                     }
                     self.candidates = Array(all.prefix(400))
-                    self.selectedCandidatePaths = Set(self.candidates.filter { $0.likelyAd }.map { $0.id })
+                    self.selectedCandidatePaths = Set(self.candidates.filter { $0.autoVerdict }.map { $0.id })
                     self.log("第二次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件，\(self.candidates.count) 个候选", .success)
-                    self.banner = self.candidates.isEmpty
+                    self.alertText = self.candidates.isEmpty
                         ? "这次没有发现新文件或变大的文件。可以再让广告播一次试试。"
                         : "请勾选确实是广告素材的文件，再点清零。"
                 }
@@ -832,11 +832,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 找广告「自动判定」一组：把选择换成自动判定的候选，供一键清零用。
+    func selectAutoCandidates() {
+        selectedCandidatePaths = Set(candidates.filter { $0.autoVerdict }.map { $0.id })
+    }
+
     func clearSelectedCandidates() {
         guard requireChannel() else { return }
         let selected = candidates.filter { selectedCandidatePaths.contains($0.id) }
         guard !selected.isEmpty else {
-            banner = "请先勾选要清零的文件。"
+            alertText = "请先勾选要清零的文件。"
             return
         }
         isBusy = true
@@ -902,10 +907,10 @@ final class AppState: ObservableObject {
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 if let failure {
                     self.log("清零候选没有全部完成，停在：\(failure)", .warning)
-                    self.banner = "清零没有全部完成，已经停在出问题的文件，详情看日志。"
+                    self.alertText = "清零没有全部完成，已经停在出问题的文件，详情看日志。"
                 } else {
                     self.log("确认的素材已清零：\(done) 个，配方已存入守护列表", .success)
-                    self.banner = "已清零 \(done) 个素材，并加入已守护应用。"
+                    self.alertText = "已清零 \(done) 个素材，并加入已守护应用。"
                     self.candidates = []
                     self.selectedCandidatePaths = []
                 }
@@ -981,11 +986,11 @@ final class AppState: ObservableObject {
     func clearCacheBeforeSnapshot() {
         guard requireChannel() else { return }
         guard checkedIDs.isEmpty, targetChosen else {
-            banner = "这一步只对单个应用用：先取消一键勾选，只选一个应用。"
+            alertText = "这一步只对单个应用用：先取消一键勾选，只选一个应用。"
             return
         }
         guard let info = containers.first(where: { $0.bundleID == target.bundleID }) ?? channel.container(for: target.bundleID) else {
-            banner = "没找到\(target.name)的容器。"
+            alertText = "没找到\(target.name)的容器。"
             return
         }
         isBusy = true
@@ -1019,7 +1024,7 @@ final class AppState: ObservableObject {
                 self.isBusy = false
                 self.busyText = ""
                 self.log("先清缓存：\(info.name) 删掉 \(deleted) 个缓存文件，冻住的跳过 \(skippedFrozen) 个，删不掉的 \(failed) 个", .notice)
-                self.banner = "缓存清完了，已顺手拍好第一次快照。现在去打开\(info.name)，让广告播一次，再回来拍第二次快照。"
+                self.alertText = "缓存清完了，已顺手拍好第一次快照。现在去打开\(info.name)，让广告播一次，再回来拍第二次快照。"
                 self.takeSnapshot(before: true)
             }
         }
@@ -1057,7 +1062,7 @@ final class AppState: ObservableObject {
     func loadBigFiles() {
         let scope = findAdScope
         guard !scope.isEmpty else {
-            banner = "先选一个目标应用，再看大文件榜。"
+            alertText = "先选一个目标应用，再看大文件榜。"
             return
         }
         fileToolsBusy = true
@@ -1077,7 +1082,7 @@ final class AppState: ObservableObject {
         guard !kw.isEmpty else { return }
         let scope = findAdScope
         guard !scope.isEmpty else {
-            banner = "先选一个目标应用，再搜文件名。"
+            alertText = "先选一个目标应用，再搜文件名。"
             return
         }
         fileToolsBusy = true
@@ -1111,7 +1116,7 @@ final class AppState: ObservableObject {
         }
         saveMarks()
         log("已把 \(files.count) 个文件加进找广告候选（已勾选、已标记为广告）", .success)
-        banner = "已加进找广告候选 \(files.count) 个，回到候选列表确认清零。"
+        alertText = "已加进找广告候选 \(files.count) 个，回到候选列表确认清零。"
     }
 
     // MARK: - Recipes
@@ -1154,7 +1159,7 @@ final class AppState: ObservableObject {
     func replaceRecipe(_ recipe: Recipe) {
         guard requireChannel() else { return }
         guard let root = channel.containerPath(for: recipe.bundleID) else {
-            banner = "找不到 \(recipe.appName) 的数据容器。"
+            alertText = "找不到 \(recipe.appName) 的数据容器。"
             return
         }
         isBusy = true
@@ -1186,7 +1191,7 @@ final class AppState: ObservableObject {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("重新清零失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
-                    self.banner = "重新清零失败：\(error.localizedDescription)"
+                    self.alertText = "重新清零失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -1211,7 +1216,7 @@ final class AppState: ObservableObject {
             } catch {
                 DispatchQueue.main.async {
                     self.log(frozen ? "冻结失败：\(error.localizedDescription)" : "解冻失败：\(error.localizedDescription)", .warning)
-                    self.banner = "改冻结状态失败：\(error.localizedDescription)"
+                    self.alertText = "改冻结状态失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -1275,7 +1280,7 @@ final class AppState: ObservableObject {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("占位操作失败：\(error.localizedDescription)", .warning)
-                    self.banner = "占位操作失败：\(error.localizedDescription)"
+                    self.alertText = "占位操作失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -1313,14 +1318,14 @@ final class AppState: ObservableObject {
     func clearMissingRecipes() {
         let missing = recipes.filter { $0.lastState == RecipeState.missing.rawValue }
         guard !missing.isEmpty else {
-            banner = "没有「文件不见了」的条目要清。"
+            alertText = "没有「文件不见了」的条目要清。"
             return
         }
         recipes.removeAll { $0.lastState == RecipeState.missing.rawValue }
         store.file.recipes = recipes
         store.save()
         log("已清除 \(missing.count) 个「文件不见了」的守护条目", .notice)
-        banner = "已清除 \(missing.count) 个文件不见了的条目。"
+        alertText = "已清除 \(missing.count) 个文件不见了的条目。"
     }
 
     /// 全部解冻：所有配方文件 + 广告商文件夹一起解，不依赖备份。
@@ -1355,7 +1360,7 @@ final class AppState: ObservableObject {
                 self.store.file.recipes = self.recipes
                 self.store.save()
                 self.log("全部解冻完成：文件 \(files) 个、文件夹 \(dirs) 个，失败 \(failures) 个", failures == 0 ? .success : .warning)
-                self.banner = "已全部解冻：文件 \(files) 个、文件夹 \(dirs) 个。文件还是 0 字节，应用自己会重新生成。"
+                self.alertText = "已全部解冻：文件 \(files) 个、文件夹 \(dirs) 个。文件还是 0 字节，应用自己会重新生成。"
                 self.checkRecipes(silent: true)
             }
         }
@@ -1428,12 +1433,12 @@ final class AppState: ObservableObject {
         if enabled {
             guard requireChannel() else { return }
             if let error = guardService.start() {
-                banner = error
+                alertText = error
                 log("守护没有开启：\(error)", .warning)
             } else {
                 guardInterruption = nil
                 log("守护已开启：每 3 秒检查配方大小，每 30 秒比对一次目录", .success)
-                banner = "守护已开启。它靠一个小画中画窗口让系统保持本应用运行，被系统终止后这里会显示中断记录。"
+                alertText = "守护已开启。它靠一个小画中画窗口让系统保持本应用运行，被系统终止后这里会显示中断记录。"
             }
         } else {
             guardService.stop()
@@ -1446,17 +1451,17 @@ final class AppState: ObservableObject {
     func startGuardAndHide() {
         if guardService.isRunning {
             guardService.setPiPHidden(true)
-            banner = "守护窗口已隐藏。"
+            alertText = "守护窗口已隐藏。"
             return
         }
         guard requireChannel() else { return }
         if let error = guardService.start(hidden: true) {
-            banner = error
+            alertText = error
             log("守护没有开启：\(error)", .warning)
         } else {
             guardInterruption = nil
             log("守护已开启并隐藏：每 3 秒检查配方大小，每 30 秒比对一次目录", .success)
-            banner = "守护已开启，窗口已隐藏。被系统终止后这里会显示中断记录。"
+            alertText = "守护已开启，窗口已隐藏。被系统终止后这里会显示中断记录。"
         }
     }
 
@@ -1495,38 +1500,153 @@ final class AppState: ObservableObject {
 
     // MARK: - 目录补扫（守护深查与启动时共用）
 
-    /// 把已知广告目录里新冒出来的非零文件当场清零冻结（不备份，跟值守
-    /// 重新清零一个口径）。范围：有配方的应用＋当前目标＋一键勾选的应用。
-    /// 必须在后台队列调用。
+    /// 目录自动处理：把已知广告目录里新冒出来的非零文件当场备份、清零
+    /// 冻结并存入守护列表；名字带冷开/开屏的新目录也一样自动压。
+    /// 范围：有配方的应用＋当前目标＋一键勾选的应用。守护的「目录自动
+    /// 处理」关掉时不做。必须在后台队列调用。
     private func sweepAdDirectories(reason: String) {
-        guard channel.isAvailable else { return }
+        guard channel.isAvailable, guardService.dirWatch else { return }
         var bundleIDs = Set(recipes.map { $0.bundleID })
         if targetChosen { bundleIDs.insert(target.bundleID) }
         bundleIDs.formUnion(checkedIDs)
         var cleared = 0
+        var newBackups: [BackupRecord] = []
+        var newRecipes: [Recipe] = []
         for bundleID in bundleIDs {
             guard cleared < 300, let info = channel.container(for: bundleID) else { continue }
             let files = BaiduNetdisk.targets(container: info.path, channel: channel, splash: nil,
                                              ownerBundleID: info.bundleID, ownerName: info.name)
             for file in files where file.size > 0 {
                 guard cleared < 300 else { break }
-                do {
-                    if channel.isImmutable(file.path) {
-                        try channel.setImmutable(file.path, false)
-                    }
-                    try channel.truncate(file.path)
-                    try channel.setImmutable(file.path, true)
+                if autoClearFile(file, source: file.group, newBackups: &newBackups, newRecipes: &newRecipes) {
                     cleared += 1
                     log("\(reason)清掉新文件：\(info.name) · \(file.relativePath)", .success)
-                } catch {
-                    log("\(reason)清新文件失败：\(file.relativePath)：\(error.localizedDescription)", .warning)
+                }
+            }
+            cleared += sweepColdLaunchDirs(info: info, cleared: cleared,
+                                           newBackups: &newBackups, newRecipes: &newRecipes)
+        }
+        if cleared > 0 {
+            log("\(reason)：共清掉 \(cleared) 个新冒出来的广告文件，已备份并冻结", .notice)
+        }
+        if !newBackups.isEmpty || !newRecipes.isEmpty {
+            let backupsToAdd = newBackups
+            let recipesToAdd = newRecipes
+            DispatchQueue.main.async {
+                self.store.file.backups.append(contentsOf: backupsToAdd)
+                for recipe in recipesToAdd {
+                    let exists = self.store.file.recipes.contains {
+                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
+                    }
+                    if !exists { self.store.file.recipes.append(recipe) }
+                }
+                self.store.save()
+                self.recipes = self.store.file.recipes
+                self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+            }
+        } else if cleared > 0 {
+            DispatchQueue.main.async { self.checkRecipes(silent: true) }
+        }
+    }
+
+    /// 自动清一个文件：先备份（备份失败就跳过、不动原文件），再清零
+    /// 冻结，并登记成配方。成功返回 true。
+    private func autoClearFile(_ file: TargetFile, source: String,
+                               newBackups: inout [BackupRecord], newRecipes: inout [Recipe]) -> Bool {
+        let ownerID = file.bundleID.isEmpty ? BaiduNetdisk.bundleID : file.bundleID
+        let ownerName = file.appName.isEmpty ? BaiduNetdisk.displayName : file.appName
+        do {
+            if channel.isImmutable(file.path) {
+                try channel.setImmutable(file.path, false)
+            }
+            let record = try backupManager.backup(path: file.path,
+                                                  relativePath: file.relativePath,
+                                                  bundleID: ownerID,
+                                                  appName: ownerName,
+                                                  source: source,
+                                                  channel: channel)
+            newBackups.append(record)
+            try channel.truncate(file.path)
+            try channel.setImmutable(file.path, true)
+            newRecipes.append(Recipe(id: UUID(),
+                                     bundleID: ownerID,
+                                     appName: ownerName,
+                                     relativePath: file.relativePath,
+                                     createdAt: Date(),
+                                     frozen: true,
+                                     placeholder: false,
+                                     lastCheckedAt: Date(),
+                                     lastState: RecipeState.normal.rawValue))
+            return true
+        } catch {
+            log("自动清文件失败：\(file.relativePath)：\(error.localizedDescription)", .warning)
+            return false
+        }
+    }
+
+    /// 冷开目录自动压：在缓存区里找名字带 cold_launch/coldlaunch/splash
+    /// 的目录（系统 SplashBoard 除外），里面的非零文件逐个自动清掉，
+    /// 最后把目录本身也冻上，这一档期的包就回不来。返回清掉的文件数。
+    private func sweepColdLaunchDirs(info: ContainerInfo, cleared: Int,
+                                     newBackups: inout [BackupRecord], newRecipes: inout [Recipe]) -> Int {
+        var count = 0
+        var visited = 0
+        var matched: [String] = []
+        func walk(relative: String, depth: Int) {
+            guard depth <= 5, visited < 3000, cleared + count < 300 else { return }
+            guard let items = try? channel.children(of: info.path + "/" + relative) else { return }
+            for item in items where item.isDirectory {
+                visited += 1
+                let rel = relative.isEmpty ? item.name : relative + "/" + item.name
+                let lower = item.name.lowercased()
+                if lower.contains("cold_launch") || lower.contains("coldlaunch") || lower.contains("splash"),
+                   !rel.lowercased().contains("splashboard") {
+                    matched.append(rel)
+                } else {
+                    walk(relative: rel, depth: depth + 1)
                 }
             }
         }
-        if cleared > 0 {
-            log("\(reason)：共清掉 \(cleared) 个新冒出来的广告文件，已冻结", .notice)
-            DispatchQueue.main.async { self.checkRecipes(silent: true) }
+        for root in ["Library/Caches", "Library/reshub"] {
+            if channel.isDirectory(info.path + "/" + root) {
+                walk(relative: root, depth: 1)
+            }
         }
+        for dir in matched {
+            guard cleared + count < 300 else { break }
+            var dirCleared = 0
+            var stack: [(path: String, relative: String)] = [(info.path + "/" + dir, dir)]
+            var subdirs: [String] = []
+            var fileBudget = 0
+            while let current = stack.popLast() {
+                guard let items = try? channel.children(of: current.path) else { continue }
+                for item in items {
+                    let rel = current.relative + "/" + item.name
+                    if item.isDirectory {
+                        subdirs.append(item.path)
+                        stack.append((path: item.path, relative: rel))
+                    } else if item.size > 0, fileBudget < 300, cleared + count < 300 {
+                        fileBudget += 1
+                        let file = TargetFile(path: item.path, relativePath: rel, group: "冷开广告",
+                                              note: "目录名命中冷开/开屏，守护自动压",
+                                              size: item.size, isSmallConfig: false,
+                                              bundleID: info.bundleID, appName: info.name)
+                        if autoClearFile(file, source: "冷开广告", newBackups: &newBackups, newRecipes: &newRecipes) {
+                            dirCleared += 1
+                            count += 1
+                        }
+                    }
+                }
+            }
+            for sub in subdirs.sorted(by: { $0.count > $1.count }) {
+                try? channel.setImmutable(sub, true)
+            }
+            try? channel.setImmutable(info.path + "/" + dir, true)
+            if dirCleared > 0 {
+                log("自动压：\(info.name) 冷开广告目录 \(dir) 清了 \(dirCleared) 个文件", .success)
+            }
+        }
+        return count
     }
 
     // MARK: - 上传与更新
@@ -1537,7 +1657,7 @@ final class AppState: ObservableObject {
         CollectUploader.upload(kind: "log", contentType: "text/plain; charset=utf-8", body: Data(text.utf8)) { [weak self] ok, message in
             guard let self = self else { return }
             self.log(ok ? "日志已上传" : "日志上传失败：\(message)", ok ? .success : .warning)
-            self.banner = ok ? "日志已上传。" : "日志上传失败：\(message)"
+            self.alertText = ok ? "日志已上传。" : "日志上传失败：\(message)"
         }
     }
 
@@ -1615,7 +1735,7 @@ final class AppState: ObservableObject {
     /// 配置结构 + 用户手动标记 +「清完还出广告」反馈。
     func uploadRecognition(stillSeesAds: Bool) {
         guard !lastRecognition.isEmpty else {
-            banner = "先点一次「扫描」，有了识别结果才能上传。"
+            alertText = "先点一次「扫描」，有了识别结果才能上传。"
             return
         }
         let base = lastRecognition
@@ -1662,10 +1782,10 @@ final class AppState: ObservableObject {
                     guard let self = self else { return }
                     if ok {
                         self.log(stillSeesAds ? "已反馈：清完还出广告（附识别数据 v2）" : "识别数据已上传（v2）", .success)
-                        self.banner = stillSeesAds ? "已反馈，我们会照着这份数据找漏掉的广告商。" : "识别数据已上传，谢谢帮忙攒指纹库。"
+                        self.alertText = stillSeesAds ? "已反馈，我们会照着这份数据找漏掉的广告商。" : "识别数据已上传，谢谢帮忙攒指纹库。"
                     } else {
                         self.log("识别数据上传失败：\(message)", .warning)
-                        self.banner = "上传失败：\(message)"
+                        self.alertText = "上传失败：\(message)"
                     }
                 }
             }
@@ -1676,7 +1796,7 @@ final class AppState: ObservableObject {
     /// 和识别数据一起攒规则素材。
     func uploadFindings() {
         guard !candidates.isEmpty else {
-            banner = "还没有找广告结果可上传，先拍两次快照比一比。"
+            alertText = "还没有找广告结果可上传，先拍两次快照比一比。"
             return
         }
         let payload: [String: Any] = [
@@ -1702,7 +1822,7 @@ final class AppState: ObservableObject {
         CollectUploader.upload(kind: "findad", contentType: "application/json", body: data) { [weak self] ok, message in
             guard let self = self else { return }
             self.log(ok ? "找广告结果已上传" : "找广告结果上传失败：\(message)", ok ? .success : .warning)
-            self.banner = ok ? "这次找广告的结果已上传。" : "上传失败：\(message)"
+            self.alertText = ok ? "这次找广告的结果已上传。" : "上传失败：\(message)"
         }
     }
 
@@ -1714,7 +1834,7 @@ final class AppState: ObservableObject {
             guard let self else { return }
             self.rulesStatus = message
             self.log(message, ok ? .success : .warning)
-            if ok { self.banner = message }
+            if ok { self.alertText = message }
         }
     }
 
@@ -1726,21 +1846,21 @@ final class AppState: ObservableObject {
             guard let self = self else { return }
             guard let info else {
                 self.updateStatus = "检查失败"
-                self.banner = "检测更新失败：\(message)"
+                self.alertText = "检测更新失败：\(message)"
                 return
             }
             do {
                 let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
                 if info.version == "0.0.0" {
                     self.updateStatus = "还没有正式版"
-                    self.banner = "还没有发布过正式版，你现在用的就是最新的测试版。"
+                    self.alertText = "还没有发布过正式版，你现在用的就是最新的测试版。"
                 } else if Self.isVersion(info.version, newerThan: current) {
                     self.updateStatus = "有新版本 \(info.version)"
                     self.availableVersion = info.version
-                    self.banner = "正式版有新版本：\(info.version)。\(info.notes)"
+                    self.alertText = "正式版有新版本：\(info.version)。\(info.notes)"
                 } else {
                     self.updateStatus = "已是最新"
-                    self.banner = "已经是最新版本（\(current)）。"
+                    self.alertText = "已经是最新版本（\(current)）。"
                 }
                 self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
             }
@@ -1760,10 +1880,10 @@ final class AppState: ObservableObject {
                 self.downloadedIPA = url
                 self.updateStatus = "已下载，去签名"
                 self.log("新版安装包已下载：\(url.lastPathComponent)", .success)
-                self.banner = "新版已经下载好了，点「分享」把它存下来，再用签名工具导入安装。"
+                self.alertText = "新版已经下载好了，点「分享」把它存下来，再用签名工具导入安装。"
             } else {
                 self.log("下载新版失败：\(message)", .warning)
-                self.banner = "下载失败：\(message)"
+                self.alertText = "下载失败：\(message)"
             }
         })
     }
@@ -1803,7 +1923,7 @@ final class AppState: ObservableObject {
     @discardableResult
     private func requireChannel() -> Bool {
         if channel.isAvailable { return true }
-        banner = channel.unavailableReason
+        alertText = channel.unavailableReason
         log(channel.unavailableReason, .warning)
         return false
     }

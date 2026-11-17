@@ -123,6 +123,30 @@ struct DiffCandidate: Identifiable, Hashable {
         if RulesStore.keywords.contains(where: { path.contains($0) }) { return true }
         return isNew && kind != .other
     }
+
+    /// 强判定（自动判定组）：落在已知广告目录里、名字带冷开/开屏，
+    /// 或者新下的大图/视频。应用自己的资源目录（解包资源、颜色表、
+    /// 系统开屏缓存）一律排除——构建 13 实测它们会被「新增图片」
+    /// 误勾，这里不让它们进自动组。
+    var autoVerdict: Bool {
+        let lower = relativePath.lowercased()
+        if lower.contains("extracted_dirs/") || lower.contains("monet_res/")
+            || lower.contains("splashboard") {
+            return false
+        }
+        for group in RulesStore.groups {
+            for directory in group.directories {
+                let dir = directory.lowercased()
+                if lower == dir || lower.hasPrefix(dir + "/") { return true }
+            }
+        }
+        if lower.contains("cold_launch") || lower.contains("coldlaunch")
+            || lower.contains("splash") {
+            return true
+        }
+        if isNew, kind == .image || kind == .video, size >= 30_000 { return true }
+        return false
+    }
 }
 
 struct BackupRecord: Codable, Identifiable, Hashable {

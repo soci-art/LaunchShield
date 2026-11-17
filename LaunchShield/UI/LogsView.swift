@@ -51,6 +51,7 @@ struct LogsView: View {
             Button("取消", role: .cancel) { }
         }
     }
+    .appAlert(state)
 
     private var diagnostics: some View {
         VStack(alignment: .leading, spacing: 10) {

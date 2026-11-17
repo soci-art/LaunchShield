@@ -75,6 +75,7 @@ struct BackupsView: View {
             Text("删了之后，这条素材就没有备份了，之后想还原也还原不了。")
         }
     }
+    .appAlert(state)
 
     /// 按应用归并：一个应用一行（带份数），点开才看单个文件。
     private var appGroups: [(bundleID: String, name: String, records: [BackupRecord])] {

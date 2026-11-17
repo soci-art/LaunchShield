@@ -92,7 +92,23 @@ final class LogStore: ObservableObject {
             } else {
                 try? data.write(to: self.fileURL)
             }
+            self.trimIfNeeded()
         }
+    }
+
+    /// 存盘日志封顶：文件涨过 3 MB 就只留最后约 2 MB（从整行处切），
+    /// 老的自动丢掉，免得涨过收集箱单份 5 MB 的上传上限。
+    private func trimIfNeeded() {
+        let maxBytes = 3_000_000
+        let keepBytes = 2_000_000
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.size] as? Int,
+              size > maxBytes,
+              let data = try? Data(contentsOf: fileURL), data.count > keepBytes else { return }
+        var tail = data.suffix(keepBytes)
+        if let newline = tail.firstIndex(of: UInt8(ascii: "\n")), newline + 1 < tail.count {
+            tail = tail.suffix(from: newline + 1)
+        }
+        try? Data(tail).write(to: fileURL, options: .atomic)
     }
 
     private func loadTail() {

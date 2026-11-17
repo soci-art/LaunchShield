@@ -128,30 +128,18 @@ struct SummaryTile: View {
     }
 }
 
-struct BannerCard: View {
-    let text: String
-    let onClose: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.accentCyan)
-                .padding(.top, 1)
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundStyle(Color.primaryText.opacity(0.9))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            .buttonStyle(.plain)
+extension View {
+    /// 全局提示弹窗：原来顶部横幅条的文字现在都在原地用弹窗提醒。
+    /// 主页和各个子页面各挂一份，哪个页面在前面就由哪个弹。
+    func appAlert(_ state: AppState) -> some View {
+        alert("提醒", isPresented: Binding(
+            get: { state.alertText != nil },
+            set: { if !$0 { state.alertText = nil } }
+        )) {
+            Button("好") { state.alertText = nil }
+        } message: {
+            Text(state.alertText ?? "")
         }
-        .padding(14)
-        .panel(radius: 16)
     }
 }
 

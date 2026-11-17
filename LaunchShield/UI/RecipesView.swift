@@ -68,6 +68,7 @@ struct RecipesView: View {
             Text("这些文件已经不在了，清掉只是把名单删干净，守护不再白查它们。")
         }
     }
+    .appAlert(state)
 
     private var missingCount: Int {
         state.recipes.filter { $0.lastState == RecipeState.missing.rawValue }.count
