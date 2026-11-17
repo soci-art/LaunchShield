@@ -98,6 +98,45 @@ struct FoundFile: Identifiable, Hashable {
     var id: String { path }
     var sizeText: String { Format.bytes(size) }
     var fileName: String { (relativePath as NSString).lastPathComponent }
+
+    /// 给普通用户看的人话判断：这文件像不像广告。
+    /// 顺序：先认广告（规则目录/关键词/开屏命名），再认图片视频，
+    /// 再认应用自己的东西（模型、日志、数据库、系统缓存），剩下算未知。
+    var verdict: FileVerdict {
+        let lower = relativePath.lowercased()
+        for group in RulesStore.groups {
+            for directory in group.directories {
+                let dir = directory.lowercased()
+                if lower == dir || lower.hasPrefix(dir + "/") { return .ad }
+            }
+        }
+        if RulesStore.keywords.contains(where: { lower.contains($0) }) { return .ad }
+        if lower.contains("cold_launch") || lower.contains("splash") { return .ad }
+        let kind = FileKind.of(relativePath)
+        if kind == .image || kind == .video { return .media }
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        if ["blm", "mnn", "dyld4", "dyld", "blog", "log", "db", "sqlite", "sqlite3",
+            "plist", "bin", "dat", "tflite", "onnx", "model"].contains(ext) { return .appInternal }
+        if lower.contains("modmgr") || lower.contains("com.apple.dyld")
+            || lower.contains("splashboard") || lower.contains("/logs") { return .appInternal }
+        return .unknown
+    }
+}
+
+enum FileVerdict {
+    case ad
+    case media
+    case appInternal
+    case unknown
+
+    var label: String {
+        switch self {
+        case .ad: return "疑似广告"
+        case .media: return "图片/视频"
+        case .appInternal: return "应用文件"
+        case .unknown: return "未知"
+        }
+    }
 }
 
 struct DiffCandidate: Identifiable, Hashable {

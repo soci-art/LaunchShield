@@ -973,7 +973,7 @@ final class AppState: ObservableObject {
                 if item.isDirectory { walk(dir: item.path) } else { consider(item: item) }
             }
         }
-        for root in ["Library", "tmp"] {
+        for root in ["Library", "tmp", "Documents"] {
             walk(dir: container + "/" + root)
         }
         return results
@@ -1138,6 +1138,9 @@ final class AppState: ObservableObject {
                 }
                 let status = RecipeEngine.status(updated[index], container: container, channel: self.channel)
                 updated[index].lastState = status.state.rawValue
+                // 冻结标记按磁盘真实状态回写：以前建记录时写了 false 就再没更新，
+                // 「已冻结 N 个」的计数因此一直是 0，其实文件冻得好好的。
+                updated[index].frozen = status.state == .frozen
                 switch status.state {
                 case .normal, .frozen: normal += 1
                 case .recurred: recurred += 1
@@ -1315,6 +1318,59 @@ final class AppState: ObservableObject {
 
     /// 清除功能：一键清掉所有「文件不见了」的守护条目。
     /// 文件本身已经没了，只删名单，守护也就不再白查它们。
+    /// 一键冻结已复发文件：把所有又变大的配方文件重新备份、清零、冻结。
+    /// 光冻不清空等于把广告内容锁在里面，所以顺序是先备份、清零、再冻。
+    func refreezeRelapsed() {
+        guard requireChannel() else { return }
+        let targets = recipes.filter {
+            $0.lastState == RecipeState.recurred.rawValue && !$0.placeholder
+        }
+        guard !targets.isEmpty else {
+            alertText = "现在没有已复发的文件。"
+            return
+        }
+        isBusy = true
+        busyText = "正在重新冻结已复发的文件…"
+        work.async {
+            var done = 0
+            var newBackups: [BackupRecord] = []
+            for recipe in targets {
+                guard let root = self.channel.containerPath(for: recipe.bundleID) else { continue }
+                let full = RecipeEngine.fullPath(recipe, container: root)
+                guard let item = self.channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
+                do {
+                    if self.channel.isImmutable(full) { try self.channel.setImmutable(full, false) }
+                    let record = try self.backupManager.backup(path: full,
+                                                                relativePath: recipe.relativePath,
+                                                                bundleID: recipe.bundleID,
+                                                                appName: recipe.appName,
+                                                                source: "复发重冻",
+                                                                channel: self.channel)
+                    newBackups.append(record)
+                    try self.channel.truncate(full)
+                    try self.channel.setImmutable(full, true)
+                    done += 1
+                    self.log("已重新冻结复发文件：\(recipe.appName) · \(recipe.relativePath)", .success)
+                } catch {
+                    self.log("重新冻结失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
+                }
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                if !newBackups.isEmpty {
+                    self.store.file.backups.append(contentsOf: newBackups)
+                    self.store.save()
+                    self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                }
+                self.alertText = done > 0
+                    ? "已把 \(done) 个复发文件重新清零并冻结。"
+                    : "复发文件都没能处理，详情看日志。"
+                self.checkRecipes(silent: true)
+            }
+        }
+    }
+
     func clearMissingRecipes() {
         let missing = recipes.filter { $0.lastState == RecipeState.missing.rawValue }
         guard !missing.isEmpty else {
@@ -1607,7 +1663,7 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        for root in ["Library/Caches", "Library/reshub"] {
+        for root in ["Library/Caches", "Library/reshub", "Documents"] {
             if channel.isDirectory(info.path + "/" + root) {
                 walk(relative: root, depth: 1)
             }

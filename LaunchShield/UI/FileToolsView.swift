@@ -11,9 +11,29 @@ struct FileToolsView: View {
     @State private var mode = 0
     @State private var keyword = ""
     @State private var selectedPaths: Set<String> = []
+    @State private var mediaOnly = true
 
     private var currentList: [FoundFile] {
         mode == 0 ? state.bigFiles : state.fileSearchResults
+    }
+
+    /// 实际展示的列表：默认只列图片/视频和疑似广告（普通用户能判断的就这些），
+    /// 疑似广告排最前面，其余按大小排。
+    private var displayList: [FoundFile] {
+        var list = currentList
+        if mediaOnly {
+            list = list.filter { $0.verdict == .ad || $0.verdict == .media }
+        }
+        return list.sorted { a, b in
+            let aAd = a.verdict == .ad
+            let bAd = b.verdict == .ad
+            if aAd != bAd { return aAd }
+            return a.size > b.size
+        }
+    }
+
+    private var suspectCount: Int {
+        displayList.filter { $0.verdict == .ad }.count
     }
     private var selectedFiles: [FoundFile] {
         currentList.filter { selectedPaths.contains($0.path) }
@@ -88,12 +108,31 @@ struct FileToolsView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Color.secondaryText)
                 } else {
-                    Text("共 \(currentList.count) 个，点行勾选。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.secondaryText)
+                    Toggle(isOn: $mediaOnly) {
+                        Text("只看图片、视频和疑似广告")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.primaryText)
+                    }
+                    .tint(Color.accentCyan)
+                    HStack(spacing: 10) {
+                        Text("共 \(displayList.count) 个，点行勾选。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.secondaryText)
+                        Spacer()
+                        if suspectCount > 0 {
+                            Button {
+                                selectedPaths.formUnion(displayList.filter { $0.verdict == .ad }.map { $0.path })
+                            } label: {
+                                Text("一键选择疑似广告（\(suspectCount)）")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.orange)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(currentList) { file in
+                            ForEach(displayList) { file in
                                 Button {
                                     if selectedPaths.contains(file.path) {
                                         selectedPaths.remove(file.path)
@@ -104,7 +143,7 @@ struct FileToolsView: View {
                                     row(file)
                                 }
                                 .buttonStyle(.plain)
-                                if file.id != currentList.last?.id {
+                                if file.id != displayList.last?.id {
                                     Divider()
                                         .overlay(Color.primaryText.opacity(0.06))
                                         .padding(.leading, 46)
@@ -147,10 +186,18 @@ struct FileToolsView: View {
                 .font(.system(size: 17))
                 .foregroundStyle(selected ? Color.accentCyan : Color.secondaryText)
             VStack(alignment: .leading, spacing: 3) {
-                Text(file.fileName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.primaryText)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(file.fileName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.primaryText)
+                        .lineLimit(1)
+                    Text(file.verdict.label)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(verdictColor(file.verdict))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(verdictColor(file.verdict).opacity(0.12), in: Capsule())
+                }
                 Text("\(file.appName) · \(file.relativePath)")
                     .font(.system(size: 9))
                     .foregroundStyle(Color.secondaryText)
@@ -163,5 +210,13 @@ struct FileToolsView: View {
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())
+    }
+
+    private func verdictColor(_ verdict: FileVerdict) -> Color {
+        switch verdict {
+        case .ad: return .orange
+        case .media: return Color.accentCyan
+        case .appInternal, .unknown: return Color.secondaryText
+        }
     }
 }
