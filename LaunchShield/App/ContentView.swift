@@ -499,7 +499,7 @@ struct ContentView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Color.primaryText)
                     Spacer()
-                    Text(guardService.pipDisplayHeight <= 0.15 ? "0.1 pt（已隐藏）" : "\(Int(guardService.pipDisplayHeight)) pt")
+                    Text(guardService.pipDisplayHeight <= 0.15 ? "0.1 pt（已隐藏）" : (guardService.pipDisplayHeight < 10 ? String(format: "%.1f pt", guardService.pipDisplayHeight) : "\(Int(guardService.pipDisplayHeight)) pt"))
                         .font(.system(size: 11))
                         .foregroundStyle(Color.secondaryText)
                 }

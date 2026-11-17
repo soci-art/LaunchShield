@@ -69,10 +69,10 @@ final class GuardService: NSObject, ObservableObject {
     var pipHeight: Double {
         get {
             let stored = defaults.object(forKey: Keys.pipHeight) as? Double ?? 160
-            return min(max(stored, 40), 240)
+            return min(max(stored, 0.1), 240)
         }
         set {
-            defaults.set(min(max(newValue, 40), 240), forKey: Keys.pipHeight)
+            defaults.set(min(max(newValue, 0.1), 240), forKey: Keys.pipHeight)
             objectWillChange.send()
         }
     }
