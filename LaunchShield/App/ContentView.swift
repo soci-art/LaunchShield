@@ -6,12 +6,14 @@ struct ContentView: View {
     @ObservedObject private var guardService = GuardService.shared
 
     @State private var showAppPicker = false
+    @State private var showTutorial = false
     @State private var showFindAd = false
     @State private var showRecipes = false
     @State private var showBackups = false
     @State private var showLogs = false
     @State private var showClearConfirm = false
     @State private var showRestoreConfirm = false
+    @State private var ipaShareItem: ShareItem?
 
     var body: some View {
         NavigationStack {
@@ -20,6 +22,7 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
+                        tutorialEntry
                         if let banner = state.banner {
                             BannerCard(text: banner) { state.dismissBanner() }
                         }
@@ -48,6 +51,9 @@ struct ContentView: View {
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
         }
+        .sheet(isPresented: $showTutorial) {
+            TutorialView()
+        }
         .sheet(isPresented: $showFindAd) {
             FindAdView().environmentObject(state)
         }
@@ -59,6 +65,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showLogs) {
             LogsView().environmentObject(state)
+        }
+        .sheet(item: $ipaShareItem) { item in
+            ShareSheet(items: [item.url])
         }
         .confirmationDialog("确定要清零这些素材吗？", isPresented: $showClearConfirm, titleVisibility: .visible) {
             Button("先备份，再全部清零", role: .destructive) {
@@ -118,6 +127,37 @@ struct ContentView: View {
                     .clipShape(Circle())
             }
         }
+    }
+
+    // MARK: - Tutorial entry
+
+    private var tutorialEntry: some View {
+        Button {
+            showTutorial = true
+        } label: {
+            HStack(spacing: 10) {
+                Text("📖")
+                    .font(.system(size: 16))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("使用教程")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                    Text("第一次用，先看这里")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Color.accentCyan.opacity(0.09),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Target
@@ -217,7 +257,7 @@ struct ContentView: View {
                     state.scanBaidu()
                 } label: {
                     Label("扫描", systemImage: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.accentCyan)
                 }
                 .buttonStyle(.plain)
@@ -249,6 +289,19 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 Spacer()
+                Button {
+                    state.updateRules()
+                } label: {
+                    Label("更新规则", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+            }
+            if !state.rulesStatus.isEmpty {
+                Text(state.rulesStatus)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
             }
         }
     }
@@ -405,16 +458,44 @@ struct ContentView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(Color.secondaryText)
             }
-            Text("靠一个小画中画窗口让系统保持本应用运行。值守每 3 秒看一次配方文件大小，每 30 秒深查一次目录：广告目录里冒出新文件会自动清零冻结。进程被系统杀掉或画中画被关掉后就会停，需要你回来手动再开，不会承诺永久守护。")
-                .font(.system(size: 11))
+            Button {
+                state.startGuardAndHide()
+            } label: {
+                Label("一键开启并隐藏", systemImage: "eye.slash")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(Color.accentCyan.opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            Text("靠一个小画中画窗口保持运行，自动盯着广告文件，有新的就清零冻结。")
+                .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            Toggle("锁屏后用静音音频补强（默认关，打开会增加电耗）",
-                   isOn: Binding(get: { guardService.silentBoost },
-                                 set: { guardService.silentBoost = $0 }))
-                .font(.system(size: 11))
-                .foregroundStyle(Color.secondaryText)
-                .tint(.cyan)
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("静音音频补强（默认关，打开会增加电耗）",
+                       isOn: Binding(get: { guardService.silentBoost },
+                                     set: { guardService.silentBoost = $0 }))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.primaryText)
+                    .tint(.cyan)
+                Text("打开后锁屏了守护也不容易断，更稳；代价是更耗电。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("被挤通知",
+                       isOn: Binding(get: { guardService.squeezeNotify },
+                                     set: { guardService.squeezeNotify = $0 }))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.primaryText)
+                    .tint(.cyan)
+                Text("别的 App 开画中画把守护挤掉时，发通知提醒你")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
             if let when = state.guardInterruption {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -446,7 +527,7 @@ struct ContentView: View {
                     showRecipes = true
                 } label: {
                     Text("全部")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(Color.accentCyan)
                 }
                 .buttonStyle(.plain)
@@ -508,7 +589,7 @@ struct ContentView: View {
                     showLogs = true
                 } label: {
                     Text("全部")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(Color.accentCyan)
                 }
                 .buttonStyle(.plain)
@@ -518,26 +599,54 @@ struct ContentView: View {
     }
 
     private var updateSection: some View {
-        HStack {
-            Label("应用更新", systemImage: "arrow.down.circle")
-                .font(.system(size: 13, weight: .semibold))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("应用更新", systemImage: "arrow.down.circle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                Button {
+                    state.checkForUpdate()
+                } label: {
+                    Text("检测更新")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+            }
+            Text(state.updateStatus.isEmpty ? "当前版本 \(state.appVersionText)" : state.updateStatus)
+                .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
-            Spacer()
-            if !state.updateStatus.isEmpty {
-                Text(state.updateStatus)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
+            if let progress = state.downloadProgress {
+                VStack(alignment: .leading, spacing: 5) {
+                    ProgressView(value: progress)
+                        .tint(Color.accentCyan)
+                    Text("正在下载新版… \(Int(progress * 100))%")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            } else if let url = state.downloadedIPA {
+                Button {
+                    ipaShareItem = ShareItem(url: url)
+                } label: {
+                    Label("分享安装包（拿去签名）", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+            } else if state.availableVersion != nil {
+                Button {
+                    state.downloadUpdate()
+                } label: {
+                    Label("下载新版", systemImage: "arrow.down.to.line")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
             }
-            Button {
-                state.checkForUpdate()
-            } label: {
-                Text("检测更新")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.accentCyan)
-            }
-            .buttonStyle(.plain)
         }
-        .padding(16)
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .panel()
     }
 

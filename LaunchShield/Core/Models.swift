@@ -104,9 +104,7 @@ struct DiffCandidate: Identifiable, Hashable {
     /// SDK's territory, or it is a brand-new image/video.
     var likelyAd: Bool {
         let path = relativePath.lowercased()
-        let markers = ["csj", "gdt", "beizi", "msadsdk", "ubix", "qumeng",
-                       "admob", "advertise", "splash", "buadsdk", "pangolin"]
-        if markers.contains(where: { path.contains($0) }) { return true }
+        if RulesStore.keywords.contains(where: { path.contains($0) }) { return true }
         return isNew && kind != .other
     }
 }

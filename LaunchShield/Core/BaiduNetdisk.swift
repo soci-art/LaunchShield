@@ -23,23 +23,11 @@ enum BaiduNetdisk {
     static let splashCacheRoot = "Library/Caches/com.hackemist.SDImageCache/default"
     static let splashKeyPrefix = "kBDNCSplashLastAdsFormat_"
 
-    static let thirdPartyCacheGroups: [(group: String, directories: [String])] = [
-        ("优量汇", ["Library/Caches/default/tencent_gdtimg", "Library/Caches/default/tencent_gdtres",
-                    "tmp/gdtMedia",
-                    "Library/tencent_gdtmob", "Library/Caches/GDT", "Library/Caches/GDTMEC"]),
-        ("穿山甲", ["Library/Caches/com.hackemist.CSJSDImageCache/default",
-                    "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache",
-                    "Library/Caches/CSJLottieResources", "Library/Caches/buadsdk",
-                    "Library/com.bytedance.buadsdk.root", "Library/po_csj_dt", "Library/csj_alog",
-                    "Library/Caches/com.csj.plist.v4"]),
-        ("BeiZi", ["Library/Caches/BeiZiMaterial", "Library/Caches/BeiZiDirectory",
-                    "Library/Caches/beizi_cookie_sql"]),
-        ("美数", ["Library/Caches/MSAdSDK"]),
-        ("UBIX", ["Library/ubixad"]),
-        ("趣盟", ["Library/Caches/com.qumeng.yykit"]),
-        ("AdMob", ["Library/Caches/AdMob", "Library/Application Support/GoogleMobileAds"]),
-        ("其他广告", ["Library/Advertises"])
-    ]
+    /// 分组名单改由 RulesStore 提供：内置保底一份，用户点「更新规则」
+    /// 下载到新名单后，这里自动跟着换。
+    static var thirdPartyCacheGroups: [(group: String, directories: [String])] {
+        RulesStore.groups
+    }
 
     /// 广告商的专属文件夹本身（包括空文件夹和所有子文件夹），相对路径，深的在前。
     /// 清零后把这些文件夹也冻上，广告商就没法在里面新建文件备货。

@@ -19,6 +19,10 @@ final class AppState: ObservableObject {
     /// 最近一次扫描的识别数据（供上传攒指纹库用）。
     @Published var lastRecognition: [AppRecognition] = []
     @Published var updateStatus = ""
+    @Published var rulesStatus = ""
+    @Published var availableVersion: String?
+    @Published var downloadProgress: Double?
+    @Published var downloadedIPA: URL?
     @Published var recipes: [Recipe] = []
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
@@ -98,6 +102,7 @@ final class AppState: ObservableObject {
             guard let self = self else { return }
             self.guardTick(deep: deep)
         }
+        firstLaunchChecks()
         // 通道发现放到后台：界面先出来，就绪后再补上容器、配方复查和启动补扫。
         work.async {
             let ok = self.channel.isAvailable
@@ -117,6 +122,22 @@ final class AppState: ObservableObject {
                 }
                 self.checkRecipes(silent: true)
             }
+        }
+    }
+
+    /// 首次打开检查权限：通知（被挤通知要用）当场请一次；联网靠真发一次
+    /// 请求探明（顺带触发系统的数据权限弹窗），结果写进日志。
+    private func firstLaunchChecks() {
+        let key = "app.didFirstLaunchChecks"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            GuardService.requestNotificationPermission()
+            CollectUploader.fetchVersion { info, _ in
+                self?.log(info != nil ? "首次检查：联网正常" : "首次检查：暂时连不上服务器，上传、更新规则和检查更新需要联网",
+                          .info)
+            }
+            self?.log("首次打开：已检查通知与联网权限", .info)
         }
     }
 
@@ -987,6 +1008,25 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 「一键开启并隐藏」：守护直接以隐藏窗口启动；已经在守护中就只把
+    /// 窗口压到 0.1 藏起来。
+    func startGuardAndHide() {
+        if guardService.isRunning {
+            guardService.setPiPHidden(true)
+            banner = "守护窗口已隐藏。"
+            return
+        }
+        guard requireChannel() else { return }
+        if let error = guardService.start(hidden: true) {
+            banner = error
+            log("守护没有开启：\(error)", .warning)
+        } else {
+            guardInterruption = nil
+            log("守护已开启并隐藏：每 3 秒检查配方大小，每 30 秒比对一次目录", .success)
+            banner = "守护已开启，窗口已隐藏。被系统终止后这里会显示中断记录。"
+        }
+    }
+
     private func guardTick(deep: Bool) {
         guard guardService.isRunning else { return }
         let list = recipes
@@ -1103,8 +1143,21 @@ final class AppState: ObservableObject {
     }
 
     /// 检测应用更新：只查正式版，测试版不算。
+    /// 「更新规则」：从服务器下载最新识别规则到本地，扫描随即按新规则走。
+    func updateRules() {
+        rulesStatus = "正在更新规则…"
+        RulesStore.update { [weak self] ok, message in
+            guard let self else { return }
+            self.rulesStatus = message
+            self.log(message, ok ? .success : .warning)
+            if ok { self.banner = message }
+        }
+    }
+
     func checkForUpdate() {
         updateStatus = "正在检查…"
+        availableVersion = nil
+        downloadedIPA = nil
         CollectUploader.fetchVersion { [weak self] info, message in
             guard let self = self else { return }
             guard let info else {
@@ -1119,6 +1172,7 @@ final class AppState: ObservableObject {
                     self.banner = "还没有发布过正式版，你现在用的就是最新的测试版。"
                 } else if Self.isVersion(info.version, newerThan: current) {
                     self.updateStatus = "有新版本 \(info.version)"
+                    self.availableVersion = info.version
                     self.banner = "正式版有新版本：\(info.version)。\(info.notes)"
                 } else {
                     self.updateStatus = "已是最新"
@@ -1127,6 +1181,27 @@ final class AppState: ObservableObject {
                 self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
             }
         }
+    }
+
+    /// 下载正式版新版安装包（带进度），下完存在本应用文稿里，等用户分享出去签名。
+    func downloadUpdate() {
+        guard availableVersion != nil, downloadProgress == nil else { return }
+        downloadProgress = 0
+        CollectUploader.downloadIPA(progress: { [weak self] value in
+            self?.downloadProgress = value
+        }, completion: { [weak self] url, message in
+            guard let self = self else { return }
+            self.downloadProgress = nil
+            if let url {
+                self.downloadedIPA = url
+                self.updateStatus = "已下载，去签名"
+                self.log("新版安装包已下载：\(url.lastPathComponent)", .success)
+                self.banner = "新版已经下载好了，点「分享」把它存下来，再用签名工具导入安装。"
+            } else {
+                self.log("下载新版失败：\(message)", .warning)
+                self.banner = "下载失败：\(message)"
+            }
+        })
     }
 
     private static func isVersion(_ candidate: String, newerThan current: String) -> Bool {

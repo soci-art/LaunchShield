@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import AVKit
 import UIKit
+import UserNotifications
 
 /// Background keep-alive built on the public AVKit video-call PiP (iOS 15+).
 /// A tiny, nearly invisible PiP window keeps this process scheduled while the
@@ -28,6 +29,16 @@ final class GuardService: NSObject, ObservableObject {
         }
     }
 
+    /// 被挤通知：画中画被别的 App 占掉或被系统收回、守护意外停下时发一条
+    /// 本地通知（默认开）。用户自己在界面里关守护不发。
+    var squeezeNotify: Bool {
+        get { defaults.object(forKey: Keys.squeezeNotify) as? Bool ?? true }
+        set {
+            defaults.set(newValue, forKey: Keys.squeezeNotify)
+            objectWillChange.send()
+        }
+    }
+
     var log: ((String, LogLevel) -> Void)?
     /// Called from the guard queue: `deep` asks for the 30-second directory
     /// comparison in addition to the 3-second size check.
@@ -38,6 +49,7 @@ final class GuardService: NSObject, ObservableObject {
         static let heartbeat = "guard.heartbeat"
         static let interruption = "guard.interruption"
         static let silentBoost = "guard.silentBoost"
+        static let squeezeNotify = "guard.squeezeNotify"
     }
 
     private let defaults = UserDefaults.standard
@@ -72,7 +84,9 @@ final class GuardService: NSObject, ObservableObject {
     }
 
     /// Returns nil when PiP was asked to start, or a Chinese reason.
-    func start() -> String? {
+    /// `hidden` starts the PiP window at 0.1pt height (fully hidden), the
+    /// same trick the global-refresh PiP apps use.
+    func start(hidden: Bool = false) -> String? {
         if isRunning { return nil }
         guard anchorView?.window != nil else {
             return "首页还没显示出来，请等页面出现后再开启守护"
@@ -85,7 +99,7 @@ final class GuardService: NSObject, ObservableObject {
         defaults.removeObject(forKey: Keys.interruption)
         prepareAudioSession()
         startCapture()
-        guard startPictureInPicture() else {
+        guard startPictureInPicture(hidden: hidden) else {
             stopCapture()
             return "画中画没能启动：请确认系统设置里允许画中画，再试一次"
         }
@@ -121,13 +135,20 @@ final class GuardService: NSObject, ObservableObject {
 
     // MARK: - PiP
 
-    private func startPictureInPicture() -> Bool {
+    /// 窗口大小由内容控制器的 preferredContentSize 决定：画面必须透明、
+    /// 铺满，系统才按给的尺寸走；高度压到 0.1 时窗口等于完全隐藏。
+    /// 之前塞一个 8×8 黑块、画面没铺满，系统拿不到尺寸，就给了默认大黑窗。
+    private func startPictureInPicture(hidden: Bool) -> Bool {
         guard let anchor = anchorView else { return false }
         let controller = AVPictureInPictureVideoCallViewController()
-        controller.preferredContentSize = CGSize(width: 8, height: 8)
-        let black = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 8))
-        black.backgroundColor = .black
-        controller.view.addSubview(black)
+        controller.preferredContentSize = CGSize(width: 300, height: hidden ? 0.1 : 160)
+        controller.view.backgroundColor = .clear
+        controller.view.isOpaque = false
+        let content = UIView(frame: controller.view.bounds)
+        content.backgroundColor = .clear
+        content.isOpaque = false
+        content.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        controller.view.addSubview(content)
         callViewController = controller
 
         let source = AVPictureInPictureController.ContentSource(activeVideoCallSourceView: anchor,
@@ -138,6 +159,33 @@ final class GuardService: NSObject, ObservableObject {
         pipController = pip
         pip.startPictureInPicture()
         return true
+    }
+
+    /// 守护运行中把窗口压到 0.1（完全隐藏）或恢复成小窗。
+    func setPiPHidden(_ hidden: Bool) {
+        callViewController?.preferredContentSize = CGSize(width: 300, height: hidden ? 0.1 : 160)
+    }
+
+    // MARK: - Notifications
+
+    /// 首次打开时请一次通知权限（被挤通知要用）。已经问过就不重复弹。
+    static func requestNotificationPermission() {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else { return }
+            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
+    }
+
+    private static func postSqueezeNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "守护被挤掉了"
+        content.body = "画中画被其他应用占用或被系统收回，守护已停。回来重新开启就能继续。"
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "guard-squeezed-\(Int(Date().timeIntervalSince1970))",
+                                            content: content,
+                                            trigger: nil)
+        UNUserNotificationCenter.current().add(request) { _ in }
     }
 
     private func prepareAudioSession() {
@@ -275,6 +323,9 @@ extension GuardService: AVPictureInPictureControllerDelegate {
             self.defaults.set(when, forKey: Keys.interruption)
             self.defaults.set(false, forKey: Keys.active)
             self.log?("守护已中断（画中画被关掉或被系统收回）", .warning)
+            if self.squeezeNotify {
+                GuardService.postSqueezeNotification()
+            }
             self.timer?.cancel()
             self.timer = nil
             self.stopCapture()

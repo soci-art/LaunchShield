@@ -78,14 +78,15 @@ struct AppPickerView: View {
     }
 
     private func row(_ container: ContainerInfo) -> some View {
-        HStack(spacing: 11) {
+        let checked = state.checkedIDs.contains(container.bundleID)
+        return HStack(spacing: 11) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.primaryText.opacity(0.06))
+                    .fill(checked ? Color.accentCyan : Color.primaryText.opacity(0.06))
                     .frame(width: 34, height: 34)
-                Image(systemName: container.isSystem ? "gearshape" : "app")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.primaryText.opacity(0.7))
+                Image(systemName: checked ? "checkmark" : (container.isSystem ? "gearshape" : "app"))
+                    .font(.system(size: 14, weight: checked ? .bold : .regular))
+                    .foregroundStyle(checked ? Color.white : Color.primaryText.opacity(0.7))
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(container.name)

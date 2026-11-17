@@ -184,7 +184,7 @@ struct InfoLine: View {
                 .foregroundStyle(Color.secondaryText)
             Text(value)
                 .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.9))
+                .foregroundStyle(Color.primaryText.opacity(0.9))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
