@@ -1890,7 +1890,8 @@ final class AppState: ObservableObject {
             guard let self else { return }
             self.rulesStatus = message
             self.log(message, ok ? .success : .warning)
-            if ok { self.alertText = message }
+            // 成功失败都弹窗：只写在按钮下面那行小字里，用户容易看不见。
+            self.alertText = message
         }
     }
 

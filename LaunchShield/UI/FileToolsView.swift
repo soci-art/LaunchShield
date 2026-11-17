@@ -177,6 +177,7 @@ struct FileToolsView: View {
                 state.loadBigFiles()
             }
         }
+        .appAlert(state)
     }
 
     private func row(_ file: FoundFile) -> some View {
