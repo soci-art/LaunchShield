@@ -2,6 +2,8 @@ import SwiftUI
 
 struct RecipesView: View {
     @EnvironmentObject private var state: AppState
+    @State private var expandedApps: Set<String> = []
+    @State private var showClearMissing = false
 
     var body: some View {
         SheetPage("已守护应用") {
@@ -10,25 +12,43 @@ struct RecipesView: View {
                     if state.recipes.isEmpty {
                         emptyCard
                     } else {
-                        if state.recipes.contains(where: { $0.frozen }) {
-                            Button {
-                                state.unfreezeAll()
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "sun.max")
-                                    Text("全部解冻（文件和文件夹一起解，不用备份）")
-                                    Spacer()
+                        HStack(spacing: 10) {
+                            if state.recipes.contains(where: { $0.frozen }) {
+                                Button {
+                                    state.unfreezeAll()
+                                } label: {
+                                    HStack(spacing: 7) {
+                                        Image(systemName: "sun.max")
+                                        Text("全部解冻")
+                                    }
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.accentCyan)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 11)
+                                    .background(Color.accentCyan.opacity(0.10), in: Capsule())
                                 }
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(Color.accentCyan)
-                                .padding(16)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .panel()
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
+                            if missingCount > 0 {
+                                Button {
+                                    showClearMissing = true
+                                } label: {
+                                    HStack(spacing: 7) {
+                                        Image(systemName: "trash")
+                                        Text("清除不见的（\(missingCount)）")
+                                    }
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.red)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 11)
+                                    .background(Color.red.opacity(0.10), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            Spacer()
                         }
-                        ForEach(state.recipes) { recipe in
-                            card(recipe)
+                        ForEach(appGroups, id: \.bundleID) { group in
+                            appGroupSection(group)
                         }
                     }
                     Text("配方只记录 Bundle ID 和容器内的相对路径。文件 0 字节＝正常；变大＝已复发；冻结的文件删不掉也换不掉。从守护列表移除一个文件时，会先把这个文件解冻。")
@@ -37,6 +57,71 @@ struct RecipesView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(20)
+            }
+        }
+        .confirmationDialog("清除文件不见了的条目？", isPresented: $showClearMissing, titleVisibility: .visible) {
+            Button("清除 \(missingCount) 个", role: .destructive) {
+                state.clearMissingRecipes()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("这些文件已经不在了，清掉只是把名单删干净，守护不再白查它们。")
+        }
+    }
+
+    private var missingCount: Int {
+        state.recipes.filter { $0.lastState == RecipeState.missing.rawValue }.count
+    }
+
+    /// 按应用归并：一个应用一行，点开才看单个文件。
+    private var appGroups: [(bundleID: String, name: String, items: [Recipe])] {
+        Dictionary(grouping: state.recipes, by: { $0.bundleID }).map { bundleID, items in
+            (bundleID: bundleID, name: items.first?.appName ?? bundleID, items: items)
+        }.sorted { $0.name < $1.name }
+    }
+
+    private func appGroupSection(_ group: (bundleID: String, name: String, items: [Recipe])) -> some View {
+        let frozen = group.items.filter { $0.frozen }.count
+        let recurred = group.items.filter { $0.lastState == RecipeState.recurred.rawValue }.count
+        let missing = group.items.filter { $0.lastState == RecipeState.missing.rawValue }.count
+        return VStack(alignment: .leading, spacing: 10) {
+            Button {
+                if expandedApps.contains(group.bundleID) {
+                    expandedApps.remove(group.bundleID)
+                } else {
+                    expandedApps.insert(group.bundleID)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: expandedApps.contains(group.bundleID) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.secondaryText)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(group.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        Text("共 \(group.items.count) 个 · 已冻结 \(frozen) 个" + (recurred > 0 ? " · 复发 \(recurred) 个" : "") + (missing > 0 ? " · 不见了 \(missing) 个" : ""))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.secondaryText)
+                    }
+                    Spacer()
+                    if recurred > 0 {
+                        StatusBadge(text: "有复发", tint: .orange)
+                    } else if missing == group.items.count {
+                        StatusBadge(text: "文件不见了", tint: .red)
+                    } else {
+                        StatusBadge(text: "守护中", tint: .green)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .panel()
+            }
+            .buttonStyle(.plain)
+            if expandedApps.contains(group.bundleID) {
+                ForEach(group.items) { recipe in
+                    card(recipe)
+                }
             }
         }
     }

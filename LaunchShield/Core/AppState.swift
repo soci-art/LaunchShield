@@ -1019,6 +1019,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 清除功能：一键清掉所有「文件不见了」的守护条目。
+    /// 文件本身已经没了，只删名单，守护也就不再白查它们。
+    func clearMissingRecipes() {
+        let missing = recipes.filter { $0.lastState == RecipeState.missing.rawValue }
+        guard !missing.isEmpty else {
+            banner = "没有「文件不见了」的条目要清。"
+            return
+        }
+        recipes.removeAll { $0.lastState == RecipeState.missing.rawValue }
+        store.file.recipes = recipes
+        store.save()
+        log("已清除 \(missing.count) 个「文件不见了」的守护条目", .notice)
+        banner = "已清除 \(missing.count) 个文件不见了的条目。"
+    }
+
     /// 全部解冻：所有配方文件 + 广告商文件夹一起解，不依赖备份。
     /// 解完文件仍是 0 字节，应用自己会重新生成。
     func unfreezeAll() {
