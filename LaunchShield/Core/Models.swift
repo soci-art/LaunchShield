@@ -112,6 +112,7 @@ struct FoundFile: Identifiable, Hashable {
         }
         if RulesStore.keywords.contains(where: { lower.contains($0) }) { return .ad }
         if lower.contains("cold_launch") || lower.contains("splash") { return .ad }
+        if PersonalMedia.isPersonal(bundleID: bundleID, relativePath: relativePath) { return .personal }
         let kind = FileKind.of(relativePath)
         if kind == .image || kind == .video { return .media }
         let ext = (relativePath as NSString).pathExtension.lowercased()
@@ -126,6 +127,7 @@ struct FoundFile: Identifiable, Hashable {
 enum FileVerdict {
     case ad
     case media
+    case personal
     case appInternal
     case unknown
 
@@ -133,9 +135,34 @@ enum FileVerdict {
         switch self {
         case .ad: return "疑似广告"
         case .media: return "图片/视频"
+        case .personal: return "个人内容"
         case .appInternal: return "应用文件"
         case .unknown: return "未知"
         }
+    }
+}
+
+/// 个人内容守卫：聊天类应用账号目录里的媒体是用户自己的聊天图、短视频、
+/// 表情包，不是广告素材。命中就一律绕开——不标疑似、不自动判定、
+/// 不进文件工具的默认列表。宁可漏抓广告，也不能误伤用户自己的东西。
+enum PersonalMedia {
+    static func isPersonal(bundleID: String, relativePath: String) -> Bool {
+        let lower = relativePath.lowercased()
+        let segments = lower.split(separator: "/").map(String.init)
+        // 账号目录：Documents/<纯数字账号> 或 Documents/<长哈希>，
+        // QQ、微信的用户数据都放在这种目录里。
+        if segments.count >= 2, segments[0] == "documents" {
+            let account = segments[1]
+            if account.count >= 5, account.allSatisfy({ $0.isNumber }) { return true }
+            if account.count >= 24, account.allSatisfy({ $0.isHexDigit }) { return true }
+        }
+        // 聊天媒体的典型目录名：短视频、自定义表情、表情包、聊天图、接收的文件等。
+        let personalSegments: Set<String> = ["shortvideo", "customface", "emoji", "emojis",
+                                             "sticker", "stickers", "messageimg",
+                                             "messageimgdecode", "filerecv", "ptt"]
+        if segments.contains(where: { personalSegments.contains($0) }) { return true }
+        if lower.contains("wechatprivate") { return true }
+        return false
     }
 }
 
@@ -171,6 +198,10 @@ struct DiffCandidate: Identifiable, Hashable {
         let lower = relativePath.lowercased()
         if lower.contains("extracted_dirs/") || lower.contains("monet_res/")
             || lower.contains("splashboard") {
+            return false
+        }
+        // 个人内容（聊天图、短视频、表情包）永远不自动判定为广告。
+        if PersonalMedia.isPersonal(bundleID: bundleID, relativePath: relativePath) {
             return false
         }
         for group in RulesStore.groups {

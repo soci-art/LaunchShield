@@ -92,7 +92,6 @@ struct RecipesView: View {
         } message: {
             Text("会先备份，再把这些又变大的文件清零并冻结。")
         }
-        .appAlert(state)
     }
 
     private var missingCount: Int {

@@ -129,8 +129,10 @@ struct SummaryTile: View {
 }
 
 extension View {
-    /// 全局提示弹窗：原来顶部横幅条的文字现在都在原地用弹窗提醒。
-    /// 主页和各个子页面各挂一份，哪个页面在前面就由哪个弹。
+    /// 全局提示弹窗：原来顶部横幅条的文字现在都用弹窗提醒。
+    /// 只在主页挂这一份：同一个提示在子页面里再各挂一份会互相打架，
+    /// 实测在日志页上传后弹窗和页面会被一起关掉。挂在主页的弹窗会
+    /// 盖在子页面上面弹，子页面不用再挂。
     func appAlert(_ state: AppState) -> some View {
         alert("提醒", isPresented: Binding(
             get: { state.alertText != nil },

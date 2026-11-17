@@ -177,7 +177,6 @@ struct FileToolsView: View {
                 state.loadBigFiles()
             }
         }
-        .appAlert(state)
     }
 
     private func row(_ file: FoundFile) -> some View {
@@ -217,6 +216,7 @@ struct FileToolsView: View {
         switch verdict {
         case .ad: return .orange
         case .media: return Color.accentCyan
+        case .personal: return .red
         case .appInternal, .unknown: return Color.secondaryText
         }
     }

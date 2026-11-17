@@ -943,6 +943,8 @@ final class AppState: ObservableObject {
         func consider(item: FileItem) {
             let relative = String(item.path.dropFirst(container.count + 1))
             if relative.hasPrefix("Library/SplashBoard") { return }
+            // 个人内容（聊天图、短视频、表情包）不算疑似广告，深扫直接绕开。
+            if PersonalMedia.isPersonal(bundleID: ownerBundleID, relativePath: relative) { return }
             let lower = relative.lowercased()
             if keywords.contains(where: { lower.contains($0) }) {
                 results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",

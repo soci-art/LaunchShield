@@ -76,7 +76,6 @@ struct AppPickerView: View {
                 state.refreshContainers()
             }
         }
-        .appAlert(state)
     }
 
     private func row(_ container: ContainerInfo) -> some View {
