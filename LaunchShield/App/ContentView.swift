@@ -502,15 +502,15 @@ struct ContentView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Color.primaryText)
                     Spacer()
-                    Text("\(Int(guardService.pipHeight)) pt")
+                    Text(guardService.pipDisplayHeight <= 0.15 ? "0.1 pt（已隐藏）" : "\(Int(guardService.pipDisplayHeight)) pt")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.secondaryText)
                 }
-                Slider(value: Binding(get: { guardService.pipHeight },
-                                      set: { guardService.setPiPHeight($0) }),
-                       in: 40...240, step: 1)
+                Slider(value: Binding(get: { guardService.pipDisplayHeight },
+                                      set: { guardService.setPipDisplayHeight($0) }),
+                       in: 0.1...240, step: 0.1)
                     .tint(.cyan)
-                Text("守护开启时画中画窗口的高度，拖动即时生效；隐藏时自动压到 0.1。")
+                Text("画中画窗口的高度，拖动即时生效；拖到最底就是隐藏，一键开启并隐藏时滑块会跟着到底。")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             }

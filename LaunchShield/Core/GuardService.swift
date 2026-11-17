@@ -381,6 +381,34 @@ final class GuardService: NSObject, ObservableObject {
         }
     }
 
+    /// 滑块显示的高度＝窗口现在的实际高度：藏着就是 0.1，露着就是悬浮高度。
+    /// 一键开启并隐藏把窗口压到 0.1 时，滑块要跟着滑到最底，所以滑块
+    /// 读的是这个值，不是单独存的悬浮高度。
+    var pipDisplayHeight: Double {
+        pipHidden ? Double(minPiPHeight) : pipHeight
+    }
+
+    /// 拖滑块：拖到最底（≤0.15）就是把窗口藏起来（悬浮高度还记着，
+    /// 往回拖就恢复）；拖离最底就是设定悬浮高度，藏着的话顺手露出来。
+    func setPipDisplayHeight(_ value: Double) {
+        if value <= 0.15 {
+            if !pipHidden {
+                pipHidden = true
+                if isRunning { applyPiPGeometry() }
+                objectWillChange.send()
+            }
+        } else {
+            pipHeight = value
+            if pipHidden {
+                pipHidden = false
+                if isRunning { applyPiPGeometry() }
+                objectWillChange.send()
+            } else if isRunning {
+                applyPiPGeometry()
+            }
+        }
+    }
+
     // MARK: - Notifications
 
     /// 首次打开时请一次通知权限（被挤通知要用）。已经问过就不重复弹。
