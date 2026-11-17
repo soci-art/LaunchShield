@@ -102,6 +102,7 @@ final class AppState: ObservableObject {
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
         loadMarks()
         log("LaunchShield \(appVersionText) 已启动", .info)
+        log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
         firstLaunchChecks()
         // 通道发现放到后台：界面先出来，就绪后再补上容器与配方复查。
