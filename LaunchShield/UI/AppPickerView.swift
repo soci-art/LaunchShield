@@ -6,6 +6,13 @@ struct AppPickerView: View {
 
     @State private var query = ""
 
+    private var filteredGroups: [ContainerInfo] {
+        guard !query.isEmpty else { return state.groupContainers }
+        return state.groupContainers.filter {
+            $0.bundleID.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     private var filtered: [ContainerInfo] {
         guard !query.isEmpty else { return state.containers }
         return state.containers.filter {
@@ -66,6 +73,39 @@ struct AppPickerView: View {
                     }
                     .padding(.horizontal, 15)
                     .panel()
+                }
+
+                if !filteredGroups.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("共享组容器（关联不上的也能单独选）")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        Text("跟某个应用关联上的共享组，选那个应用时会自动一并扫描、拍快照；这里是把它们单独当目标用。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(filteredGroups) { group in
+                                    Button {
+                                        state.select(group)
+                                        dismiss()
+                                    } label: {
+                                        row(group)
+                                    }
+                                    .buttonStyle(.plain)
+                                    if group.id != filteredGroups.last?.id {
+                                        Divider()
+                                            .overlay(Color.primaryText.opacity(0.06))
+                                            .padding(.leading, 46)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 15)
+                        }
+                        .frame(maxHeight: 190)
+                        .panel()
+                    }
                 }
             }
             .padding(20)

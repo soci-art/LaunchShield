@@ -15,6 +15,8 @@ final class AppState: ObservableObject {
     /// 用户手动标记的广告文件（持久化在 UserDefaults）。
     @Published var manualMarks: [ManualMark] = []
     @Published var containers: [ContainerInfo] = []
+    /// 共享组（App Group）容器列表，按组标识命名。
+    @Published var groupContainers: [ContainerInfo] = []
     /// 通道就绪改成异步探明：冷启动先出界面，不再被通道发现堵住首帧。
     @Published private(set) var channelReady = false
     @Published private(set) var channelChecking = true
@@ -209,8 +211,10 @@ final class AppState: ObservableObject {
         }
         work.async {
             let list = self.channel.containers()
+            let groups = self.channel.groupContainers()
             DispatchQueue.main.async {
                 self.containers = list
+                self.groupContainers = groups
                 if list.isEmpty {
                     self.log("没有读到应用容器列表，可能是系统版本不支持或权限被拒", .warning)
                 }
@@ -243,14 +247,50 @@ final class AppState: ObservableObject {
 
     /// 找广告的范围：一键勾选时是全部勾选的应用，否则是当前单个目标。
     var findAdScope: [ContainerInfo] {
-        if !checkedContainers.isEmpty { return checkedContainers }
-        guard targetChosen else { return [] }
-        if let match = containers.first(where: { $0.bundleID == target.bundleID }) { return [match] }
-        if let path = targetPath {
-            return [ContainerInfo(bundleID: target.bundleID, path: path, name: target.name,
+        let base: [ContainerInfo]
+        if !checkedContainers.isEmpty {
+            base = checkedContainers
+        } else if !targetChosen {
+            return []
+        } else if let match = containers.first(where: { $0.bundleID == target.bundleID }) {
+            base = [match]
+        } else if let group = groupContainers.first(where: { $0.bundleID == target.bundleID }) {
+            base = [group]
+        } else if let path = targetPath {
+            base = [ContainerInfo(bundleID: target.bundleID, path: path, name: target.name,
                                   isSystem: false, category: "")]
+        } else {
+            return []
         }
-        return []
+        // 关联到的共享组容器一并纳入：广告 SDK 把素材放共享组时不再是盲区。
+        var extra: [ContainerInfo] = []
+        for info in base where !info.isGroup {
+            for group in associatedGroups(for: info.bundleID) {
+                guard !base.contains(where: { $0.path == group.path }),
+                      !extra.contains(where: { $0.path == group.path }) else { continue }
+                extra.append(ContainerInfo(bundleID: group.bundleID, path: group.path,
+                                           name: info.name + " 共享组", isSystem: false,
+                                           category: "", isGroup: true))
+            }
+        }
+        return base + extra
+    }
+
+    /// 按名字规律把共享组容器关联到应用：组标识去掉 group. 前缀后，
+    /// 与应用 Bundle ID 相同、一方是另一方的前缀段，都算关联
+    /// （如 group.com.baidu.netdisk ↔ com.baidu.netdisk、
+    /// group.com.baidu ↔ 百度全家桶）。哈希组名关联不上，靠选择页单独选。
+    func associatedGroups(for bundleID: String) -> [ContainerInfo] {
+        let bid = bundleID.lowercased()
+        return groupContainers.filter { group in
+            var gid = group.bundleID.lowercased()
+            if gid == bid { return true }
+            if gid.hasPrefix("group.") { gid = String(gid.dropFirst(6)) }
+            if gid == bid { return true }
+            if gid.hasPrefix(bid + ".") { return true }
+            if bid.hasPrefix(gid + ".") { return true }
+            return false
+        }
     }
 
     /// Names of apps the latest scan found ad material in (for the find-ad guide).
@@ -318,6 +358,8 @@ final class AppState: ObservableObject {
         } else if !targetChosen {
             banner = "先选一个应用，或者点「一键勾选」，再扫描。"
             return
+        } else if let group = groupContainers.first(where: { $0.bundleID == target.bundleID }) {
+            scanSet = [group]
         } else if let info = channel.container(for: target.bundleID) {
             scanSet = [info]
         } else {
@@ -337,8 +379,23 @@ final class AppState: ObservableObject {
                 let isBaidu = info.bundleID == BaiduNetdisk.bundleID
                 let splash = isBaidu ? BaiduNetdisk.resolveSplash(container: info.path, channel: self.channel) : nil
                 if isBaidu { baiduSplash = splash }
-                let found = BaiduNetdisk.targets(container: info.path, channel: self.channel, splash: splash,
+                var found = BaiduNetdisk.targets(container: info.path, channel: self.channel, splash: splash,
                                                  ownerBundleID: info.bundleID, ownerName: info.name)
+                // 关联的共享组容器一并扫，素材算在所属应用名下。
+                if !info.isGroup {
+                    let groups = self.associatedGroups(for: info.bundleID)
+                    if !groups.isEmpty {
+                        self.log("\(info.name)：一并扫描关联的共享组容器 \(groups.count) 个", .info)
+                    }
+                    for group in groups {
+                        let groupFound = BaiduNetdisk.targets(container: group.path, channel: self.channel, splash: nil,
+                                                              ownerBundleID: info.bundleID, ownerName: info.name)
+                        if !groupFound.isEmpty {
+                            self.log("\(info.name) 的共享组容器（\(group.bundleID)）：找到 \(groupFound.count) 个素材", .notice)
+                        }
+                        found.append(contentsOf: groupFound)
+                    }
+                }
                 // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
                 // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
                 // 识别计数仍按全量 found 算，攒指纹库的数据不失真。
@@ -840,6 +897,98 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - 文件工具（大文件榜 / 搜文件名，找广告的辅助）
+
+    @Published var bigFiles: [FoundFile] = []
+    @Published var fileSearchResults: [FoundFile] = []
+    @Published var fileToolsBusy = false
+
+    /// 递归走一遍范围内的容器收集文件；keyword 非空时只收文件名命中的
+    /// （上限 500 条），keyword 为空时全收（供大文件榜排序）。
+    private func walkFoundFiles(scope: [ContainerInfo], keyword: String) -> [FoundFile] {
+        var results: [FoundFile] = []
+        var visited = 0
+        let needle = keyword.lowercased()
+        func walk(container: ContainerInfo, dir: String) {
+            guard visited < 6000 else { return }
+            guard let items = try? channel.children(of: dir) else { return }
+            for item in items {
+                visited += 1
+                if item.isDirectory {
+                    walk(container: container, dir: item.path)
+                } else if needle.isEmpty || item.name.lowercased().contains(needle) {
+                    let relative = String(item.path.dropFirst(container.path.count + 1))
+                    results.append(FoundFile(path: item.path, containerPath: container.path,
+                                             relativePath: relative, size: item.size,
+                                             bundleID: container.bundleID, appName: container.name))
+                    if !needle.isEmpty && results.count >= 500 { return }
+                }
+            }
+        }
+        for container in scope { walk(container: container, dir: container.path) }
+        return results
+    }
+
+    func loadBigFiles() {
+        let scope = findAdScope
+        guard !scope.isEmpty else {
+            banner = "先选一个目标应用，再看大文件榜。"
+            return
+        }
+        fileToolsBusy = true
+        work.async {
+            let all = self.walkFoundFiles(scope: scope, keyword: "")
+            let top = Array(all.sorted { $0.size > $1.size }.prefix(100))
+            DispatchQueue.main.async {
+                self.fileToolsBusy = false
+                self.bigFiles = top
+                self.log("大文件榜：范围内共 \(all.count) 个文件，列出最大的 \(top.count) 个", .info)
+            }
+        }
+    }
+
+    func searchFiles(keyword: String) {
+        let kw = keyword.trimmingCharacters(in: .whitespaces)
+        guard !kw.isEmpty else { return }
+        let scope = findAdScope
+        guard !scope.isEmpty else {
+            banner = "先选一个目标应用，再搜文件名。"
+            return
+        }
+        fileToolsBusy = true
+        work.async {
+            let found = self.walkFoundFiles(scope: scope, keyword: kw)
+            DispatchQueue.main.async {
+                self.fileToolsBusy = false
+                self.fileSearchResults = found
+                self.log("按文件名搜「\(kw)」：找到 \(found.count) 个", .info)
+            }
+        }
+    }
+
+    /// 大文件榜/搜索里选中的文件加进找广告候选：自动勾选、自动打上
+    /// 「我标记的」，之后在候选列表里确认清零；上传找广告结果时一并带上。
+    func addToolCandidates(_ files: [FoundFile]) {
+        guard !files.isEmpty else { return }
+        for file in files {
+            let candidate = DiffCandidate(relativePath: file.relativePath, size: file.size,
+                                          modified: Date(), reason: "从大文件榜/文件名搜索找到的",
+                                          isNew: true, delta: Int64(file.size),
+                                          appName: file.appName, bundleID: file.bundleID,
+                                          containerRoot: file.containerPath)
+            if !candidates.contains(where: { $0.id == candidate.id }) { candidates.append(candidate) }
+            selectedCandidatePaths.insert(candidate.id)
+            if !isMarked(bundleID: file.bundleID, relativePath: file.relativePath) {
+                manualMarks.append(ManualMark(bundleID: file.bundleID, appName: file.appName,
+                                              relativePath: file.relativePath, size: file.size,
+                                              markedAt: Date()))
+            }
+        }
+        saveMarks()
+        log("已把 \(files.count) 个文件加进找广告候选（已勾选、已标记为广告）", .success)
+        banner = "已加进找广告候选 \(files.count) 个，回到候选列表确认清零。"
     }
 
     // MARK: - Recipes

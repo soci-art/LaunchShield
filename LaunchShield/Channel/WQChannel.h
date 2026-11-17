@@ -62,6 +62,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSArray<WQAppContainer *> *)appContainers;
 - (nullable WQAppContainer *)containerForBundleID:(NSString *)bundleID;
 
+/// Every App Group (shared) container, labelled by its group identifier.
+- (NSArray<WQAppContainer *> *)groupContainers;
+
 - (WQOp *)listDirectory:(NSString *)path;
 - (WQOp *)statPath:(NSString *)path;
 - (WQOp *)readFile:(NSString *)path maxBytes:(NSUInteger)maxBytes;

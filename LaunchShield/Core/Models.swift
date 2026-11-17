@@ -14,6 +14,8 @@ struct ContainerInfo: Identifiable, Hashable {
     let name: String
     let isSystem: Bool
     var category: String = ""
+    /// 共享组（App Group）容器：bundleID 字段里放的是组标识。
+    var isGroup: Bool = false
 
     var id: String { bundleID }
     /// 商店分类里带 game 的就是游戏；分类拿不到时按不是游戏算，不误伤。
@@ -82,6 +84,20 @@ struct ContainerSnapshot: Codable {
 
     var fileCount: Int { entries.count }
     var totalBytes: UInt64 { entries.values.reduce(UInt64(0)) { $0 + $1.size } }
+}
+
+/// 大文件榜 / 文件名搜索找到的一个文件。
+struct FoundFile: Identifiable, Hashable {
+    let path: String
+    let containerPath: String
+    let relativePath: String
+    let size: UInt64
+    let bundleID: String
+    let appName: String
+
+    var id: String { path }
+    var sizeText: String { Format.bytes(size) }
+    var fileName: String { (relativePath as NSString).lastPathComponent }
 }
 
 struct DiffCandidate: Identifiable, Hashable {

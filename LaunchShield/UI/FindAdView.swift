@@ -3,12 +3,14 @@ import SwiftUI
 struct FindAdView: View {
     @EnvironmentObject private var state: AppState
     @State private var showConfirm = false
+    @State private var showFileTools = false
 
     var body: some View {
         SheetPage("找广告（前后对比）") {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     guideCard
+                    fileToolsCard
                     if !state.checkedIDs.isEmpty {
                         appsWithAdsCard
                     }
@@ -35,6 +37,38 @@ struct FindAdView: View {
             Text(state.checkedIDs.isEmpty && state.targetChosen
                  ? "请先完全退出 \(state.target.name)。"
                  : "请先完全退出要处理的应用。")
+        }
+    }
+
+    private var fileToolsCard: some View {
+        Button {
+            showFileTools = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "list.number")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.accentCyan)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("大文件榜 / 搜文件名")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    Text("没拍到之前快照时，先看最大的文件、按名字搜，选中的加进候选。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .panel()
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showFileTools) {
+            FileToolsView()
+                .environmentObject(state)
         }
     }
 

@@ -42,6 +42,8 @@
 @implementation WQChannel {
     NSArray<WQAppContainer *> *_containers;
     NSTimeInterval _containersAt;
+    NSArray<WQAppContainer *> *_groupContainers;
+    NSTimeInterval _groupContainersAt;
 }
 
 + (instancetype)shared
@@ -178,6 +180,38 @@
     _containers = [result copy];
     _containersAt = now;
     return _containers;
+}
+
+- (NSArray<WQAppContainer *> *)groupContainers
+{
+    NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
+    if (_groupContainers && now - _groupContainersAt < 30) return _groupContainers;
+
+    // Shared App Group containers: the metadata plist's identifier IS the
+    // group id (e.g. group.com.example.app), which is what we label by.
+    NSMutableArray<WQAppContainer *> *result = [NSMutableArray array];
+    NSString *root = @"/private/var/mobile/Containers/Shared/AppGroup";
+    for (NSString *path in wq_enumerate(root, 0, nil, nil) ?: @[]) {
+        NSString *identifier = [self metadataLabelForPath:path];
+        if (!identifier.length) identifier = [self labelForPath:path];
+        if (!identifier.length) continue;
+        WQAppContainer *container = [WQAppContainer new];
+        container.identifier = identifier;
+        container.path = path;
+        container.name = identifier;
+        container.category = @"";
+        container.isSystem = NO;
+        [result addObject:container];
+    }
+    [result sortUsingComparator:^NSComparisonResult(id first, id second) {
+        WQAppContainer *a = (WQAppContainer *)first;
+        WQAppContainer *b = (WQAppContainer *)second;
+        return [a.identifier localizedStandardCompare:b.identifier];
+    }];
+    wq_log(@"containers: resolved %lu shared group containers", (unsigned long)result.count);
+    _groupContainers = [result copy];
+    _groupContainersAt = now;
+    return _groupContainers;
 }
 
 - (WQAppContainer *)containerForBundleID:(NSString *)bundleID
