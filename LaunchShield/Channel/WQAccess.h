@@ -64,10 +64,6 @@ NSDictionary<NSString *, NSNumber *> *_Nullable wq_file_version(NSString *path);
 // not an atomic transaction against uncooperative external writers or crashes.
 // Backup-storage files cannot be overwritten/deleted through these generic APIs.
 BOOL wq_write(NSString *path, NSData *data, NSString *_Nullable *_Nullable errorText);
-// 【诊断版 40】最素的清零：只 open(O_RDWR)＋flock 闸门＋ftruncate，
-// 不走 mutation 的版本校验/内部备份/写后复核那一套，
-// 用来分清界面双份是不是 mutation 仪式引起的。
-BOOL wq_truncate_plain(NSString *path, NSString *_Nullable *_Nullable errorText);
 BOOL wq_write_if_unchanged(NSString *path, NSData *data, NSDictionary<NSString *, NSNumber *> *_Nullable expected,
                            NSString *_Nullable *_Nullable errorText);
 // Verifies saved bytes against the intended contents while the descriptor stays

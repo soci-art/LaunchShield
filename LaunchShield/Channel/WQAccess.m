@@ -1041,24 +1041,6 @@ BOOL wq_write(NSString *path, NSData *data, NSString **errorText)
     return wq_write_if_unchanged(path, data, nil, errorText);
 }
 
-BOOL wq_truncate_plain(NSString *path, NSString **errorText)
-{
-    int fd = wq_open(path, O_RDWR, 0);
-    if (fd < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        int err = errno;
-        if (err != ENOTSUP && err != EOPNOTSUPP && err != ENOSYS) {
-            if (errorText) *errorText = wq_errno(err);
-            close(fd);
-            errno = err;
-            return NO;
-        }
-    }
-    BOOL ok = ftruncate(fd, 0) == 0;
-    if (!ok && errorText) *errorText = wq_errno(errno);
-    close(fd);
-    return ok;
-}
 
 BOOL wq_write_from_file(NSString *path, NSString *source, NSString **errorText)
 {

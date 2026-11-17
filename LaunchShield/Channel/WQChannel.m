@@ -309,14 +309,6 @@
     return [WQOp ok:@(0)];
 }
 
-- (WQOp *)truncatePlainFile:(NSString *)path
-{
-    NSString *error = nil;
-    if (!wq_truncate_plain(path, &error)) {
-        return [WQOp fail:[self messageFor:error fallback:@"清零失败"]];
-    }
-    return [WQOp ok:@(0)];
-}
 
 - (WQOp *)writeFromLocalFile:(NSString *)path source:(NSString *)source
 {

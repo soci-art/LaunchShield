@@ -73,11 +73,6 @@ final class Channel {
         guard op.ok else { throw ChannelFailure(op.error ?? "清零失败") }
     }
 
-    /// 【诊断版 40】最素的清零：不走 mutation 仪式，只开文件截断。
-    func truncatePlain(_ path: String) throws {
-        let op = raw.truncatePlainFile(path)
-        guard op.ok else { throw ChannelFailure(op.error ?? "清零失败") }
-    }
 
     func restore(path: String, from localPath: String) throws {
         // Overwriting needs the existing inode; a file that was deleted (for a

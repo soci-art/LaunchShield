@@ -73,7 +73,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (WQOp *)writeData:(NSString *)path data:(NSData *)data;
 /// In-place 0-byte truncation; the 0-byte replacement the app is built around.
 - (WQOp *)truncateFile:(NSString *)path;
-- (WQOp *)truncatePlainFile:(NSString *)path;
 /// Streams a local file over the target (restore of an existing file).
 - (WQOp *)writeFromLocalFile:(NSString *)path source:(NSString *)source;
 /// Creates the target from a local file when it no longer exists (restore

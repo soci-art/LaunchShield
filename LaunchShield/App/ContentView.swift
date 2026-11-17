@@ -45,9 +45,6 @@ struct ContentView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        // 【诊断版 38】uiEpoch 变化时整棵界面树推倒重建：
-        // 验「往别的 App 文件里写完之后界面出双份」能否靠重建清掉。
-        .id(state.uiEpoch)
         .appAlert(state, active: !(showAppPicker || showTutorial || showFindAd || showRecipes || showBackups || showLogs))
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)

@@ -45,52 +45,34 @@ final class AppState: ObservableObject {
     @Published var isBusy = false
     @Published var busyText = ""
     @Published var alertText: String?
-    /// 界面重建代号：加 1 就让根视图整棵推倒重建（清零写入后界面出双份的对策）。
-    @Published var uiEpoch = 0
-
-    /// 【诊断版 39】把当前窗口与图层结构写进日志，
-    /// 对比清零前后的差异，定位界面双份到底长在哪一层。
-    func dumpWindowState(_ tag: String) {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        log("【窗口转储·\(tag)】场景 \(scenes.count) 个", .notice)
-        for (si, scene) in scenes.enumerated() {
-            for (wi, window) in scene.windows.enumerated() {
-                let layer = window.layer
-                log("【窗口转储·\(tag)】场景\(si) 窗口\(wi)：\(type(of: window)) 层级\(window.windowLevel.rawValue) 隐藏=\(window.isHidden) 透明度=\(window.alpha) 子图层=\(layer.sublayers?.count ?? 0)", .notice)
-                dumpLayer(layer, tag: tag, path: "窗\(wi)", depth: 0)
+    /// 写文件操作（清零/还原等）完成后，把主窗口短暂隐藏再显示，逼系统
+    /// 把这个窗口的画面拆掉重建：iOS 27.2 beta 2 上写完别的 App 的文件
+    /// 后，系统合成层会把界面画成双份（App 自己的图层树是干净的），
+    /// 切后台、锁屏、下拉通知中心都能治好，靠的都是同一种重建，
+    /// 这里在 App 内模拟。then 在窗口恢复显示后才调用——完成弹窗要
+    /// 等窗口回来再弹。5 秒内重复调用只执行 then、不重复闪窗口。
+    private var lastWindowCycleAt: Date = .distantPast
+    func cycleKeyWindow(_ tag: String, then: (() -> Void)? = nil) {
+        DispatchQueue.main.async {
+            let now = Date()
+            guard now.timeIntervalSince(self.lastWindowCycleAt) > 5 else { then?(); return }
+            self.lastWindowCycleAt = now
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                let scene = UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .first { $0.activationState == .foregroundActive }
+                guard let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first else {
+                    then?()
+                    return
+                }
+                window.isHidden = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    window.isHidden = false
+                    window.makeKey()
+                    self.log("已重建界面显示（\(tag)）", .info)
+                    then?()
+                }
             }
-        }
-    }
-
-    /// 【诊断版 41】清零完成后把主窗口短暂隐藏再显示，逼系统把这个窗口的
-    /// 画面拆掉重建——切后台、锁屏、下拉通知中心都能治好双份，
-    /// 共同点都是让系统重建显示，这一步在 App 内模拟同一件事。
-    func cycleKeyWindow(_ tag: String) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            let scene = UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .first { $0.activationState == .foregroundActive }
-            guard let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first else {
-                self.log("【诊断版 41】没找到主窗口，跳过窗口重建", .warning)
-                return
-            }
-            window.isHidden = true
-            self.log("【诊断版 41】主窗口已隐藏，准备重建显示（\(tag)）", .info)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                window.isHidden = false
-                window.makeKey()
-                self.log("【诊断版 41】主窗口已重新显示", .info)
-            }
-        }
-    }
-
-    private func dumpLayer(_ layer: CALayer, tag: String, path: String, depth: Int) {
-        guard depth <= 5 else { return }
-        let subs = layer.sublayers ?? []
-        for (i, sub) in subs.enumerated() {
-            let p = "\(path).\(i)"
-            log("【窗口转储·\(tag)】\(p) \(type(of: sub)) 框=\(sub.frame) 隐藏=\(sub.isHidden) 透明度=\(sub.opacity) 有图像=\(sub.contents != nil) 子层=\(sub.sublayers?.count ?? 0)", .notice)
-            dumpLayer(sub, tag: tag, path: p, depth: depth + 1)
         }
     }
     @Published var guardInterruption: Date?
@@ -167,7 +149,6 @@ final class AppState: ObservableObject {
             guard let self = self else { return }
             self.guardTick(deep: deep)
         }
-        dumpWindowState("启动")
         firstLaunchChecks()
         // 通道发现放到后台：界面先出来，就绪后再补上容器、配方复查和启动补扫。
         work.async {
@@ -592,17 +573,9 @@ final class AppState: ObservableObject {
             return
         }
         let targets = scanTargets
-        // 【诊断版 35–38】二分结论：干跑不犯（35）、不冻仍犯（36）、
-        // 只备份不犯（37）——往别的 App 文件里写那一下（清零写入）是元凶。
-        // 构建 38：全套真做（备份＋清零＋冻结），收尾时 uiEpoch += 1
-        // 把整页界面推倒重建，验重建能否清掉写完之后的双份合成。
-        let dryRunClear = false
-        let skipFreeze = false
-        let skipTruncate = false
         isBusy = true
         busyText = "正在清零 \(targets.count) 个文件…"
-        log("【诊断版 40】清零改走最素写法（开文件＋锁闸门＋截断，不走 mutation 仪式），其余与 39 相同", .warning)
-        dumpWindowState("清零前")
+        log("开始清零：\(targets.count) 个文件，逐个先备份再截断", .notice)
 
         work.async {
             var done = 0
@@ -613,13 +586,6 @@ final class AppState: ObservableObject {
             var newRecipes: [Recipe] = []
 
             for targetFile in targets {
-                if dryRunClear {
-                    Thread.sleep(forTimeInterval: 0.03)
-                    done += 1
-                    frozenCount += 1
-                    self.log("（干跑）将清零并冻结：\(targetFile.relativePath)", .info)
-                    continue
-                }
                 do {
                     if self.channel.isImmutable(targetFile.path) {
                         try self.channel.setImmutable(targetFile.path, false)
@@ -638,11 +604,9 @@ final class AppState: ObservableObject {
                                                                    source: targetFile.group,
                                                                    channel: self.channel)
                         newBackups.append(record)
-                        if !skipTruncate {
-                            try self.channel.truncatePlain(targetFile.path)
-                        }
+                        try self.channel.truncate(targetFile.path)
                         done += 1
-                        self.log(skipTruncate ? "已备份（本版不清零）：\(targetFile.relativePath)（\(Format.bytes(size))）" : "已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
+                        self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
                         if targetFile.group == "软件自营" {
                             newRecipes.append(Recipe(id: UUID(),
                                                      bundleID: ownerID,
@@ -657,9 +621,7 @@ final class AppState: ObservableObject {
                     }
                     // 清零后顺手把每个文件都冻上，广告就写不回这些文件了。
                     // 冻结失败不算清零失败，只记下来在总结里说明。
-                    if skipFreeze {
-                        // 【诊断版 36】跳过冻结，只备份＋清零。
-                    } else if self.channel.isImmutable(targetFile.path) {
+                    if self.channel.isImmutable(targetFile.path) {
                         frozenCount += 1
                     } else {
                         do {
@@ -682,7 +644,7 @@ final class AppState: ObservableObject {
             // 这样它们连新建文件备货都做不到。文件夹冻结失败只警告，不算清零失败。
             var frozenDirCount = 0
             var freezeDirFailureCount = 0
-            if !dryRunClear && !skipFreeze {
+            if true {
                 let owners = Set(targets.map { $0.bundleID.isEmpty ? BaiduNetdisk.bundleID : $0.bundleID })
                 for owner in owners {
                     guard let root = self.channel.containerPath(for: owner) else { continue }
@@ -707,7 +669,6 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                self.uiEpoch += 1
                 if !newBackups.isEmpty {
                     self.store.file.backups.append(contentsOf: newBackups)
                 }
@@ -718,19 +679,35 @@ final class AppState: ObservableObject {
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
                 self.store.save()
-                // 【诊断版 34】界面重影二分定位：清零本身与数据存盘照常，
-                // 但收尾时所有「动界面」的动作全部停掉——不刷配方/备份清单、
-                // 不清空素材清单、不复查配方、不弹完成弹窗。
-                // 干完后界面上的数字是旧的，重启 App 后按存盘数据恢复。
-                // 这版不犯 → 元凶在停掉的这几件里，下一版逐件放回；
-                // 这版还犯 → 元凶在清零干活本身或更早的环节。
-                self.log("清零完成（诊断版 38）：\(done) 个文件已清零、\(frozenCount) 个已冻结，已整页重建界面", .success)
-                self.cycleKeyWindow("清零后")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                    self?.dumpWindowState("清零后")
+                self.recipes = self.store.file.recipes
+                self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+
+                self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
+                if frozenCount > 0 {
+                    self.log("清零的文件已全部冻结：\(frozenCount) 个", .success)
                 }
-                if !failures.isEmpty {
+                if freezeFailureCount > 0 {
+                    self.log("有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
+                }
+                if frozenDirCount > 0 {
+                    self.log("广告商的文件夹已冻结：\(frozenDirCount) 个", .success)
+                }
+                if freezeDirFailureCount > 0 {
+                    self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
+                }
+                let completionText: String
+                if failures.isEmpty {
+                    completionText = frozenCount > 0
+                        ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
+                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。"
+                } else {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
+                    completionText = "清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。"
+                }
+                self.scanTargets = []
+                self.checkRecipes(silent: true)
+                self.cycleKeyWindow("清零后") {
+                    self.presentCompletionAlert(completionText)
                 }
             }
         }
@@ -796,14 +773,18 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                let completionText: String
                 if failures.isEmpty {
                     self.log("还原完成：\(restored) 个文件已写回，MD5 全部一致", .success)
-                    self.presentCompletionAlert("还原完成：\(restored) 个文件已写回，MD5 全部一致。")
+                    completionText = "还原完成：\(restored) 个文件已写回，MD5 全部一致。"
                 } else {
                     self.log("还原完成：\(restored) 个已写回，\(failures.count) 个没还原成、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    self.presentCompletionAlert("还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。")
+                    completionText = "还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。"
                 }
                 self.checkRecipes(silent: true)
+                self.cycleKeyWindow("还原后") {
+                    self.presentCompletionAlert(completionText)
+                }
             }
         }
     }
@@ -823,8 +804,10 @@ final class AppState: ObservableObject {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("已还原并核对 MD5：\(record.relativePath)", .success)
-                    self.alertText = "已还原：\(record.relativePath)，MD5 一致。"
                     self.checkRecipes(silent: true)
+                    self.cycleKeyWindow("还原后") {
+                        self.alertText = "已还原：\(record.relativePath)，MD5 一致。"
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1048,14 +1031,18 @@ final class AppState: ObservableObject {
                 self.store.save()
                 self.recipes = self.store.file.recipes
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                let completionText: String
                 if let failure {
                     self.log("清零候选没有全部完成，没清成的：\(failure)", .warning)
-                    self.alertText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。"
+                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。"
                 } else {
                     self.log("确认的素材已清零：\(done) 个，配方已存入守护列表", .success)
-                    self.alertText = "已清零 \(done) 个素材，并加入已守护应用。"
+                    completionText = "已清零 \(done) 个素材，并加入已守护应用。"
                     self.candidates = []
                     self.selectedCandidatePaths = []
+                }
+                self.cycleKeyWindow("找广告清零后") {
+                    self.alertText = completionText
                 }
             }
         }
@@ -1175,8 +1162,10 @@ final class AppState: ObservableObject {
                 self.isBusy = false
                 self.busyText = ""
                 self.log("先清缓存：\(info.name) 删掉 \(deleted) 个缓存文件，冻住的跳过 \(skippedFrozen) 个，删不掉的 \(failed) 个", .notice)
-                self.alertText = "缓存清完了，已顺手拍好第一次快照。现在去打开\(info.name)，让广告播一次，再回来拍第二次快照。"
                 self.takeSnapshot(before: true)
+                self.cycleKeyWindow("清缓存后") {
+                    self.alertText = "缓存清完了，已顺手拍好第一次快照。现在去打开\(info.name)，让广告播一次，再回来拍第二次快照。"
+                }
             }
         }
     }
@@ -1339,13 +1328,16 @@ final class AppState: ObservableObject {
                     self.busyText = ""
                     self.log("已重新清零：\(recipe.relativePath)", .success)
                     self.checkRecipes(silent: true)
+                    self.cycleKeyWindow("重新清零后")
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("重新清零失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
-                    self.alertText = "重新清零失败：\(error.localizedDescription)"
+                    self.cycleKeyWindow("重新清零后") {
+                        self.alertText = "重新清零失败：\(error.localizedDescription)"
+                    }
                 }
             }
         }
@@ -1557,10 +1549,13 @@ final class AppState: ObservableObject {
                     self.store.save()
                     self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 }
-                self.alertText = done > 0
+                let completionText = done > 0
                     ? "已把 \(done) 个复发文件重新清零并冻结。"
                     : "复发文件都没能处理，详情看日志。"
                 self.checkRecipes(silent: true)
+                self.cycleKeyWindow("复发重冻后") {
+                    self.alertText = completionText
+                }
             }
         }
     }
@@ -1790,6 +1785,7 @@ final class AppState: ObservableObject {
         if truncated > 0 {
             DispatchQueue.main.async {
                 self.checkRecipes(silent: true)
+                self.cycleKeyWindow("值守清零后")
             }
         }
 
@@ -1849,6 +1845,9 @@ final class AppState: ObservableObject {
             }
         } else if cleared > 0 {
             DispatchQueue.main.async { self.checkRecipes(silent: true) }
+        }
+        if cleared > 0 {
+            cycleKeyWindow("自动清零后")
         }
     }
 
