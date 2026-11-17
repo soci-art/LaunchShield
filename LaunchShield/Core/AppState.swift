@@ -137,6 +137,16 @@ final class AppState: ObservableObject {
                     self.work.async { self.sweepAdDirectories(reason: "启动补扫") }
                 }
                 self.checkRecipes(silent: true)
+                // 上次守护还开着、是被杀进程/装新版断掉的：自动续上，
+                // 不用用户再手动开一遍。手动关掉的不会续（标记在关的时候就清了）。
+                if self.guardService.wasActiveAtLaunch, !self.guardService.isRunning {
+                    if let error = self.guardService.start() {
+                        self.log("守护没能自动续上：\(error)", .warning)
+                    } else {
+                        self.guardInterruption = nil
+                        self.log("守护已自动续上：上次开着，App 重开后接着守", .success)
+                    }
+                }
             }
         }
     }
@@ -690,7 +700,7 @@ final class AppState: ObservableObject {
 
         work.async {
             var restored = 0
-            var failure: String?
+            var failures: [String] = []
             // 文件夹冻着的话先解开，还原才算全套撤销。
             for owner in Set(records.map { $0.bundleID }) {
                 guard let root = self.channel.containerPath(for: owner) else { continue }
@@ -711,19 +721,19 @@ final class AppState: ObservableObject {
                     restored += 1
                     self.log("已还原并核对 MD5：\(record.relativePath)", .success)
                 } catch {
-                    failure = "\(record.relativePath)：\(error.localizedDescription)"
-                    break
+                    failures.append("\(record.relativePath)：\(error.localizedDescription)")
+                    self.log("跳过这个文件（还原不了）：\(record.relativePath)：\(error.localizedDescription)", .warning)
                 }
             }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                if let failure {
-                    self.log("还原没有全部完成，停在：\(failure)", .warning)
-                    self.alertText = "还原没有全部完成，已经停在出问题的文件，详情看日志。"
-                } else {
+                if failures.isEmpty {
                     self.log("还原完成：\(restored) 个文件已写回，MD5 全部一致", .success)
                     self.alertText = "还原完成：\(restored) 个文件已写回，MD5 全部一致。"
+                } else {
+                    self.log("还原完成：\(restored) 个已写回，\(failures.count) 个没还原成、已跳过：\(failures.joined(separator: "；"))", .warning)
+                    self.alertText = "还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。"
                 }
                 self.checkRecipes(silent: true)
             }
@@ -1741,6 +1751,8 @@ final class AppState: ObservableObject {
                                              ownerBundleID: info.bundleID, ownerName: info.name)
             for file in files where file.size > 0 {
                 guard cleared < 300 else { break }
+                // 数据库文件是应用的统计/索引库，常驻占用、清不动，也不是广告素材，跳过。
+                if DatabaseFile.matches(relativePath: file.relativePath) { continue }
                 if autoClearFile(file, source: file.group, newBackups: &newBackups, newRecipes: &newRecipes) {
                     cleared += 1
                     log("\(reason)清掉新文件：\(info.name) · \(file.relativePath)", .success)

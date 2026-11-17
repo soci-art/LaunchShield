@@ -121,10 +121,15 @@ final class GuardService: NSObject, ObservableObject {
     private var stopping = false
     private var silentPlayer: AVAudioPlayer?
 
+    /// 启动时发现上次守护还开着（进程是被杀掉/装新版断的，不是手动关的）：
+    /// AppState 在通道就绪后据此自动把守护续上。
+    private(set) var wasActiveAtLaunch = false
+
     override init() {
         super.init()
         // A session marked active at launch was killed while it was running.
         if defaults.bool(forKey: Keys.active) {
+            wasActiveAtLaunch = true
             let when = defaults.object(forKey: Keys.heartbeat) as? Date ?? Date()
             interruption = when
             defaults.set(when, forKey: Keys.interruption)
