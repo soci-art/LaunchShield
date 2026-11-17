@@ -47,6 +47,30 @@ final class AppState: ObservableObject {
     @Published var alertText: String?
     /// 界面重建代号：加 1 就让根视图整棵推倒重建（清零写入后界面出双份的对策）。
     @Published var uiEpoch = 0
+
+    /// 【诊断版 39】把当前窗口与图层结构写进日志，
+    /// 对比清零前后的差异，定位界面双份到底长在哪一层。
+    func dumpWindowState(_ tag: String) {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        log("【窗口转储·\(tag)】场景 \(scenes.count) 个", .notice)
+        for (si, scene) in scenes.enumerated() {
+            for (wi, window) in scene.windows.enumerated() {
+                let layer = window.layer
+                log("【窗口转储·\(tag)】场景\(si) 窗口\(wi)：\(type(of: window)) 层级\(window.windowLevel.rawValue) 隐藏=\(window.isHidden) 透明度=\(window.alpha) 子图层=\(layer.sublayers?.count ?? 0)", .notice)
+                dumpLayer(layer, tag: tag, path: "窗\(wi)", depth: 0)
+            }
+        }
+    }
+
+    private func dumpLayer(_ layer: CALayer, tag: String, path: String, depth: Int) {
+        guard depth <= 2 else { return }
+        let subs = layer.sublayers ?? []
+        for (i, sub) in subs.enumerated() {
+            let p = "\(path).\(i)"
+            log("【窗口转储·\(tag)】\(p) \(type(of: sub)) 框=\(sub.frame) 隐藏=\(sub.isHidden) 透明度=\(sub.opacity) 有图像=\(sub.contents != nil) 子层=\(sub.sublayers?.count ?? 0)", .notice)
+            dumpLayer(sub, tag: tag, path: p, depth: depth + 1)
+        }
+    }
     @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
@@ -121,6 +145,7 @@ final class AppState: ObservableObject {
             guard let self = self else { return }
             self.guardTick(deep: deep)
         }
+        dumpWindowState("启动")
         firstLaunchChecks()
         // 通道发现放到后台：界面先出来，就绪后再补上容器、配方复查和启动补扫。
         work.async {
@@ -555,6 +580,7 @@ final class AppState: ObservableObject {
         isBusy = true
         busyText = "正在清零 \(targets.count) 个文件…"
         log("【诊断版 38】全套真做（备份＋清零＋冻结），收尾整页重建界面", .warning)
+        dumpWindowState("清零前")
 
         work.async {
             var done = 0
@@ -677,6 +703,9 @@ final class AppState: ObservableObject {
                 // 这版不犯 → 元凶在停掉的这几件里，下一版逐件放回；
                 // 这版还犯 → 元凶在清零干活本身或更早的环节。
                 self.log("清零完成（诊断版 38）：\(done) 个文件已清零、\(frozenCount) 个已冻结，已整页重建界面", .success)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    self?.dumpWindowState("清零后")
+                }
                 if !failures.isEmpty {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
                 }
