@@ -516,6 +516,16 @@ final class AppState: ObservableObject {
         return Array(result.prefix(80))
     }
 
+    /// 完成弹窗延后呈现：干活完成的那一刻要同时撤忙碌遮罩、重载清单，
+    /// 完成弹窗若挤在同一瞬间弹出，在 iOS 27.2 beta 2 上会把界面合成弄出重影
+    /// （真机对照实验定案：只扫描不弹完成弹窗就没事，扫描＋清零收尾必犯）。
+    /// 先让界面安顿约半秒，再单独弹窗。
+    func presentCompletionAlert(_ message: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.alertText = message
+        }
+    }
+
     func clearAllAfterScan() {
         if scanTargets.isEmpty {
             scanBaidu { [weak self] in
@@ -656,12 +666,12 @@ final class AppState: ObservableObject {
                     self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
                 }
                 if failures.isEmpty {
-                    self.alertText = frozenCount > 0
+                    self.presentCompletionAlert(frozenCount > 0
                         ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
-                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。"
+                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。")
                 } else {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    self.alertText = "清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。"
+                    self.presentCompletionAlert("清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。")
                 }
                 self.scanTargets = []
                 self.checkRecipes(silent: true)
@@ -731,10 +741,10 @@ final class AppState: ObservableObject {
                 self.busyText = ""
                 if failures.isEmpty {
                     self.log("还原完成：\(restored) 个文件已写回，MD5 全部一致", .success)
-                    self.alertText = "还原完成：\(restored) 个文件已写回，MD5 全部一致。"
+                    self.presentCompletionAlert("还原完成：\(restored) 个文件已写回，MD5 全部一致。")
                 } else {
                     self.log("还原完成：\(restored) 个已写回，\(failures.count) 个没还原成、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    self.alertText = "还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。"
+                    self.presentCompletionAlert("还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。")
                 }
                 self.checkRecipes(silent: true)
             }
