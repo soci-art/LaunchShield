@@ -63,7 +63,7 @@ final class AppState: ObservableObject {
     }
 
     private func dumpLayer(_ layer: CALayer, tag: String, path: String, depth: Int) {
-        guard depth <= 2 else { return }
+        guard depth <= 5 else { return }
         let subs = layer.sublayers ?? []
         for (i, sub) in subs.enumerated() {
             let p = "\(path).\(i)"
@@ -579,7 +579,7 @@ final class AppState: ObservableObject {
         let skipTruncate = false
         isBusy = true
         busyText = "正在清零 \(targets.count) 个文件…"
-        log("【诊断版 38】全套真做（备份＋清零＋冻结），收尾整页重建界面", .warning)
+        log("【诊断版 40】清零改走最素写法（开文件＋锁闸门＋截断，不走 mutation 仪式），其余与 39 相同", .warning)
         dumpWindowState("清零前")
 
         work.async {
@@ -617,7 +617,7 @@ final class AppState: ObservableObject {
                                                                    channel: self.channel)
                         newBackups.append(record)
                         if !skipTruncate {
-                            try self.channel.truncate(targetFile.path)
+                            try self.channel.truncatePlain(targetFile.path)
                         }
                         done += 1
                         self.log(skipTruncate ? "已备份（本版不清零）：\(targetFile.relativePath)（\(Format.bytes(size))）" : "已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)

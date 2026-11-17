@@ -33,6 +33,7 @@ struct LogsView: View {
             .padding(20)
         }
         .appAlert(state, active: shareItem == nil)
+        .onAppear { state.dumpWindowState("日志页") }
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.url])
         }
