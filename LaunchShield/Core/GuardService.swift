@@ -81,6 +81,13 @@ final class GuardService: NSObject, ObservableObject {
 
     private let defaults = UserDefaults.standard
     private weak var pipHostView: UIView?
+    /// 画中画专用窗口：源视图放在这个独立窗口里，不放主窗口。
+    /// 画中画进出时系统会动源视图所在的那个窗口（缩放/位移做动画），
+    /// 源视图在主窗口里时，主界面会被连带弄歪（实测界面整体左移、内容
+    /// 被切掉一截，停了守护也不恢复）。独立窗口只用来发现场景和承载
+    /// 源视图，透明、不挡触摸。
+    private var pipWindow: UIWindow?
+    private var pipRootViewController: UIViewController?
     private var pipController: AVPictureInPictureController?
     private var callViewController: AVPictureInPictureVideoCallViewController?
     private var pipSourceView: UIView?
@@ -170,6 +177,7 @@ final class GuardService: NSObject, ObservableObject {
         timer = nil
         updatePiPAutomaticStartPolicy()
         pipController?.stopPictureInPicture()
+        resetMainWindowGeometryIfNeeded()
         stopCapture()
         silentPlayer?.stop()
         silentPlayer = nil
@@ -187,11 +195,29 @@ final class GuardService: NSObject, ObservableObject {
         CGSize(width: pipWidth, height: pipHidden ? minPiPHeight : CGFloat(pipHeight))
     }
 
-    /// 源视图：建在宿主层里、居中、宽高约束跟窗口尺寸走、alpha 1。
+    /// 画中画专用窗口（备一次）：透明、盖在主窗口之上但不挡触摸
+    /// （根视图关了交互，手点会穿过去）。源视图建在这个窗口里，
+    /// 画中画动画只动这个窗口，主界面不受牵连。
+    private func setupPiPWindow() {
+        guard pipWindow == nil, let scene = pipHostView?.window?.windowScene else { return }
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .normal + 1
+        window.backgroundColor = .clear
+        let root = UIViewController()
+        root.view.backgroundColor = .clear
+        root.view.isUserInteractionEnabled = false
+        window.rootViewController = root
+        window.isHidden = false
+        pipWindow = window
+        pipRootViewController = root
+    }
+
+    /// 源视图：建在画中画专用窗口里、居中、宽高约束跟窗口尺寸走、alpha 1。
     /// （之前用状态行里 8×8 几乎透明的小圆点当源视图，窗口没正常成形，
     /// 系统还把整个应用窗口当成画中画内容收走，界面出现双份渲染。）
     private func setupPiPSourceView() {
-        guard let host = pipHostView, pipSourceView == nil else { return }
+        setupPiPWindow()
+        guard let host = pipRootViewController?.view, pipSourceView == nil else { return }
         let source = UIView()
         source.backgroundColor = .clear
         source.isOpaque = false
@@ -299,7 +325,18 @@ final class GuardService: NSObject, ObservableObject {
         source.alpha = 1
         source.layer.opacity = 1
         callViewController?.view.alpha = 1
-        pipHostView?.layoutIfNeeded()
+        pipRootViewController?.view.layoutIfNeeded()
+    }
+
+    /// 保险：万一主窗口被画中画动画留下了位移/缩放，恢复原样。
+    private func resetMainWindowGeometryIfNeeded() {
+        guard let window = pipHostView?.window else { return }
+        if window.transform != .identity {
+            window.transform = .identity
+        }
+        if let rootView = window.rootViewController?.view, rootView.transform != .identity {
+            rootView.transform = .identity
+        }
     }
 
     /// 等画中画「可以启动」了再启动，还不行就隔一会儿再试（照全局高刷的
@@ -498,6 +535,7 @@ extension GuardService: AVPictureInPictureControllerDelegate {
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         DispatchQueue.main.async {
+            self.resetMainWindowGeometryIfNeeded()
             guard self.isRunning else { return }
             self.isRunning = false
             self.statusText = "已中断"
