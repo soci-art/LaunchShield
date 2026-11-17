@@ -4,6 +4,7 @@ struct FindAdView: View {
     @EnvironmentObject private var state: AppState
     @State private var showConfirm = false
     @State private var showFileTools = false
+    @State private var showClearCacheConfirm = false
 
     var body: some View {
         SheetPage("找广告（前后对比）") {
@@ -11,6 +12,9 @@ struct FindAdView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     guideCard
                     fileToolsCard
+                    if state.checkedIDs.isEmpty {
+                        clearCacheCard
+                    }
                     if !state.checkedIDs.isEmpty {
                         appsWithAdsCard
                     }
@@ -27,6 +31,14 @@ struct FindAdView: View {
                 }
                 .padding(20)
             }
+        }
+        .confirmationDialog("先清掉\(state.target.name)的缓存？", isPresented: $showClearCacheConfirm, titleVisibility: .visible) {
+            Button("清掉缓存，并拍第一次快照", role: .destructive) {
+                state.clearCacheBeforeSnapshot()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("会删掉这个应用「缓存」和「临时文件」里的全部内容，删掉的不能恢复；冻住的文件删不掉、会自动跳过。个别应用存在缓存里的离线内容，清完要重新下载。清完会自动拍第一次快照当干净底子。")
         }
         .confirmationDialog("清零选中的素材？", isPresented: $showConfirm, titleVisibility: .visible) {
             Button("先备份，再清零 \(state.selectedCandidatePaths.count) 个文件", role: .destructive) {
@@ -78,11 +90,32 @@ struct FindAdView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
             Text(state.checkedIDs.isEmpty
-                 ? "① 拍第一次快照  →  ② 去 \(state.target.name) 里让开屏广告完整播一次  →  ③ 回来拍第二次快照  →  ④ 勾选刚出现或明显变大的文件。"
+                 ? "⓪（可选）先清一次缓存  →  ① 拍第一次快照  →  ② 去 \(state.target.name) 里让开屏广告完整播一次  →  ③ 回来拍第二次快照  →  ④ 勾选刚出现或明显变大的文件。"
                  : "① 拍第一次快照（勾选的应用一起拍）  →  ② 去有广告的应用里让开屏广告完整播一次  →  ③ 回来拍第二次快照  →  ④ 勾选刚出现或明显变大的文件。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel()
+    }
+
+    private var clearCacheCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("先清一次缓存（可选）")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.primaryText)
+            Text("广告图要是早就缓存好了，前后对比看不出它动过。先把\(state.target.name)的缓存清干净，它下次打开就得重新下载广告，第二次快照一比就现形。冻住的文件删不掉，会自动跳过。")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                showClearCacheConfirm = true
+            } label: {
+                actionLabel("清掉缓存并拍第一次快照", symbol: "trash")
+            }
+            .buttonStyle(.plain)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

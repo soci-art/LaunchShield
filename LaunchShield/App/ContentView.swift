@@ -270,6 +270,14 @@ struct ContentView: View {
                 }
                 Spacer()
                 Button {
+                    state.scanBaidu(deep: true)
+                } label: {
+                    Label("深扫", systemImage: "magnifyingglass.circle")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+                Button {
                     state.scanBaidu()
                 } label: {
                     Label("扫描", systemImage: "arrow.clockwise")

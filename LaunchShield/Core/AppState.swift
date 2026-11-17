@@ -346,7 +346,7 @@ final class AppState: ObservableObject {
 
     /// 扫描范围：一键勾选有勾选时扫全部勾选的应用，否则只扫当前单个目标。
     /// 软件自营的推导目前只对百度网盘成立，其余应用只扫第三方 SDK 分组。
-    func scanBaidu(completion: (() -> Void)? = nil) {
+    func scanBaidu(deep: Bool = false, completion: (() -> Void)? = nil) {
         guard requireChannel() else { return }
         let scanSet: [ContainerInfo]
         if !checkedIDs.isEmpty {
@@ -369,7 +369,9 @@ final class AppState: ObservableObject {
         }
         let singleBaidu = scanSet.count == 1 && scanSet[0].bundleID == BaiduNetdisk.bundleID
         isBusy = true
-        busyText = scanSet.count == 1 ? "正在扫描\(scanSet[0].name)的素材…" : "正在扫描 \(scanSet.count) 个应用的素材…"
+        busyText = deep
+            ? (scanSet.count == 1 ? "正在深扫\(scanSet[0].name)…" : "正在深扫 \(scanSet.count) 个应用…")
+            : (scanSet.count == 1 ? "正在扫描\(scanSet[0].name)的素材…" : "正在扫描 \(scanSet.count) 个应用的素材…")
         work.async {
             var allTargets: [TargetFile] = []
             var baiduSplash: SplashResolution?
@@ -382,16 +384,29 @@ final class AppState: ObservableObject {
                 var found = BaiduNetdisk.targets(container: info.path, channel: self.channel, splash: splash,
                                                  ownerBundleID: info.bundleID, ownerName: info.name)
                 // 关联的共享组容器一并扫，素材算在所属应用名下。
-                if !info.isGroup {
-                    let groups = self.associatedGroups(for: info.bundleID)
-                    for group in groups {
-                        let groupFound = BaiduNetdisk.targets(container: group.path, channel: self.channel, splash: nil,
-                                                              ownerBundleID: info.bundleID, ownerName: info.name)
-                        if !groupFound.isEmpty {
-                            self.log("\(info.name) 的共享组容器（\(group.bundleID)）：找到 \(groupFound.count) 个素材", .notice)
-                        }
-                        found.append(contentsOf: groupFound)
+                let groups = info.isGroup ? [] : self.associatedGroups(for: info.bundleID)
+                for group in groups {
+                    let groupFound = BaiduNetdisk.targets(container: group.path, channel: self.channel, splash: nil,
+                                                          ownerBundleID: info.bundleID, ownerName: info.name)
+                    if !groupFound.isEmpty {
+                        self.log("\(info.name) 的共享组容器（\(group.bundleID)）：找到 \(groupFound.count) 个素材", .notice)
                     }
+                    found.append(contentsOf: groupFound)
+                }
+                // 深扫：名单之外再按关键词和全屏尺寸翻一遍，命中进「疑似广告」组。
+                if deep {
+                    let knownPaths = Set(found.map { $0.path })
+                    var extra = self.deepScanTargets(container: info.path, ownerBundleID: info.bundleID,
+                                                     ownerName: info.name)
+                    for group in groups {
+                        extra.append(contentsOf: self.deepScanTargets(container: group.path, ownerBundleID: info.bundleID,
+                                                                      ownerName: info.name))
+                    }
+                    let fresh = extra.filter { !knownPaths.contains($0.path) }
+                    if !fresh.isEmpty {
+                        self.log("\(info.name)：深扫多找到 \(fresh.count) 个疑似广告文件", .notice)
+                    }
+                    found.append(contentsOf: fresh)
                 }
                 // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
                 // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
@@ -760,7 +775,9 @@ final class AppState: ObservableObject {
             var snaps: [String: ContainerSnapshot] = [:]
             var failedNames: [String] = []
             for container in scope {
-                guard let root = self.channel.containerPath(for: container.bundleID) else {
+                // 共享组容器不在应用容器登记里，直接用它自己的路径。
+                let resolvedRoot = container.isGroup ? container.path : self.channel.containerPath(for: container.bundleID)
+                guard let root = resolvedRoot else {
                     failedNames.append(container.name)
                     continue
                 }
@@ -904,6 +921,110 @@ final class AppState: ObservableObject {
 
     /// 递归走一遍范围内的容器收集文件；keyword 非空时只收文件名命中的
     /// （上限 500 条），keyword 为空时全收（供大文件榜排序）。
+    /// 深扫：名单之外翻文件，命中两条线——相对路径带广告关键词，或者
+    /// 图片尺寸正好是手机全屏那几档。结果都进「疑似广告」组，清之前在
+    /// 清单里过目。系统启动图目录（SplashBoard）是系统自己的画面，排除。
+    /// 这些散文件清零时只冻文件本身：文件夹冻结只认规则目录，不会连累公共目录。
+    private func deepScanTargets(container: String, ownerBundleID: String, ownerName: String) -> [TargetFile] {
+        let keywords = Set(RulesStore.keywords.map { $0.lowercased() } + ["appopen", "openad", "splashad"])
+        let fullscreen: Set<String> = ["1080x1920", "1920x1080", "1125x2436", "2436x1125", "1242x2688", "2688x1242",
+                                       "1170x2532", "2532x1170", "1179x2556", "2556x1179", "1290x2796", "2796x1290",
+                                       "1206x2622", "2622x1206", "1320x2868", "2868x1320", "750x1334", "1334x750",
+                                       "828x1792", "1792x828", "1080x2340", "2340x1080", "720x1280", "1280x720"]
+        let imageExts: Set<String> = ["jpg", "jpeg", "png", "webp", "heic", "gif"]
+        var results: [TargetFile] = []
+        var visited = 0
+        var dimsChecked = 0
+        func consider(item: FileItem) {
+            let relative = String(item.path.dropFirst(container.count + 1))
+            if relative.hasPrefix("Library/SplashBoard") { return }
+            let lower = relative.lowercased()
+            if keywords.contains(where: { lower.contains($0) }) {
+                results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",
+                                          note: "深扫：路径带广告关键词", size: item.size, isSmallConfig: item.size < 65536,
+                                          bundleID: ownerBundleID, appName: ownerName))
+                return
+            }
+            let ext = (item.name as NSString).pathExtension.lowercased()
+            if imageExts.contains(ext), item.size >= 30_000, dimsChecked < 50 {
+                dimsChecked += 1
+                if let data = try? channel.read(item.path, maxBytes: 128 * 1024),
+                   let source = CGImageSourceCreateWithData(data as CFData, nil),
+                   let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+                   let w = props[kCGImagePropertyPixelWidth as String] as? Int,
+                   let h = props[kCGImagePropertyPixelHeight as String] as? Int,
+                   fullscreen.contains("\(w)x\(h)") {
+                    results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",
+                                              note: "深扫：全屏尺寸图片 \(w)×\(h)", size: item.size, isSmallConfig: false,
+                                              bundleID: ownerBundleID, appName: ownerName))
+                }
+            }
+        }
+        func walk(dir: String) {
+            guard visited < 8000, results.count < 300 else { return }
+            guard let items = try? channel.children(of: dir) else { return }
+            for item in items {
+                visited += 1
+                if item.isDirectory { walk(dir: item.path) } else { consider(item: item) }
+            }
+        }
+        for root in ["Library", "tmp"] {
+            walk(dir: container + "/" + root)
+        }
+        return results
+    }
+
+    /// 找广告第 0 步（只对单个目标应用）：先把缓存和临时文件清干净，
+    /// 再自动拍第一次快照当干净底子——广告图早就缓存好时，
+    /// 只有这样它重新下载的那一份才会在对比里现形。
+    /// 删是真删、不冻结；冻住的文件删不掉，自动跳过并计数。
+    func clearCacheBeforeSnapshot() {
+        guard requireChannel() else { return }
+        guard checkedIDs.isEmpty, targetChosen else {
+            banner = "这一步只对单个应用用：先取消一键勾选，只选一个应用。"
+            return
+        }
+        guard let info = containers.first(where: { $0.bundleID == target.bundleID }) ?? channel.container(for: target.bundleID) else {
+            banner = "没找到\(target.name)的容器。"
+            return
+        }
+        isBusy = true
+        busyText = "正在清\(info.name)的缓存…"
+        work.async {
+            var deleted = 0
+            var skippedFrozen = 0
+            var failed = 0
+            for root in ["Library/Caches", "tmp"] {
+                var visited = 0
+                func walk(dir: String) {
+                    guard visited < 30000 else { return }
+                    guard let items = try? self.channel.children(of: dir) else { return }
+                    for item in items {
+                        visited += 1
+                        if item.isDirectory {
+                            walk(dir: item.path)
+                        } else {
+                            do {
+                                try self.channel.delete(item.path)
+                                deleted += 1
+                            } catch {
+                                if self.channel.isImmutable(item.path) { skippedFrozen += 1 } else { failed += 1 }
+                            }
+                        }
+                    }
+                }
+                walk(dir: info.path + "/" + root)
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                self.log("先清缓存：\(info.name) 删掉 \(deleted) 个缓存文件，冻住的跳过 \(skippedFrozen) 个，删不掉的 \(failed) 个", .notice)
+                self.banner = "缓存清完了，已顺手拍好第一次快照。现在去打开\(info.name)，让广告播一次，再回来拍第二次快照。"
+                self.takeSnapshot(before: true)
+            }
+        }
+    }
+
     private func walkFoundFiles(scope: [ContainerInfo], keyword: String) -> [FoundFile] {
         var results: [FoundFile] = []
         let needle = keyword.lowercased()
