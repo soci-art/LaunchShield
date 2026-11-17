@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 使用教程二级页：五步讲清从选应用到还原的完整流程，文案与首页
+/// 使用教程二级页：六步讲清从开权限到开守护的完整流程，文案与首页
 /// 实际按钮名保持一致（例如清零按钮就叫「全部清零」）。
 struct TutorialView: View {
     var body: some View {
@@ -8,8 +8,9 @@ struct TutorialView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 12) {
                     step(1, "第一次打开，先开权限",
-                         "第一次打开，弹窗问联网时点允许。联网是上传日志、更新规则和检查更新用的。") {
+                         "弹窗问通知和联网时，都点允许。通知是给守护被挤掉时提醒你用的，联网是上传日志和检查更新用的。") {
                         VStack(spacing: 8) {
+                            mockRow { Text("系统通知").font(.system(size: 13)).foregroundStyle(Color.primaryText); Spacer(); chip("允许") }
                             mockRow { Text("联网").font(.system(size: 13)).foregroundStyle(Color.primaryText); Spacer(); chip("允许") }
                         }
                     }
@@ -42,7 +43,19 @@ struct TutorialView: View {
                             chip("已冻结 ❄")
                         }
                     }
-                    step(5, "想恢复，随时还原",
+                    step(5, "开守护，新广告自动处理",
+                         "打开守护模式，它会一直盯着广告文件，有新的自动清零冻结。点「一键开启并隐藏」，守护窗口直接藏起来，屏幕上看不到。") {
+                        VStack(spacing: 9) {
+                            mockRow {
+                                Text("守护模式").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.primaryText)
+                                Spacer()
+                                Capsule().fill(Color.green).frame(width: 40, height: 24)
+                                    .overlay(Circle().fill(.white).padding(2).shadow(radius: 1), alignment: .trailing)
+                            }
+                            mockRow { mockButton("🙈 一键开启并隐藏") }
+                        }
+                    }
+                    step(6, "想恢复，随时还原",
                          "清零前都自动留了备份。在「备份记录」里点全部还原，素材会原样写回去，应用恢复原状。") {
                         mockRow {
                             Text("备份记录").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.primaryText)

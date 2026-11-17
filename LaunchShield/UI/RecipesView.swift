@@ -108,7 +108,7 @@ struct RecipesView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("这些文件已经不在了，清掉只是把名单删干净。")
+            Text("这些文件已经不在了，清掉只是把名单删干净，守护不再白查它们。")
         }
         .confirmationDialog("把已复发的文件重新清零并冻结？", isPresented: $showRefreeze, titleVisibility: .visible) {
             Button("重新清零并冻结 \(relapsedCount) 个") {
