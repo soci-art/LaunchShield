@@ -519,7 +519,7 @@ final class AppState: ObservableObject {
             var done = 0
             var frozenCount = 0
             var freezeFailureCount = 0
-            var failure: String?
+            var failures: [String] = []
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
 
@@ -572,8 +572,9 @@ final class AppState: ObservableObject {
                         }
                     }
                 } catch {
-                    failure = "\(targetFile.relativePath)：\(error.localizedDescription)"
-                    break
+                    // 一个文件清不动就跳过它，其余照清，最后在总结里汇总。
+                    failures.append("\(targetFile.relativePath)：\(error.localizedDescription)")
+                    self.log("跳过这个文件（清不动）：\(targetFile.relativePath)：\(error.localizedDescription)", .warning)
                 }
             }
 
@@ -581,7 +582,7 @@ final class AppState: ObservableObject {
             // 这样它们连新建文件备货都做不到。文件夹冻结失败只警告，不算清零失败。
             var frozenDirCount = 0
             var freezeDirFailureCount = 0
-            if failure == nil {
+            if true {
                 let owners = Set(targets.map { $0.bundleID.isEmpty ? BaiduNetdisk.bundleID : $0.bundleID })
                 for owner in owners {
                     guard let root = self.channel.containerPath(for: owner) else { continue }
@@ -619,28 +620,28 @@ final class AppState: ObservableObject {
                 self.recipes = self.store.file.recipes
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
 
-                if let failure {
-                    self.log("清零没有全部完成，停在：\(failure)", .warning)
-                    self.alertText = "清零没有全部完成，已经停在出问题的文件，详情看日志。"
-                } else {
-                    self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
-                    if frozenCount > 0 {
-                        self.log("清零的文件已全部冻结：\(frozenCount) 个", .success)
-                    }
-                    if freezeFailureCount > 0 {
-                        self.log("有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
-                    }
-                    if frozenDirCount > 0 {
-                        self.log("广告商的文件夹已冻结：\(frozenDirCount) 个", .success)
-                    }
-                    if freezeDirFailureCount > 0 {
-                        self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
-                    }
+                self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
+                if frozenCount > 0 {
+                    self.log("清零的文件已全部冻结：\(frozenCount) 个", .success)
+                }
+                if freezeFailureCount > 0 {
+                    self.log("有 \(freezeFailureCount) 个文件没冻上，详情看上面", .warning)
+                }
+                if frozenDirCount > 0 {
+                    self.log("广告商的文件夹已冻结：\(frozenDirCount) 个", .success)
+                }
+                if freezeDirFailureCount > 0 {
+                    self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
+                }
+                if failures.isEmpty {
                     self.alertText = frozenCount > 0
                         ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
                         : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。"
-                    self.scanTargets = []
+                } else {
+                    self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
+                    self.alertText = "清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。"
                 }
+                self.scanTargets = []
                 self.checkRecipes(silent: true)
             }
         }
@@ -906,8 +907,8 @@ final class AppState: ObservableObject {
                 self.recipes = self.store.file.recipes
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 if let failure {
-                    self.log("清零候选没有全部完成，停在：\(failure)", .warning)
-                    self.alertText = "清零没有全部完成，已经停在出问题的文件，详情看日志。"
+                    self.log("清零候选没有全部完成，没清成的：\(failure)", .warning)
+                    self.alertText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。"
                 } else {
                     self.log("确认的素材已清零：\(done) 个，配方已存入守护列表", .success)
                     self.alertText = "已清零 \(done) 个素材，并加入已守护应用。"
