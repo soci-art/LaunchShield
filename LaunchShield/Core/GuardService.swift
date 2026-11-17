@@ -12,6 +12,24 @@ import UserNotifications
 /// This is not a permanent daemon: if the system reclaims the app or the user
 /// closes the PiP window, the guard stops, and the next launch says when it
 /// was interrupted instead of pretending it kept running.
+/// 画中画源视图的宿主控制器（GPT 方案，2026-11-17）：只承载源视图，
+/// 不含任何应用界面。源视图挂在它自己的独立窗口里，主界面零接触。
+@MainActor
+private final class PiPSourceHostViewController: UIViewController {
+    override func loadView() {
+        let hostView = UIView()
+        hostView.backgroundColor = .clear
+        hostView.isOpaque = false
+        hostView.isUserInteractionEnabled = false
+        hostView.clipsToBounds = false
+        view = hostView
+    }
+
+    override var prefersStatusBarHidden: Bool { true }
+    override var shouldAutorotate: Bool { false }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+}
+
 final class GuardService: NSObject, ObservableObject {
 
     static let shared = GuardService()
@@ -82,15 +100,21 @@ final class GuardService: NSObject, ObservableObject {
     private let defaults = UserDefaults.standard
     private var pipController: AVPictureInPictureController?
     private var callViewController: AVPictureInPictureVideoCallViewController?
+    /// 画中画独立宿主窗口与宿主控制器（GPT 方案）：源视图只住在这里。
+    private var pipHostWindow: UIWindow?
+    private var pipHostViewController: PiPSourceHostViewController?
     private var pipSourceView: UIView?
     private var pipSourceWidthConstraint: NSLayoutConstraint?
     private var pipSourceHeightConstraint: NSLayoutConstraint?
     private var pipContentView: UIView?
     private var wantsPiPActive = false
     private var pipStartWorkItem: DispatchWorkItem?
-    /// 隐藏时窗口压到的高度（照全局高刷的 minPiPHeight）。
+    /// 隐藏时窗口压到的高度。
     private let minPiPHeight: CGFloat = 0.1
     private let pipWidth: CGFloat = 300
+    /// 源视图固定尺寸，永远不跟着画中画高度变（GPT 方案的核心之一）：
+    /// 它是系统计算进出动画的锚点，锚点一动，动画的恢复定位就乱。
+    private let pipSourceSize = CGSize(width: 300, height: 169)
     private var captureSession: AVCaptureSession?
     private var timer: DispatchSourceTimer?
     private var tickCount = 0
@@ -113,12 +137,14 @@ final class GuardService: NSObject, ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// 应用自己的主窗口（从场景里现找，不靠界面里的占位视图）。
+    /// 应用自己的主窗口（从场景里现找；排除画中画的宿主窗口）。
     private func appKeyWindow() -> UIWindow? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        let scene = scenes.first { $0.activationState == .foregroundActive }
+            ?? scenes.first { $0.activationState == .foregroundInactive }
         guard let scene else { return nil }
-        return scene.windows.first { $0.isKeyWindow } ?? scene.windows.first
+        return scene.windows.first { $0.isKeyWindow && $0 !== pipHostWindow }
+            ?? scene.windows.first { !$0.isHidden && $0 !== pipHostWindow }
     }
 
     /// Returns nil when PiP was asked to start, or a Chinese reason.
@@ -143,6 +169,7 @@ final class GuardService: NSObject, ObservableObject {
         guard preparePiPIfNeeded() else {
             wantsPiPActive = false
             stopCapture()
+            cleanupPiPResources()
             return "画中画没能启动：请确认系统设置里允许画中画，再试一次"
         }
         updatePiPAutomaticStartPolicy()
@@ -170,8 +197,13 @@ final class GuardService: NSObject, ObservableObject {
         timer?.cancel()
         timer = nil
         updatePiPAutomaticStartPolicy()
-        pipController?.stopPictureInPicture()
-        resetMainWindowGeometryIfNeeded()
+        if let pip = pipController, pip.isPictureInPictureActive {
+            // 还在播就只发停止请求，资源等 DidStop 回调里再拆，
+            // 免得系统退出动画还没做完源视图先没了。
+            pip.stopPictureInPicture()
+        } else {
+            cleanupPiPResources()
+        }
         stopCapture()
         silentPlayer?.stop()
         silentPlayer = nil
@@ -182,21 +214,40 @@ final class GuardService: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
-    // MARK: - PiP（照全局高刷 GlobalRefresh-PiP 的实现搬，只去掉 120Hz 部分）
+    // MARK: - PiP（GPT 方案，2026-11-17：独立宿主窗口＋源视图固定尺寸＋无私有 KVC＋停后整套拆）
 
     /// 当前窗口尺寸：宽固定，隐藏时高 0.1，显示时是滑块的悬浮高度。
     private var currentPiPSize: CGSize {
         CGSize(width: pipWidth, height: pipHidden ? minPiPHeight : CGFloat(pipHeight))
     }
 
-    /// 源视图：直接建在主窗口根视图里、居中、宽高约束跟窗口尺寸走、
-    /// alpha 1——和全局高刷一模一样的挂法（它的源视图就挂在根视图上）。
-    /// 不再经 SwiftUI 的占位层、也不再单开窗口：那两种挂法在这台机器
-    /// 的系统上都出过事（界面被收成浮窗、整体左移、双份渲染、停了
-    /// 守护也不恢复）。根视图在 UIKit 层，SwiftUI 不插手它的几何。
+    /// 画中画独立宿主窗口：透明、盖在主窗口之上但整个窗口关交互
+    /// （点按穿透）、从不抢 key window。源视图只住在这里，主界面零接触。
+    private func setupPiPHostWindow() -> Bool {
+        if pipHostWindow != nil { return true }
+        guard let mainWindow = appKeyWindow(), let scene = mainWindow.windowScene else { return false }
+        let hostController = PiPSourceHostViewController()
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 1)
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.isUserInteractionEnabled = false
+        window.rootViewController = hostController
+        hostController.loadViewIfNeeded()
+        hostController.view.backgroundColor = .clear
+        hostController.view.isOpaque = false
+        hostController.view.isUserInteractionEnabled = false
+        pipHostViewController = hostController
+        pipHostWindow = window
+        window.isHidden = false
+        return true
+    }
+
+    /// 源视图：建在宿主窗口里、居中、固定 300×169，永远不改尺寸。
     private func setupPiPSourceView() {
-        guard let window = appKeyWindow(), pipSourceView == nil else { return }
-        let host: UIView = window.rootViewController?.view ?? window
+        guard pipSourceView == nil, setupPiPHostWindow(),
+              let host = pipHostViewController?.view else { return }
         let source = UIView()
         source.backgroundColor = .clear
         source.isOpaque = false
@@ -206,8 +257,8 @@ final class GuardService: NSObject, ObservableObject {
         source.clipsToBounds = true
         source.translatesAutoresizingMaskIntoConstraints = false
         host.addSubview(source)
-        let width = source.widthAnchor.constraint(equalToConstant: currentPiPSize.width)
-        let height = source.heightAnchor.constraint(equalToConstant: currentPiPSize.height)
+        let width = source.widthAnchor.constraint(equalToConstant: pipSourceSize.width)
+        let height = source.heightAnchor.constraint(equalToConstant: pipSourceSize.height)
         NSLayoutConstraint.activate([
             source.centerXAnchor.constraint(equalTo: host.centerXAnchor),
             source.centerYAnchor.constraint(equalTo: host.centerYAnchor),
@@ -216,6 +267,8 @@ final class GuardService: NSObject, ObservableObject {
         pipSourceView = source
         pipSourceWidthConstraint = width
         pipSourceHeightConstraint = height
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
     }
 
     /// 内容：控制器视图透明，里面铺一张不透明的脸（深底＋盾牌＋「守护中」），
@@ -225,8 +278,6 @@ final class GuardService: NSObject, ObservableObject {
         contentController.preferredContentSize = currentPiPSize
         contentController.view.backgroundColor = .clear
         contentController.view.isOpaque = false
-        contentController.view.layer.backgroundColor = UIColor.clear.cgColor
-        contentController.view.layer.isOpaque = false
         contentController.view.clipsToBounds = true
         callViewController = contentController
 
@@ -261,17 +312,27 @@ final class GuardService: NSObject, ObservableObject {
             icon.heightAnchor.constraint(equalToConstant: 18),
         ])
         pipContentView = content
+        contentController.view.setNeedsLayout()
         contentController.view.layoutIfNeeded()
     }
 
-    /// 备好整套画中画（源视图＋内容＋控制器），备过就复用。
+    /// 备好整套画中画（宿主窗口＋源视图＋内容＋控制器），备过就复用。
+    /// 不再设置 controlsStyle 私有 KVC（GPT 点名的主要嫌疑：所有出事
+    /// 版本都保留着它，它不是公开接口）。
     private func preparePiPIfNeeded() -> Bool {
         if pipController != nil { return true }
         guard appKeyWindow() != nil else { return false }
+        guard setupPiPHostWindow() else { return false }
         setupPiPSourceView()
-        guard let source = pipSourceView else { return false }
+        guard let source = pipSourceView else {
+            cleanupPiPResources()
+            return false
+        }
         setupPiPContent()
-        guard let contentController = callViewController else { return false }
+        guard let contentController = callViewController else {
+            cleanupPiPResources()
+            return false
+        }
         let contentSource = AVPictureInPictureController.ContentSource(
             activeVideoCallSourceView: source,
             contentViewController: contentController
@@ -279,43 +340,43 @@ final class GuardService: NSObject, ObservableObject {
         let pip = AVPictureInPictureController(contentSource: contentSource)
         pip.delegate = self
         pipController = pip
-        applyPiPControlsStyle()
         pip.requiresLinearPlayback = true
-        updatePiPAutomaticStartPolicy()
+        pip.canStartPictureInPictureAutomaticallyFromInline = wantsPiPActive
         return true
-    }
-
-    private func applyPiPControlsStyle() {
-        let style = 2
-        pipController?.setValue(style, forKey: "controlsStyle")
     }
 
     private func updatePiPAutomaticStartPolicy() {
         pipController?.canStartPictureInPictureAutomaticallyFromInline = wantsPiPActive
     }
 
-    /// 源视图几何跟窗口尺寸对齐（照全局高刷的 updatePiPSourceGeometry）。
-    private func updatePiPSourceGeometry() {
-        guard let source = pipSourceView else { return }
-        if let width = pipSourceWidthConstraint, let height = pipSourceHeightConstraint {
-            width.constant = currentPiPSize.width
-            height.constant = currentPiPSize.height
+    /// 整套拆掉画中画资源（控制器、内容、源视图、宿主窗口）。
+    /// 只能在画中画已确认停止或启动失败后调用；下次开启重新备一套。
+    private func cleanupPiPResources() {
+        guard pipController?.isPictureInPictureActive != true else { return }
+        pipController?.delegate = nil
+        pipController = nil
+        callViewController = nil
+        pipContentView = nil
+        pipSourceView?.removeFromSuperview()
+        pipSourceView = nil
+        pipSourceWidthConstraint = nil
+        pipSourceHeightConstraint = nil
+        if let window = pipHostWindow {
+            window.isHidden = true
+            window.rootViewController = nil
         }
-        source.alpha = 1
-        source.layer.opacity = 1
-        callViewController?.view.alpha = 1
-        pipSourceView?.superview?.layoutIfNeeded()
+        pipHostWindow = nil
+        pipHostViewController = nil
     }
 
-    /// 保险：万一主窗口被画中画动画留下了位移/缩放，恢复原样。
-    private func resetMainWindowGeometryIfNeeded() {
-        guard let window = appKeyWindow() else { return }
-        if window.transform != .identity {
-            window.transform = .identity
-        }
-        if let rootView = window.rootViewController?.view, rootView.transform != .identity {
-            rootView.transform = .identity
-        }
+    /// 源视图尺寸固定，这里只保证它可见并触发布局，不动它的约束。
+    private func updatePiPSourceGeometry() {
+        guard let source = pipSourceView else { return }
+        source.alpha = 1
+        source.layer.opacity = 1
+        source.setNeedsLayout()
+        source.superview?.layoutIfNeeded()
+        callViewController?.view.alpha = 1
     }
 
     /// 等画中画「可以启动」了再启动，还不行就隔一会儿再试（照全局高刷的
@@ -339,10 +400,13 @@ final class GuardService: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0.05 : 0.25), execute: workItem)
     }
 
-    /// 窗口尺寸一处同步：内容控制器 preferredContentSize＋源视图约束。
+    /// 画中画高度只由内容控制器的 preferredContentSize 管，
+    /// 源视图尺寸固定不动。
     private func applyPiPGeometry() {
-        callViewController?.preferredContentSize = currentPiPSize
-        updatePiPSourceGeometry()
+        guard let controller = callViewController else { return }
+        controller.preferredContentSize = currentPiPSize
+        controller.view.setNeedsLayout()
+        controller.view.layoutIfNeeded()
     }
 
     /// 守护运行中把窗口压到 0.1（完全隐藏）或恢复成悬浮高度。
@@ -525,6 +589,11 @@ final class GuardService: NSObject, ObservableObject {
 extension GuardService: AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         DispatchQueue.main.async {
+            // 启动回调迟到而用户已经关了守护：立刻停掉，不让它复活。
+            if self.stopping || !self.wantsPiPActive {
+                pictureInPictureController.stopPictureInPicture()
+                return
+            }
             self.isRunning = true
             self.statusText = "守护中"
             self.log?("画中画已启动，守护在后台继续", .success)
@@ -532,7 +601,7 @@ extension GuardService: AVPictureInPictureControllerDelegate {
             if self.autoHidePending {
                 self.autoHidePending = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    guard self.isRunning else { return }
+                    guard self.isRunning, self.wantsPiPActive else { return }
                     self.setPiPHidden(true)
                     self.log?("画中画已自动隐藏（0.1）", .info)
                 }
@@ -542,8 +611,12 @@ extension GuardService: AVPictureInPictureControllerDelegate {
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         DispatchQueue.main.async {
-            self.resetMainWindowGeometryIfNeeded()
-            guard self.isRunning else { return }
+            // 系统已确认停了，现在拆资源是安全的。
+            self.cleanupPiPResources()
+            guard self.isRunning else {
+                self.stopping = false
+                return
+            }
             self.isRunning = false
             self.statusText = "已中断"
             if self.stopping {
@@ -569,6 +642,10 @@ extension GuardService: AVPictureInPictureControllerDelegate {
         DispatchQueue.main.async {
             self.isRunning = false
             self.statusText = "没启动"
+            self.pipStartWorkItem?.cancel()
+            self.pipStartWorkItem = nil
+            self.wantsPiPActive = false
+            self.cleanupPiPResources()
             self.defaults.set(false, forKey: Keys.active)
             self.timer?.cancel()
             self.timer = nil
