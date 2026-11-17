@@ -225,6 +225,8 @@ struct FindAdView: View {
             }
             .padding(.horizontal, 12)
             .panel()
+        }
+    }
 
     private func toggle(_ candidate: DiffCandidate) {
         if state.selectedCandidatePaths.contains(candidate.id) {
