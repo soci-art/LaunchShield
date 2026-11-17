@@ -222,7 +222,9 @@ final class AppState: ObservableObject {
 
     /// Names of apps the latest scan found ad material in (for the find-ad guide).
     var appsWithAds: [String] {
-        let fromRecognition = lastRecognition.filter { $0.total > 0 }.map { $0.name }
+        let fromRecognition = lastRecognition
+            .filter { $0.groups.values.reduce(0, +) > 0 }
+            .map { $0.name }
         if !fromRecognition.isEmpty { return fromRecognition }
         var seen: [String] = []
         for file in scanTargets where !seen.contains(file.appName) {
