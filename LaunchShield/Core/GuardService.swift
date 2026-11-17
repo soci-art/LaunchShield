@@ -80,14 +80,6 @@ final class GuardService: NSObject, ObservableObject {
     }
 
     private let defaults = UserDefaults.standard
-    private weak var pipHostView: UIView?
-    /// 画中画专用窗口：源视图放在这个独立窗口里，不放主窗口。
-    /// 画中画进出时系统会动源视图所在的那个窗口（缩放/位移做动画），
-    /// 源视图在主窗口里时，主界面会被连带弄歪（实测界面整体左移、内容
-    /// 被切掉一截，停了守护也不恢复）。独立窗口只用来发现场景和承载
-    /// 源视图，透明、不挡触摸。
-    private var pipWindow: UIWindow?
-    private var pipRootViewController: UIViewController?
     private var pipController: AVPictureInPictureController?
     private var callViewController: AVPictureInPictureVideoCallViewController?
     private var pipSourceView: UIView?
@@ -121,10 +113,12 @@ final class GuardService: NSObject, ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// 画中画宿主视图（铺满主界面的透明层，照全局高刷的做法：
-    /// 源视图建在它里面、居中、和窗口一样大）。它必须在窗口里。
-    func attach(_ view: UIView) {
-        pipHostView = view
+    /// 应用自己的主窗口（从场景里现找，不靠界面里的占位视图）。
+    private func appKeyWindow() -> UIWindow? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        guard let scene else { return nil }
+        return scene.windows.first { $0.isKeyWindow } ?? scene.windows.first
     }
 
     /// Returns nil when PiP was asked to start, or a Chinese reason.
@@ -132,7 +126,7 @@ final class GuardService: NSObject, ObservableObject {
     /// 是在窗口显示出来、启动成功之后，再自动压到 0.1 藏起来。
     func start(hidden: Bool = false) -> String? {
         if isRunning { return nil }
-        guard pipHostView?.window != nil else {
+        guard appKeyWindow() != nil else {
             return "首页还没显示出来，请等页面出现后再开启守护"
         }
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
@@ -195,29 +189,14 @@ final class GuardService: NSObject, ObservableObject {
         CGSize(width: pipWidth, height: pipHidden ? minPiPHeight : CGFloat(pipHeight))
     }
 
-    /// 画中画专用窗口（备一次）：透明、盖在主窗口之上但不挡触摸
-    /// （根视图关了交互，手点会穿过去）。源视图建在这个窗口里，
-    /// 画中画动画只动这个窗口，主界面不受牵连。
-    private func setupPiPWindow() {
-        guard pipWindow == nil, let scene = pipHostView?.window?.windowScene else { return }
-        let window = UIWindow(windowScene: scene)
-        window.windowLevel = .normal + 1
-        window.backgroundColor = .clear
-        let root = UIViewController()
-        root.view.backgroundColor = .clear
-        root.view.isUserInteractionEnabled = false
-        window.rootViewController = root
-        window.isHidden = false
-        pipWindow = window
-        pipRootViewController = root
-    }
-
-    /// 源视图：建在画中画专用窗口里、居中、宽高约束跟窗口尺寸走、alpha 1。
-    /// （之前用状态行里 8×8 几乎透明的小圆点当源视图，窗口没正常成形，
-    /// 系统还把整个应用窗口当成画中画内容收走，界面出现双份渲染。）
+    /// 源视图：直接建在主窗口根视图里、居中、宽高约束跟窗口尺寸走、
+    /// alpha 1——和全局高刷一模一样的挂法（它的源视图就挂在根视图上）。
+    /// 不再经 SwiftUI 的占位层、也不再单开窗口：那两种挂法在这台机器
+    /// 的系统上都出过事（界面被收成浮窗、整体左移、双份渲染、停了
+    /// 守护也不恢复）。根视图在 UIKit 层，SwiftUI 不插手它的几何。
     private func setupPiPSourceView() {
-        setupPiPWindow()
-        guard let host = pipRootViewController?.view, pipSourceView == nil else { return }
+        guard let window = appKeyWindow(), pipSourceView == nil else { return }
+        let host: UIView = window.rootViewController?.view ?? window
         let source = UIView()
         source.backgroundColor = .clear
         source.isOpaque = false
@@ -288,7 +267,7 @@ final class GuardService: NSObject, ObservableObject {
     /// 备好整套画中画（源视图＋内容＋控制器），备过就复用。
     private func preparePiPIfNeeded() -> Bool {
         if pipController != nil { return true }
-        guard pipHostView != nil else { return false }
+        guard appKeyWindow() != nil else { return false }
         setupPiPSourceView()
         guard let source = pipSourceView else { return false }
         setupPiPContent()
@@ -325,12 +304,12 @@ final class GuardService: NSObject, ObservableObject {
         source.alpha = 1
         source.layer.opacity = 1
         callViewController?.view.alpha = 1
-        pipRootViewController?.view.layoutIfNeeded()
+        pipSourceView?.superview?.layoutIfNeeded()
     }
 
     /// 保险：万一主窗口被画中画动画留下了位移/缩放，恢复原样。
     private func resetMainWindowGeometryIfNeeded() {
-        guard let window = pipHostView?.window else { return }
+        guard let window = appKeyWindow() else { return }
         if window.transform != .identity {
             window.transform = .identity
         }
