@@ -76,8 +76,8 @@ struct AppPickerView: View {
                 state.refreshContainers()
             }
         }
+        .appAlert(state)
     }
-    .appAlert(state)
 
     private func row(_ container: ContainerInfo) -> some View {
         let checked = state.checkedIDs.contains(container.bundleID)

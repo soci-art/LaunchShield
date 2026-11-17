@@ -60,8 +60,8 @@ struct FindAdView: View {
         } message: {
             Text("这一组落在广告目录、名字带冷开/开屏，或是新下的大图/视频；应用自己的资源图已经排除。清之前会先备份。")
         }
+        .appAlert(state)
     }
-    .appAlert(state)
 
     private var fileToolsCard: some View {
         Button {
