@@ -62,6 +62,28 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 【诊断版 41】清零完成后把主窗口短暂隐藏再显示，逼系统把这个窗口的
+    /// 画面拆掉重建——切后台、锁屏、下拉通知中心都能治好双份，
+    /// 共同点都是让系统重建显示，这一步在 App 内模拟同一件事。
+    func cycleKeyWindow(_ tag: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }
+            guard let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first else {
+                self.log("【诊断版 41】没找到主窗口，跳过窗口重建", .warning)
+                return
+            }
+            window.isHidden = true
+            self.log("【诊断版 41】主窗口已隐藏，准备重建显示（\(tag)）", .info)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                window.isHidden = false
+                window.makeKey()
+                self.log("【诊断版 41】主窗口已重新显示", .info)
+            }
+        }
+    }
+
     private func dumpLayer(_ layer: CALayer, tag: String, path: String, depth: Int) {
         guard depth <= 5 else { return }
         let subs = layer.sublayers ?? []
@@ -703,6 +725,7 @@ final class AppState: ObservableObject {
                 // 这版不犯 → 元凶在停掉的这几件里，下一版逐件放回；
                 // 这版还犯 → 元凶在清零干活本身或更早的环节。
                 self.log("清零完成（诊断版 38）：\(done) 个文件已清零、\(frozenCount) 个已冻结，已整页重建界面", .success)
+                self.cycleKeyWindow("清零后")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                     self?.dumpWindowState("清零后")
                 }
