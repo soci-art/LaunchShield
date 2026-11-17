@@ -543,14 +543,15 @@ final class AppState: ObservableObject {
             return
         }
         let targets = scanTargets
-        // 【诊断版 35/36】二分开关：干跑已验完（构建 35 不犯）——写操作是元凶。
-        // 构建 36：备份＋清零照常真做，只关冻结（文件与文件夹都不冻），
-        // 验冻结是不是那一下。dryRunClear 保持 false。
+        // 【诊断版 35/36/37】二分开关：干跑不犯（35）、真清零不冻仍犯（36）
+        // ——冻结无罪，剩备份拷贝与清零写入二选一。
+        // 构建 37：只真备份，清零与冻结都关（对文件零破坏）。
         let dryRunClear = false
         let skipFreeze = true
+        let skipTruncate = true
         isBusy = true
-        busyText = "正在清零 \(targets.count) 个文件…"
-        log("【诊断版 36】本次清零跳过冻结：只备份＋清零，文件夹也不冻", .warning)
+        busyText = "正在备份 \(targets.count) 个文件…"
+        log("【诊断版 37】本次只备份不清零：备份照常，清零与冻结都关", .warning)
 
         work.async {
             var done = 0
@@ -586,9 +587,11 @@ final class AppState: ObservableObject {
                                                                    source: targetFile.group,
                                                                    channel: self.channel)
                         newBackups.append(record)
-                        try self.channel.truncate(targetFile.path)
+                        if !skipTruncate {
+                            try self.channel.truncate(targetFile.path)
+                        }
                         done += 1
-                        self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
+                        self.log(skipTruncate ? "已备份（本版不清零）：\(targetFile.relativePath)（\(Format.bytes(size))）" : "已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
                         if targetFile.group == "软件自营" {
                             newRecipes.append(Recipe(id: UUID(),
                                                      bundleID: ownerID,
@@ -669,7 +672,7 @@ final class AppState: ObservableObject {
                 // 干完后界面上的数字是旧的，重启 App 后按存盘数据恢复。
                 // 这版不犯 → 元凶在停掉的这几件里，下一版逐件放回；
                 // 这版还犯 → 元凶在清零干活本身或更早的环节。
-                self.log("清零完成（诊断版 36）：\(done) 个文件已截断为 0 字节，本版未冻结，界面暂不刷新", .success)
+                self.log("备份完成（诊断版 37）：\(done) 个文件已备份，本版未清零未冻结，界面暂不刷新", .success)
                 if !failures.isEmpty {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
                 }
