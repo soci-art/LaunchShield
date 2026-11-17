@@ -543,13 +543,14 @@ final class AppState: ObservableObject {
             return
         }
         let targets = scanTargets
-        // 【诊断版 35】干跑开关：true 时清零只走流程与耗时，不真动任何文件
-        // （不备份、不清零、不冻结），用来分清重影是写操作引起的、
-        // 还是「确认弹窗＋忙碌遮罩＋流程」这个结构本身引起的。
-        let dryRunClear = true
+        // 【诊断版 35/36】二分开关：干跑已验完（构建 35 不犯）——写操作是元凶。
+        // 构建 36：备份＋清零照常真做，只关冻结（文件与文件夹都不冻），
+        // 验冻结是不是那一下。dryRunClear 保持 false。
+        let dryRunClear = false
+        let skipFreeze = true
         isBusy = true
-        busyText = "（干跑）正在清零 \(targets.count) 个文件…"
-        log("【诊断版 35】干跑清零：流程照走，但不真动任何文件", .warning)
+        busyText = "正在清零 \(targets.count) 个文件…"
+        log("【诊断版 36】本次清零跳过冻结：只备份＋清零，文件夹也不冻", .warning)
 
         work.async {
             var done = 0
@@ -602,7 +603,9 @@ final class AppState: ObservableObject {
                     }
                     // 清零后顺手把每个文件都冻上，广告就写不回这些文件了。
                     // 冻结失败不算清零失败，只记下来在总结里说明。
-                    if self.channel.isImmutable(targetFile.path) {
+                    if skipFreeze {
+                        // 【诊断版 36】跳过冻结，只备份＋清零。
+                    } else if self.channel.isImmutable(targetFile.path) {
                         frozenCount += 1
                     } else {
                         do {
@@ -625,7 +628,7 @@ final class AppState: ObservableObject {
             // 这样它们连新建文件备货都做不到。文件夹冻结失败只警告，不算清零失败。
             var frozenDirCount = 0
             var freezeDirFailureCount = 0
-            if !dryRunClear {
+            if !dryRunClear && !skipFreeze {
                 let owners = Set(targets.map { $0.bundleID.isEmpty ? BaiduNetdisk.bundleID : $0.bundleID })
                 for owner in owners {
                     guard let root = self.channel.containerPath(for: owner) else { continue }
@@ -666,7 +669,7 @@ final class AppState: ObservableObject {
                 // 干完后界面上的数字是旧的，重启 App 后按存盘数据恢复。
                 // 这版不犯 → 元凶在停掉的这几件里，下一版逐件放回；
                 // 这版还犯 → 元凶在清零干活本身或更早的环节。
-                self.log("干跑完成（诊断版）：流程走完 \(done) 个文件，未真动任何文件，界面暂不刷新", .success)
+                self.log("清零完成（诊断版 36）：\(done) 个文件已截断为 0 字节，本版未冻结，界面暂不刷新", .success)
                 if !failures.isEmpty {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
                 }
