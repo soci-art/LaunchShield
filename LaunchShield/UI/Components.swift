@@ -327,12 +327,14 @@ struct SheetPage<Content: View>: View {
     }
 }
 
-/// The tiny, barely visible host view the PiP window animates from.
+/// 画中画宿主层：铺满主界面、透明、不挡触摸。守护的源视图建在它里面
+/// （居中、与窗口同尺寸），照全局高刷的做法。以前把源视图塞在状态行里
+/// 做成 8×8 小圆点，窗口没成形、系统还把整个应用窗口当画中画收走。
 struct PiPAnchorView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 8))
-        view.backgroundColor = .black
-        view.alpha = 0.02
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
         GuardService.shared.attach(view)
         return view
     }

@@ -39,6 +39,9 @@ struct ContentView: View {
                     .frame(maxWidth: 620)
                     .frame(maxWidth: .infinity)
                 }
+                PiPAnchorView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
                 if state.isBusy {
                     BusyOverlay(text: state.busyText.isEmpty ? "正在处理…" : state.busyText)
                 }
@@ -120,9 +123,6 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                 }
-                PiPAnchorView()
-                    .frame(width: 8, height: 8)
-                    .clipShape(Circle())
             }
         }
     }

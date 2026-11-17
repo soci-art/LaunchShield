@@ -80,9 +80,18 @@ final class GuardService: NSObject, ObservableObject {
     }
 
     private let defaults = UserDefaults.standard
-    private weak var anchorView: UIView?
+    private weak var pipHostView: UIView?
     private var pipController: AVPictureInPictureController?
     private var callViewController: AVPictureInPictureVideoCallViewController?
+    private var pipSourceView: UIView?
+    private var pipSourceWidthConstraint: NSLayoutConstraint?
+    private var pipSourceHeightConstraint: NSLayoutConstraint?
+    private var pipContentView: UIView?
+    private var wantsPiPActive = false
+    private var pipStartWorkItem: DispatchWorkItem?
+    /// 隐藏时窗口压到的高度（照全局高刷的 minPiPHeight）。
+    private let minPiPHeight: CGFloat = 0.1
+    private let pipWidth: CGFloat = 300
     private var captureSession: AVCaptureSession?
     private var timer: DispatchSourceTimer?
     private var tickCount = 0
@@ -105,9 +114,10 @@ final class GuardService: NSObject, ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// The tiny host view PiP animates from; it must be in a window.
+    /// 画中画宿主视图（铺满主界面的透明层，照全局高刷的做法：
+    /// 源视图建在它里面、居中、和窗口一样大）。它必须在窗口里。
     func attach(_ view: UIView) {
-        anchorView = view
+        pipHostView = view
     }
 
     /// Returns nil when PiP was asked to start, or a Chinese reason.
@@ -115,7 +125,7 @@ final class GuardService: NSObject, ObservableObject {
     /// 是在窗口显示出来、启动成功之后，再自动压到 0.1 藏起来。
     func start(hidden: Bool = false) -> String? {
         if isRunning { return nil }
-        guard anchorView?.window != nil else {
+        guard pipHostView?.window != nil else {
             return "首页还没显示出来，请等页面出现后再开启守护"
         }
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
@@ -128,10 +138,15 @@ final class GuardService: NSObject, ObservableObject {
         defaults.removeObject(forKey: Keys.interruption)
         prepareAudioSession()
         startCapture()
-        guard startPictureInPicture() else {
+        wantsPiPActive = true
+        guard preparePiPIfNeeded() else {
+            wantsPiPActive = false
             stopCapture()
             return "画中画没能启动：请确认系统设置里允许画中画，再试一次"
         }
+        updatePiPAutomaticStartPolicy()
+        updatePiPSourceGeometry()
+        requestPiPStartWhenReady()
         isRunning = true
         statusText = "守护中"
         tickCount = 0
@@ -146,14 +161,15 @@ final class GuardService: NSObject, ObservableObject {
         stopping = true
         autoHidePending = false
         pipHidden = false
+        wantsPiPActive = false
+        pipStartWorkItem?.cancel()
+        pipStartWorkItem = nil
         defaults.set(false, forKey: Keys.active)
         defaults.removeObject(forKey: Keys.heartbeat)
         timer?.cancel()
         timer = nil
-        pipController?.delegate = nil
+        updatePiPAutomaticStartPolicy()
         pipController?.stopPictureInPicture()
-        pipController = nil
-        callViewController = nil
         stopCapture()
         silentPlayer?.stop()
         silentPlayer = nil
@@ -164,22 +180,56 @@ final class GuardService: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
-    // MARK: - PiP
+    // MARK: - PiP（照全局高刷 GlobalRefresh-PiP 的实现搬，只去掉 120Hz 部分）
 
-    /// 窗口大小由内容控制器的 preferredContentSize 决定：内容必须铺满，
-    /// 系统才按给的尺寸走；高度压到 0.1 时窗口等于完全隐藏。
-    /// 之前塞一个 8×8 黑块、画面没铺满，系统拿不到尺寸，就给了默认大黑窗。
-    /// 内容给一张看得见的脸（半透明底＋盾牌＋「守护中」），开启守护时
-    /// 用户能直接看见悬浮窗在那儿，而不是对着空气猜开没开。
-    private func startPictureInPicture() -> Bool {
-        guard let anchor = anchorView else { return false }
-        let controller = AVPictureInPictureVideoCallViewController()
-        controller.preferredContentSize = CGSize(width: 300, height: pipHeight)
-        controller.view.backgroundColor = .clear
-        controller.view.isOpaque = false
-        let content = UIView(frame: controller.view.bounds)
-        content.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-        content.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    /// 当前窗口尺寸：宽固定，隐藏时高 0.1，显示时是滑块的悬浮高度。
+    private var currentPiPSize: CGSize {
+        CGSize(width: pipWidth, height: pipHidden ? minPiPHeight : CGFloat(pipHeight))
+    }
+
+    /// 源视图：建在宿主层里、居中、宽高约束跟窗口尺寸走、alpha 1。
+    /// （之前用状态行里 8×8 几乎透明的小圆点当源视图，窗口没正常成形，
+    /// 系统还把整个应用窗口当成画中画内容收走，界面出现双份渲染。）
+    private func setupPiPSourceView() {
+        guard let host = pipHostView, pipSourceView == nil else { return }
+        let source = UIView()
+        source.backgroundColor = .clear
+        source.isOpaque = false
+        source.isUserInteractionEnabled = false
+        source.layer.cornerRadius = 18
+        source.layer.cornerCurve = .continuous
+        source.clipsToBounds = true
+        source.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(source)
+        let width = source.widthAnchor.constraint(equalToConstant: currentPiPSize.width)
+        let height = source.heightAnchor.constraint(equalToConstant: currentPiPSize.height)
+        NSLayoutConstraint.activate([
+            source.centerXAnchor.constraint(equalTo: host.centerXAnchor),
+            source.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+            width, height,
+        ])
+        pipSourceView = source
+        pipSourceWidthConstraint = width
+        pipSourceHeightConstraint = height
+    }
+
+    /// 内容：控制器视图透明，里面铺一张不透明的脸（深底＋盾牌＋「守护中」），
+    /// 约束贴满四边——内容实打实铺满，系统才按 preferredContentSize 给窗口。
+    private func setupPiPContent() {
+        let contentController = AVPictureInPictureVideoCallViewController()
+        contentController.preferredContentSize = currentPiPSize
+        contentController.view.backgroundColor = .clear
+        contentController.view.isOpaque = false
+        contentController.view.layer.backgroundColor = UIColor.clear.cgColor
+        contentController.view.layer.isOpaque = false
+        contentController.view.clipsToBounds = true
+        callViewController = contentController
+
+        let content = UIView()
+        content.backgroundColor = UIColor(white: 0.07, alpha: 1)
+        content.isOpaque = true
+        content.clipsToBounds = true
+        content.translatesAutoresizingMaskIntoConstraints = false
         let icon = UIImageView(image: UIImage(systemName: "shield.lefthalf.filled"))
         icon.tintColor = .white
         icon.contentMode = .scaleAspectFit
@@ -194,29 +244,95 @@ final class GuardService: NSObject, ObservableObject {
         stack.alignment = .center
         stack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
+        contentController.view.addSubview(content)
         NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: contentController.view.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: contentController.view.trailingAnchor),
+            content.topAnchor.constraint(equalTo: contentController.view.topAnchor),
+            content.bottomAnchor.constraint(equalTo: contentController.view.bottomAnchor),
             stack.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 18),
             icon.heightAnchor.constraint(equalToConstant: 18),
         ])
-        controller.view.addSubview(content)
-        callViewController = controller
+        pipContentView = content
+        contentController.view.layoutIfNeeded()
+    }
 
-        let source = AVPictureInPictureController.ContentSource(activeVideoCallSourceView: anchor,
-                                                               contentViewController: controller)
-        let pip = AVPictureInPictureController(contentSource: source)
+    /// 备好整套画中画（源视图＋内容＋控制器），备过就复用。
+    private func preparePiPIfNeeded() -> Bool {
+        if pipController != nil { return true }
+        guard pipHostView != nil else { return false }
+        setupPiPSourceView()
+        guard let source = pipSourceView else { return false }
+        setupPiPContent()
+        guard let contentController = callViewController else { return false }
+        let contentSource = AVPictureInPictureController.ContentSource(
+            activeVideoCallSourceView: source,
+            contentViewController: contentController
+        )
+        let pip = AVPictureInPictureController(contentSource: contentSource)
         pip.delegate = self
-        pip.canStartPictureInPictureAutomaticallyFromInline = true
         pipController = pip
-        pip.startPictureInPicture()
+        applyPiPControlsStyle()
+        pip.requiresLinearPlayback = true
+        updatePiPAutomaticStartPolicy()
         return true
+    }
+
+    private func applyPiPControlsStyle() {
+        let style = 2
+        pipController?.setValue(style, forKey: "controlsStyle")
+    }
+
+    private func updatePiPAutomaticStartPolicy() {
+        pipController?.canStartPictureInPictureAutomaticallyFromInline = wantsPiPActive
+    }
+
+    /// 源视图几何跟窗口尺寸对齐（照全局高刷的 updatePiPSourceGeometry）。
+    private func updatePiPSourceGeometry() {
+        guard let source = pipSourceView else { return }
+        if let width = pipSourceWidthConstraint, let height = pipSourceHeightConstraint {
+            width.constant = currentPiPSize.width
+            height.constant = currentPiPSize.height
+        }
+        source.alpha = 1
+        source.layer.opacity = 1
+        callViewController?.view.alpha = 1
+        pipHostView?.layoutIfNeeded()
+    }
+
+    /// 等画中画「可以启动」了再启动，还不行就隔一会儿再试（照全局高刷的
+    /// WhenReady 做法），最多试 10 次。
+    private func requestPiPStartWhenReady(attempt: Int = 0) {
+        pipStartWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.wantsPiPActive, !self.stopping,
+                  let pip = self.pipController, !pip.isPictureInPictureActive else { return }
+            guard pip.isPictureInPicturePossible else {
+                if attempt < 10 {
+                    self.requestPiPStartWhenReady(attempt: attempt + 1)
+                } else {
+                    self.log?("画中画暂时启动不了（系统说还不行），请再试一次", .warning)
+                }
+                return
+            }
+            pip.startPictureInPicture()
+        }
+        pipStartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0.05 : 0.25), execute: workItem)
+    }
+
+    /// 窗口尺寸一处同步：内容控制器 preferredContentSize＋源视图约束。
+    private func applyPiPGeometry() {
+        callViewController?.preferredContentSize = currentPiPSize
+        updatePiPSourceGeometry()
     }
 
     /// 守护运行中把窗口压到 0.1（完全隐藏）或恢复成悬浮高度。
     func setPiPHidden(_ hidden: Bool) {
         pipHidden = hidden
-        callViewController?.preferredContentSize = CGSize(width: 300, height: hidden ? 0.1 : pipHeight)
+        applyPiPGeometry()
         objectWillChange.send()
     }
 
@@ -224,7 +340,7 @@ final class GuardService: NSObject, ObservableObject {
     func setPiPHeight(_ height: Double) {
         pipHeight = height
         if isRunning && !pipHidden {
-            callViewController?.preferredContentSize = CGSize(width: 300, height: pipHeight)
+            applyPiPGeometry()
         }
     }
 
