@@ -586,7 +586,12 @@ final class AppState: ObservableObject {
                         try self.channel.truncate(targetFile.path)
                         done += 1
                         self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
-                        if targetFile.group == "软件自营" {
+                        // 清零过的都登记进守护名单，不再挑组：以前只有「软件自营」
+                        // 才登记，优量汇、穿山甲这些清完不进名单、守护巡不到。
+                        // 只登记文件本体在该应用自己容器里的：共享组里的文件路径
+                        // 是按组容器算的，配方按应用容器定位会找错地方，暂不登记。
+                        let root = String(targetFile.path.dropLast(targetFile.relativePath.count + 1))
+                        if self.channel.containerPath(for: ownerID) == root {
                             newRecipes.append(Recipe(id: UUID(),
                                                      bundleID: ownerID,
                                                      appName: ownerName,

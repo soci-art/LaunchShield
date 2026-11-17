@@ -130,6 +130,12 @@ struct FileToolsView: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    if displayList.isEmpty {
+                        Text("找到 \(currentList.count) 个，但都不是图片、视频或疑似广告。把上面「只看图片、视频和疑似广告」关掉，就能看到全部。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(displayList) { file in
