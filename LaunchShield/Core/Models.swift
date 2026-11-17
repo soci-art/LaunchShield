@@ -145,19 +145,6 @@ enum FileVerdict {
     }
 }
 
-/// 数据库文件（广告 SDK 的统计库、缓存索引库这类）：会被应用常驻打开读写，
-/// 清零多半撞「暂时不可用」，本身也不是广告素材。守护补扫跳过它们，
-/// 免得每轮重试、刷一屏失败警告。
-enum DatabaseFile {
-    static func matches(relativePath: String) -> Bool {
-        let name = (relativePath as NSString).lastPathComponent.lowercased()
-        if name.hasSuffix(".db") || name.hasSuffix(".sqlite") || name.hasSuffix(".sqlite3") { return true }
-        if name.hasSuffix("-shm") || name.hasSuffix("-wal") { return true }
-        if name.hasSuffix(".db-journal") || name.hasSuffix(".sqlite-journal") { return true }
-        return false
-    }
-}
-
 /// 个人内容守卫：聊天类应用账号目录里的媒体是用户自己的聊天图、短视频、
 /// 表情包，不是广告素材。命中就一律绕开——不标疑似、不自动判定、
 /// 不进文件工具的默认列表。宁可漏抓广告，也不能误伤用户自己的东西。
