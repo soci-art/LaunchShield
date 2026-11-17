@@ -497,6 +497,24 @@ struct ContentView: View {
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("悬浮高度")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.primaryText)
+                    Spacer()
+                    Text("\(Int(guardService.pipHeight)) pt")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+                Slider(value: Binding(get: { guardService.pipHeight },
+                                      set: { guardService.setPiPHeight($0) }),
+                       in: 40...240, step: 1)
+                    .tint(.cyan)
+                Text("守护开启时画中画窗口的高度，拖动即时生效；隐藏时自动压到 0.1。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            VStack(alignment: .leading, spacing: 4) {
                 Toggle("静音音频补强（默认关，打开会增加电耗）",
                        isOn: Binding(get: { guardService.silentBoost },
                                      set: { guardService.silentBoost = $0 }))

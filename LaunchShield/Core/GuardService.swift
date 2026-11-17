@@ -46,6 +46,24 @@ final class GuardService: NSObject, ObservableObject {
         }
     }
 
+    /// 画中画悬浮高度（pt）：守护开启时窗口就按这个高度显示出来，
+    /// 用户在守护卡里拖滑块调，拖动即时生效。隐藏时固定压到 0.1。
+    var pipHeight: Double {
+        get {
+            let stored = defaults.object(forKey: Keys.pipHeight) as? Double ?? 160
+            return min(max(stored, 40), 240)
+        }
+        set {
+            defaults.set(min(max(newValue, 40), 240), forKey: Keys.pipHeight)
+            objectWillChange.send()
+        }
+    }
+
+    /// 当前画中画是不是压在 0.1 隐藏着。
+    private(set) var pipHidden = false
+    /// 一键开启并隐藏：先把窗口显示出来，启动成功后自动压到 0.1。
+    private var autoHidePending = false
+
     var log: ((String, LogLevel) -> Void)?
     /// Called from the guard queue: `deep` asks for the 30-second directory
     /// comparison in addition to the 3-second size check.
@@ -58,6 +76,7 @@ final class GuardService: NSObject, ObservableObject {
         static let silentBoost = "guard.silentBoost"
         static let squeezeNotify = "guard.squeezeNotify"
         static let dirWatch = "guard.dirWatch"
+        static let pipHeight = "guard.pipHeight"
     }
 
     private let defaults = UserDefaults.standard
@@ -92,8 +111,8 @@ final class GuardService: NSObject, ObservableObject {
     }
 
     /// Returns nil when PiP was asked to start, or a Chinese reason.
-    /// `hidden` starts the PiP window at 0.1pt height (fully hidden), the
-    /// same trick the global-refresh PiP apps use.
+    /// 守护开启时画中画窗口先按悬浮高度显示出来；`hidden`（一键开启并隐藏）
+    /// 是在窗口显示出来、启动成功之后，再自动压到 0.1 藏起来。
     func start(hidden: Bool = false) -> String? {
         if isRunning { return nil }
         guard anchorView?.window != nil else {
@@ -104,10 +123,12 @@ final class GuardService: NSObject, ObservableObject {
         }
         stopping = false
         interruption = nil
+        autoHidePending = hidden
+        pipHidden = false
         defaults.removeObject(forKey: Keys.interruption)
         prepareAudioSession()
         startCapture()
-        guard startPictureInPicture(hidden: hidden) else {
+        guard startPictureInPicture() else {
             stopCapture()
             return "画中画没能启动：请确认系统设置里允许画中画，再试一次"
         }
@@ -123,6 +144,8 @@ final class GuardService: NSObject, ObservableObject {
 
     func stop() {
         stopping = true
+        autoHidePending = false
+        pipHidden = false
         defaults.set(false, forKey: Keys.active)
         defaults.removeObject(forKey: Keys.heartbeat)
         timer?.cancel()
@@ -143,19 +166,40 @@ final class GuardService: NSObject, ObservableObject {
 
     // MARK: - PiP
 
-    /// 窗口大小由内容控制器的 preferredContentSize 决定：画面必须透明、
-    /// 铺满，系统才按给的尺寸走；高度压到 0.1 时窗口等于完全隐藏。
+    /// 窗口大小由内容控制器的 preferredContentSize 决定：内容必须铺满，
+    /// 系统才按给的尺寸走；高度压到 0.1 时窗口等于完全隐藏。
     /// 之前塞一个 8×8 黑块、画面没铺满，系统拿不到尺寸，就给了默认大黑窗。
-    private func startPictureInPicture(hidden: Bool) -> Bool {
+    /// 内容给一张看得见的脸（半透明底＋盾牌＋「守护中」），开启守护时
+    /// 用户能直接看见悬浮窗在那儿，而不是对着空气猜开没开。
+    private func startPictureInPicture() -> Bool {
         guard let anchor = anchorView else { return false }
         let controller = AVPictureInPictureVideoCallViewController()
-        controller.preferredContentSize = CGSize(width: 300, height: hidden ? 0.1 : 160)
+        controller.preferredContentSize = CGSize(width: 300, height: pipHeight)
         controller.view.backgroundColor = .clear
         controller.view.isOpaque = false
         let content = UIView(frame: controller.view.bounds)
-        content.backgroundColor = .clear
-        content.isOpaque = false
+        content.backgroundColor = UIColor.black.withAlphaComponent(0.45)
         content.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let icon = UIImageView(image: UIImage(systemName: "shield.lefthalf.filled"))
+        icon.tintColor = .white
+        icon.contentMode = .scaleAspectFit
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        let label = UILabel()
+        label.text = "守护中"
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        let stack = UIStackView(arrangedSubviews: [icon, label])
+        stack.axis = .horizontal
+        stack.spacing = 6
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.heightAnchor.constraint(equalToConstant: 18),
+        ])
         controller.view.addSubview(content)
         callViewController = controller
 
@@ -169,9 +213,19 @@ final class GuardService: NSObject, ObservableObject {
         return true
     }
 
-    /// 守护运行中把窗口压到 0.1（完全隐藏）或恢复成小窗。
+    /// 守护运行中把窗口压到 0.1（完全隐藏）或恢复成悬浮高度。
     func setPiPHidden(_ hidden: Bool) {
-        callViewController?.preferredContentSize = CGSize(width: 300, height: hidden ? 0.1 : 160)
+        pipHidden = hidden
+        callViewController?.preferredContentSize = CGSize(width: 300, height: hidden ? 0.1 : pipHeight)
+        objectWillChange.send()
+    }
+
+    /// 滑块调悬浮高度：存下来，窗口正显示着就即时改尺寸。
+    func setPiPHeight(_ height: Double) {
+        pipHeight = height
+        if isRunning && !pipHidden {
+            callViewController?.preferredContentSize = CGSize(width: 300, height: pipHeight)
+        }
     }
 
     // MARK: - Notifications
@@ -314,6 +368,15 @@ extension GuardService: AVPictureInPictureControllerDelegate {
             self.isRunning = true
             self.statusText = "守护中"
             self.log?("画中画已启动，守护在后台继续", .success)
+            // 一键开启并隐藏：窗口已经显示出来了，停一下再自动压到 0.1。
+            if self.autoHidePending {
+                self.autoHidePending = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    guard self.isRunning else { return }
+                    self.setPiPHidden(true)
+                    self.log?("画中画已自动隐藏（0.1）", .info)
+                }
+            }
         }
     }
 
