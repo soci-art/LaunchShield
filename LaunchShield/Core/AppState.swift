@@ -667,6 +667,23 @@ final class AppState: ObservableObject {
             alertText = "还没有备份可以还原。"
             return
         }
+        performRestore(records)
+    }
+
+    /// 批量还原选中的备份：只还原选中里属于「原件」的那几份
+    /// （同一文件有多份备份时写回最早的那份，和全部还原一个口径）。
+    func restoreBackups(_ selected: [BackupRecord]) {
+        guard requireChannel() else { return }
+        let ids = Set(selected.map { $0.id })
+        let records = backupManager.originalBackups().filter { ids.contains($0.id) }
+        guard !records.isEmpty else {
+            alertText = "选中的备份里没有可还原的原件。"
+            return
+        }
+        performRestore(records)
+    }
+
+    private func performRestore(_ records: [BackupRecord]) {
         isBusy = true
         busyText = "正在还原 \(records.count) 个文件…"
         log("开始还原：\(records.count) 个备份，逐个写回并核对 MD5", .notice)
@@ -783,6 +800,24 @@ final class AppState: ObservableObject {
         let name = records.first?.appName ?? bundleID
         log("已删除 \(name) 的全部备份：\(records.count) 份", .notice)
         alertText = "已删除 \(name) 的全部备份：\(records.count) 份。"
+    }
+
+    /// 批量删除选中的备份（多选模式用）：只删选中的，其他备份不动。
+    func deleteBackups(_ selected: [BackupRecord]) {
+        let ids = Set(selected.map { $0.id })
+        let records = store.file.backups.filter { ids.contains($0.id) }
+        guard !records.isEmpty else {
+            alertText = "先勾选要删除的备份。"
+            return
+        }
+        for record in records {
+            try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
+        }
+        store.file.backups.removeAll { ids.contains($0.id) }
+        store.save()
+        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
+        log("已批量删除备份：\(records.count) 份", .notice)
+        alertText = "已删除 \(records.count) 份备份。"
     }
 
     // MARK: - Before/after diff
@@ -983,6 +1018,12 @@ final class AppState: ObservableObject {
                 return
             }
             let ext = (item.name as NSString).pathExtension.lowercased()
+            if imageExts.contains(ext), LaunchImageHint.matches(lower) {
+                results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",
+                                          note: "深扫：启动图/引导图", size: item.size, isSmallConfig: false,
+                                          bundleID: ownerBundleID, appName: ownerName))
+                return
+            }
             if imageExts.contains(ext), item.size >= 30_000, dimsChecked < 50 {
                 dimsChecked += 1
                 if let data = try? channel.read(item.path, maxBytes: 128 * 1024),
@@ -1343,6 +1384,49 @@ final class AppState: ObservableObject {
             }
             DispatchQueue.main.async {
                 if recipe.frozen { self.log("已解冻：\(recipe.relativePath)", .notice) }
+                finish()
+            }
+        }
+    }
+
+    /// 批量移除选中的守护条目（多选模式用）：和逐个移除一个口径——
+    /// 冻着的先解冻、占位文件夹删掉，再从名单里拿掉。其他条目不动。
+    func removeRecipes(_ selected: [Recipe]) {
+        let ids = Set(selected.map { $0.id })
+        let targets = recipes.filter { ids.contains($0.id) }
+        guard !targets.isEmpty else {
+            alertText = "先勾选要移除的条目。"
+            return
+        }
+        let finish = {
+            self.recipes.removeAll { ids.contains($0.id) }
+            self.store.file.recipes = self.recipes
+            self.store.save()
+            self.log("已批量移除 \(targets.count) 个守护条目", .notice)
+            self.alertText = "已移除 \(targets.count) 个守护条目，冻着的文件都解冻了。"
+        }
+        let needWork = targets.filter { $0.frozen || $0.placeholder }
+        guard !needWork.isEmpty else {
+            finish()
+            return
+        }
+        guard requireChannel() else { return }
+        isBusy = true
+        busyText = "正在移除 \(targets.count) 个守护条目…"
+        work.async {
+            for recipe in needWork {
+                guard let root = self.channel.containerPath(for: recipe.bundleID) else { continue }
+                let full = RecipeEngine.fullPath(recipe, container: root)
+                if recipe.frozen {
+                    try? self.channel.setImmutable(full, false)
+                }
+                if recipe.placeholder {
+                    try? self.channel.delete(full)
+                }
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
                 finish()
             }
         }

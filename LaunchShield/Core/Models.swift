@@ -114,6 +114,9 @@ struct FoundFile: Identifiable, Hashable {
         if lower.contains("cold_launch") || lower.contains("splash") { return .ad }
         if PersonalMedia.isPersonal(bundleID: bundleID, relativePath: relativePath) { return .personal }
         let kind = FileKind.of(relativePath)
+        // 应用自家的启动图/引导图（路径带 boot/launch/guide）：也是要处理
+        // 的对象，标成疑似广告让用户能勾选替换。个人内容已在上面先排除。
+        if (kind == .image || kind == .video), LaunchImageHint.matches(lower) { return .ad }
         if kind == .image || kind == .video { return .media }
         let ext = (relativePath as NSString).pathExtension.lowercased()
         if ["blm", "mnn", "dyld4", "dyld", "blog", "log", "db", "sqlite", "sqlite3",
@@ -214,8 +217,22 @@ struct DiffCandidate: Identifiable, Hashable {
             || lower.contains("splash") {
             return true
         }
+        // 应用自家的启动图/引导图（图片/视频才算，路径带 boot/launch/guide）。
+        if (kind == .image || kind == .video), LaunchImageHint.matches(lower) {
+            return true
+        }
         if isNew, kind == .image || kind == .video, size >= 30_000 { return true }
         return false
+    }
+}
+
+/// 启动图/引导图路径特征：应用自己存在容器里的启动页、引导页，
+/// 路径常带 boot / launch / guide 字样（如 bootLoginGuideCacheFolder）。
+/// 系统的 Library/SplashBoard 是系统快照，不在此列（各处判定都先排除它）。
+enum LaunchImageHint {
+    static let words = ["boot", "launch", "guide"]
+    static func matches(_ lowerPath: String) -> Bool {
+        words.contains { lowerPath.contains($0) }
     }
 }
 

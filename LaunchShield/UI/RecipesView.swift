@@ -6,6 +6,10 @@ struct RecipesView: View {
     @State private var showClearMissing = false
     @State private var showRefreeze = false
     @State private var appToEndGuard: String?
+    @State private var selecting = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var showBatchRemove = false
+    @State private var showBatchRestore = false
 
     var body: some View {
         SheetPage("已守护应用") {
@@ -64,6 +68,21 @@ struct RecipesView: View {
                                 .buttonStyle(.plain)
                             }
                             Spacer()
+                            Button {
+                                selecting.toggle()
+                                if !selecting { selectedIDs = [] }
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: "checklist")
+                                    Text(selecting ? "完成" : "多选")
+                                }
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.accentCyan)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 11)
+                                .background(Color.accentCyan.opacity(0.10), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
                         ForEach(appGroups, id: \.bundleID) { group in
                             appGroupSection(group)
@@ -75,6 +94,11 @@ struct RecipesView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(20)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if selecting {
+                    batchBar
+                }
             }
         }
         .appAlert(state)
@@ -106,6 +130,26 @@ struct RecipesView: View {
         } message: {
             Text("只结束这一个应用：它的条目会从守护列表全部移除，冻结的文件和文件夹都会解冻。文件还是 0 字节，应用自己会重新生成，广告可能再出现。")
         }
+        .confirmationDialog("把选中条目的文件从备份恢复吗？", isPresented: $showBatchRestore, titleVisibility: .visible) {
+            Button("恢复 \(selectedBackupRecords.count) 个文件") {
+                state.restoreBackups(selectedBackupRecords)
+                selecting = false
+                selectedIDs = []
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("请先完全退出对应的目标应用。选中的条目里有 \(selectedBackupRecords.count) 个能找到备份，其余的没有备份、恢复不了。")
+        }
+        .confirmationDialog("批量移除选中的守护条目？", isPresented: $showBatchRemove, titleVisibility: .visible) {
+            Button("移除 \(selectedIDs.count) 个", role: .destructive) {
+                state.removeRecipes(selectedRecipes)
+                selecting = false
+                selectedIDs = []
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("冻着的文件会先解冻再移除，不会把文件冻在原地没人管。文件还是 0 字节，应用自己会重新生成。")
+        }
     }
 
     private var missingCount: Int {
@@ -129,6 +173,16 @@ struct RecipesView: View {
         let missing = group.items.filter { $0.lastState == RecipeState.missing.rawValue }.count
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
+                if selecting {
+                    Button {
+                        toggleGroup(group)
+                    } label: {
+                        Image(systemName: group.items.allSatisfy { selectedIDs.contains($0.id) } ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 19))
+                            .foregroundStyle(Color.accentCyan)
+                    }
+                    .buttonStyle(.plain)
+                }
                 Button {
                     if expandedApps.contains(group.bundleID) {
                         expandedApps.remove(group.bundleID)
@@ -197,7 +251,14 @@ struct RecipesView: View {
         let backup = state.backups.last {
             $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
         }
-        return VStack(alignment: .leading, spacing: 10) {
+        return HStack(alignment: .top, spacing: 10) {
+            if selecting {
+                Image(systemName: selectedIDs.contains(recipe.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 19))
+                    .foregroundStyle(Color.accentCyan)
+                    .padding(.top, 2)
+            }
+            VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: recipe.frozen ? "snowflake" : (recipe.placeholder ? "folder" : "shield.lefthalf.filled"))
                     .font(.system(size: 16))
@@ -231,6 +292,7 @@ struct RecipesView: View {
                         .foregroundStyle(Color.secondaryText)
                 }
                 Spacer()
+                if !selecting {
                 Menu {
                     Button("重新清零") {
                         state.replaceRecipe(recipe)
@@ -258,10 +320,76 @@ struct RecipesView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.accentCyan)
                 }
+                }
+            }
             }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .panel()
+        .onTapGesture {
+            if selecting {
+                if selectedIDs.contains(recipe.id) {
+                    selectedIDs.remove(recipe.id)
+                } else {
+                    selectedIDs.insert(recipe.id)
+                }
+            }
+        }
+    }
+
+    // MARK: - 多选
+
+    private var selectedRecipes: [Recipe] {
+        state.recipes.filter { selectedIDs.contains($0.id) }
+    }
+
+    /// 选中条目里能找到备份的，取每个文件的那份备份（批量恢复用）。
+    private var selectedBackupRecords: [BackupRecord] {
+        selectedRecipes.compactMap { recipe in
+            state.backups.last { $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath }
+        }
+    }
+
+    private func toggleGroup(_ group: (bundleID: String, name: String, items: [Recipe])) {
+        let ids = group.items.map { $0.id }
+        if ids.allSatisfy({ selectedIDs.contains($0) }) {
+            ids.forEach { selectedIDs.remove($0) }
+        } else {
+            ids.forEach { selectedIDs.insert($0) }
+        }
+    }
+
+    private var batchBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                showBatchRestore = true
+            } label: {
+                Text("批量恢复（\(selectedIDs.count)）")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.accentCyan.opacity(selectedIDs.isEmpty ? 0.3 : 1),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedIDs.isEmpty)
+            Button {
+                showBatchRemove = true
+            } label: {
+                Text("批量移除（\(selectedIDs.count)）")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.red.opacity(selectedIDs.isEmpty ? 0.3 : 1),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedIDs.isEmpty)
+        }
+        .padding(16)
+        .background(Color.appBackground)
     }
 }
