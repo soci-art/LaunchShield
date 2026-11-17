@@ -360,8 +360,25 @@ struct RecipesView: View {
         }
     }
 
+    private var allSelected: Bool {
+        !state.recipes.isEmpty && selectedIDs.count == state.recipes.count
+    }
+
     private var batchBar: some View {
         HStack(spacing: 10) {
+            Button {
+                if allSelected { selectedIDs.removeAll() }
+                else { selectedIDs = Set(state.recipes.map(\.id)) }
+            } label: {
+                Text(allSelected ? "取消全选" : "全选")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color.accentCyan.opacity(0.15),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
             Button {
                 showBatchRestore = true
             } label: {
