@@ -1,5 +1,7 @@
 import Foundation
 import UIKit
+import ImageIO
+import AVFoundation
 
 final class AppState: ObservableObject {
     let channel = Channel.shared
@@ -8,6 +10,10 @@ final class AppState: ObservableObject {
     let guardService = GuardService.shared
 
     @Published var target: AppTarget = .baidu
+    /// 目标是否已由用户选定。默认未选择：打开先是空的，选了或一键勾选才有目标。
+    @Published var targetChosen = false
+    /// 用户手动标记的广告文件（持久化在 UserDefaults）。
+    @Published var manualMarks: [ManualMark] = []
     @Published var containers: [ContainerInfo] = []
     /// 通道就绪改成异步探明：冷启动先出界面，不再被通道发现堵住首帧。
     @Published private(set) var channelReady = false
@@ -88,6 +94,7 @@ final class AppState: ObservableObject {
 
         recipes = store.file.recipes
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
+        loadMarks()
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
         if let when = guardService.interruption {
@@ -212,6 +219,7 @@ final class AppState: ObservableObject {
 
     func select(_ container: ContainerInfo) {
         target = AppTarget(bundleID: container.bundleID, name: container.name)
+        targetChosen = true
         scanTargets = []
         splash = nil
         candidates = []
@@ -233,6 +241,7 @@ final class AppState: ObservableObject {
     /// 找广告的范围：一键勾选时是全部勾选的应用，否则是当前单个目标。
     var findAdScope: [ContainerInfo] {
         if !checkedContainers.isEmpty { return checkedContainers }
+        guard targetChosen else { return [] }
         if let match = containers.first(where: { $0.bundleID == target.bundleID }) { return [match] }
         if let path = targetPath {
             return [ContainerInfo(bundleID: target.bundleID, path: path, name: target.name,
@@ -303,6 +312,9 @@ final class AppState: ObservableObject {
                 banner = "勾选的应用一个都没读到容器，先等应用列表出来再扫。"
                 return
             }
+        } else if !targetChosen {
+            banner = "先选一个应用，或者点「一键勾选」，再扫描。"
+            return
         } else if let info = channel.container(for: target.bundleID) {
             scanSet = [info]
         } else {
@@ -980,11 +992,128 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 移出守护列表时默认解冻：不能只删名单、把文件还冻在原地没人管。
     func removeRecipe(_ recipe: Recipe) {
-        recipes.removeAll { $0.id == recipe.id }
-        store.file.recipes = recipes
-        store.save()
-        log("已从守护列表移除：\(recipe.relativePath)", .notice)
+        let finish = {
+            self.recipes.removeAll { $0.id == recipe.id }
+            self.store.file.recipes = self.recipes
+            self.store.save()
+            self.log("已从守护列表移除：\(recipe.relativePath)", .notice)
+        }
+        guard recipe.frozen || recipe.placeholder, let root = channel.containerPath(for: recipe.bundleID) else {
+            finish()
+            return
+        }
+        work.async {
+            let full = RecipeEngine.fullPath(recipe, container: root)
+            if recipe.frozen {
+                try? self.channel.setImmutable(full, false)
+            }
+            if recipe.placeholder {
+                try? self.channel.delete(full)
+            }
+            DispatchQueue.main.async {
+                if recipe.frozen { self.log("已解冻：\(recipe.relativePath)", .notice) }
+                finish()
+            }
+        }
+    }
+
+    /// 全部解冻：所有配方文件 + 广告商文件夹一起解，不依赖备份。
+    /// 解完文件仍是 0 字节，应用自己会重新生成。
+    func unfreezeAll() {
+        guard requireChannel() else { return }
+        isBusy = true
+        busyText = "正在全部解冻…"
+        work.async {
+            var files = 0, dirs = 0, failures = 0
+            for bundleID in Set(self.recipes.map { $0.bundleID }) {
+                guard let info = self.channel.container(for: bundleID) else { continue }
+                for recipe in self.recipes where recipe.bundleID == bundleID && recipe.frozen {
+                    do {
+                        try self.channel.setImmutable(RecipeEngine.fullPath(recipe, container: info.path), false)
+                        files += 1
+                    } catch { failures += 1 }
+                }
+                for relative in self.adDirectoryTree(container: info.path) {
+                    let full = info.path + "/" + relative
+                    guard self.channel.isImmutable(full) else { continue }
+                    do {
+                        try self.channel.setImmutable(full, false)
+                        dirs += 1
+                    } catch { failures += 1 }
+                }
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                for index in self.recipes.indices { self.recipes[index].frozen = false }
+                self.store.file.recipes = self.recipes
+                self.store.save()
+                self.log("全部解冻完成：文件 \(files) 个、文件夹 \(dirs) 个，失败 \(failures) 个", failures == 0 ? .success : .warning)
+                self.banner = "已全部解冻：文件 \(files) 个、文件夹 \(dirs) 个。文件还是 0 字节，应用自己会重新生成。"
+                self.checkRecipes(silent: true)
+            }
+        }
+    }
+
+    /// 广告商目录树（规则分组目录 + 全部子目录），深的在前。冻结/解冻共用。
+    private func adDirectoryTree(container: String) -> [String] {
+        var result: [String] = []
+        var seen = Set<String>()
+        func addTree(_ relative: String) {
+            let full = container + "/" + relative
+            guard channel.isDirectory(full) else { return }
+            if seen.insert(relative).inserted { result.append(relative) }
+            if let items = try? channel.children(of: full) {
+                for item in items where item.isDirectory {
+                    addTree(relative + "/" + item.name)
+                }
+            }
+        }
+        for group in BaiduNetdisk.thirdPartyCacheGroups {
+            for directory in group.directories { addTree(directory) }
+        }
+        addTree(BaiduNetdisk.splashCacheRoot)
+        return result.sorted { $0.components(separatedBy: "/").count > $1.components(separatedBy: "/").count }
+    }
+
+    // MARK: - 手动标记
+
+    private func loadMarks() {
+        if let data = UserDefaults.standard.data(forKey: "ls.manualMarks"),
+           let marks = try? JSONDecoder().decode([ManualMark].self, from: data) {
+            manualMarks = marks
+        }
+    }
+
+    private func saveMarks() {
+        if let data = try? JSONEncoder().encode(manualMarks) {
+            UserDefaults.standard.set(data, forKey: "ls.manualMarks")
+        }
+    }
+
+    func isMarked(bundleID: String, relativePath: String) -> Bool {
+        manualMarks.contains { $0.bundleID == bundleID && $0.relativePath == relativePath }
+    }
+
+    func toggleMark(bundleID: String, appName: String, relativePath: String, size: UInt64) {
+        if isMarked(bundleID: bundleID, relativePath: relativePath) {
+            manualMarks.removeAll { $0.bundleID == bundleID && $0.relativePath == relativePath }
+            log("已取消标记：\(relativePath)", .notice)
+        } else {
+            manualMarks.append(ManualMark(bundleID: bundleID, appName: appName,
+                                          relativePath: relativePath, size: size, markedAt: Date()))
+            log("已标记为广告：\(appName) · \(relativePath)", .success)
+        }
+        saveMarks()
+    }
+
+    private func marksPayload() -> [[String: Any]] {
+        manualMarks.map { mark in
+            ["bundleID": mark.bundleID, "app": mark.appName, "path": mark.relativePath,
+             "size": mark.size, "markedAt": Format.fullDate(mark.markedAt)]
+        }
     }
 
     // MARK: - Guard
@@ -1068,7 +1197,7 @@ final class AppState: ObservableObject {
     private func sweepAdDirectories(reason: String) {
         guard channel.isAvailable else { return }
         var bundleIDs = Set(recipes.map { $0.bundleID })
-        bundleIDs.insert(target.bundleID)
+        if targetChosen { bundleIDs.insert(target.bundleID) }
         bundleIDs.formUnion(checkedIDs)
         var cleared = 0
         for bundleID in bundleIDs {
@@ -1108,37 +1237,168 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 上传识别数据：哪个应用认出了哪几家广告商、没认出的目录名、
-    /// 以及用户反馈的「清完还出广告」。只传名字和计数，不传文件内容。
+    /// 深度采集（上传时现采）：目录树、图片/视频文件清单（带尺寸/时长）、
+    /// 小配置文件的键名结构。有了文件级数据才能定位每个应用的广告文件在哪。
+    private func collectDeepData(info: ContainerInfo) -> DeepAppData {
+        var dirs: [String] = []
+        var files: [CollectedFile] = []
+        var configs: [CollectedConfig] = []
+        let mediaExts: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "m4v", "heic"]
+        let imageExts: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
+        var visited = 0
+        var dimsRead = 0
+        var durationsRead = 0
+        func walk(_ relative: String, depth: Int) {
+            guard depth <= 5, visited < 6000 else { return }
+            guard let items = try? channel.children(of: info.path + "/" + relative) else { return }
+            for item in items {
+                visited += 1
+                let rel = relative.isEmpty ? item.name : relative + "/" + item.name
+                if item.isDirectory {
+                    if dirs.count < 900 { dirs.append(rel) }
+                    walk(rel, depth: depth + 1)
+                } else {
+                    let ext = (item.name as NSString).pathExtension.lowercased()
+                    if mediaExts.contains(ext), files.count < 500 {
+                        var collected = CollectedFile(path: rel, size: item.size)
+                        if imageExts.contains(ext), dimsRead < 40, item.size > 0, item.size < 3_000_000,
+                           let data = try? channel.read(item.path),
+                           let source = CGImageSourceCreateWithData(data as CFData, nil),
+                           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
+                            collected.width = props[kCGImagePropertyPixelWidth as String] as? Int
+                            collected.height = props[kCGImagePropertyPixelHeight as String] as? Int
+                            dimsRead += 1
+                        }
+                        if ["mp4", "mov", "m4v"].contains(ext), durationsRead < 10, item.size > 0 {
+                            let asset = AVURLAsset(url: URL(fileURLWithPath: item.path))
+                            let seconds = CMTimeGetSeconds(asset.duration)
+                            if seconds.isFinite, seconds > 0 {
+                                collected.duration = seconds
+                                durationsRead += 1
+                            }
+                        }
+                        files.append(collected)
+                    }
+                    if (ext == "plist" || ext == "json"), item.size > 0, item.size < 65536, configs.count < 30,
+                       let data = try? channel.read(item.path) {
+                        var keys: [String] = []
+                        if ext == "plist",
+                           let object = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+                           let dict = object as? [String: Any] {
+                            keys = Array(dict.keys)
+                        } else if ext == "json",
+                                  let object = try? JSONSerialization.jsonObject(with: data),
+                                  let dict = object as? [String: Any] {
+                            keys = Array(dict.keys)
+                        }
+                        if !keys.isEmpty {
+                            configs.append(CollectedConfig(path: rel, size: item.size, keys: keys.sorted()))
+                        }
+                    }
+                }
+            }
+        }
+        for root in ["Library/Caches", "Library", "tmp", "Documents"] {
+            if channel.isDirectory(info.path + "/" + root) {
+                if dirs.count < 900 { dirs.append(root) }
+                walk(root, depth: 1)
+            }
+        }
+        return DeepAppData(bundleID: info.bundleID, name: info.name, dirs: dirs, files: files, configs: configs)
+    }
+
+    /// 上传识别数据 v2：分组计数 + 未知目录 + 文件级清单 + 目录树 +
+    /// 配置结构 + 用户手动标记 +「清完还出广告」反馈。
     func uploadRecognition(stillSeesAds: Bool) {
         guard !lastRecognition.isEmpty else {
             banner = "先点一次「扫描」，有了识别结果才能上传。"
             return
         }
-        let apps: [[String: Any]] = lastRecognition.map { item in
-            ["bundleID": item.bundleID,
-             "name": item.name,
-             "groups": item.groups,
-             "unknownDirs": item.unknownDirs]
+        let base = lastRecognition
+        isBusy = true
+        busyText = "正在收集文件数据…"
+        work.async {
+            var apps: [[String: Any]] = []
+            for item in base {
+                var entry: [String: Any] = ["bundleID": item.bundleID,
+                                            "name": item.name,
+                                            "groups": item.groups,
+                                            "unknownDirs": item.unknownDirs]
+                if let info = self.channel.container(for: item.bundleID) {
+                    let deep = self.collectDeepData(info: info)
+                    entry["dirs"] = deep.dirs
+                    entry["files"] = deep.files.map { file -> [String: Any] in
+                        var dict: [String: Any] = ["path": file.path, "size": file.size]
+                        if let width = file.width, let height = file.height {
+                            dict["width"] = width
+                            dict["height"] = height
+                        }
+                        if let duration = file.duration { dict["duration"] = duration }
+                        return dict
+                    }
+                    entry["configs"] = deep.configs.map { ["path": $0.path, "size": $0.size, "keys": $0.keys] }
+                }
+                apps.append(entry)
+            }
+            let payload: [String: Any] = [
+                "appVersion": self.appVersionText,
+                "system": self.systemText,
+                "device": UIDevice.current.model,
+                "time": Format.fullDate(Date()),
+                "stillSeesAds": stillSeesAds,
+                "manualMarks": self.marksPayload(),
+                "apps": apps
+            ]
+            let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted])
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                guard let data else { return }
+                CollectUploader.upload(kind: "recognition", contentType: "application/json", body: data) { [weak self] ok, message in
+                    guard let self = self else { return }
+                    if ok {
+                        self.log(stillSeesAds ? "已反馈：清完还出广告（附识别数据 v2）" : "识别数据已上传（v2）", .success)
+                        self.banner = stillSeesAds ? "已反馈，我们会照着这份数据找漏掉的广告商。" : "识别数据已上传，谢谢帮忙攒指纹库。"
+                    } else {
+                        self.log("识别数据上传失败：\(message)", .warning)
+                        self.banner = "上传失败：\(message)"
+                    }
+                }
+            }
+        }
+    }
+
+    /// 上传找广告结果：差分候选（是否疑似、是否勾选、是否人工标记）+ 手动标记，
+    /// 和识别数据一起攒规则素材。
+    func uploadFindings() {
+        guard !candidates.isEmpty else {
+            banner = "还没有找广告结果可上传，先拍两次快照比一比。"
+            return
         }
         let payload: [String: Any] = [
             "appVersion": appVersionText,
             "system": systemText,
             "device": UIDevice.current.model,
             "time": Format.fullDate(Date()),
-            "stillSeesAds": stillSeesAds,
-            "apps": apps
+            "apps": findAdScope.map { ["bundleID": $0.bundleID, "name": $0.name] },
+            "candidates": candidates.map { candidate in
+                ["app": candidate.appName,
+                 "bundleID": candidate.bundleID,
+                 "path": candidate.relativePath,
+                 "isNew": candidate.isNew,
+                 "reason": candidate.reason,
+                 "size": candidate.size,
+                 "likelyAd": candidate.likelyAd,
+                 "selected": selectedCandidatePaths.contains(candidate.id),
+                 "marked": isMarked(bundleID: candidate.bundleID, relativePath: candidate.relativePath)]
+            },
+            "manualMarks": marksPayload()
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else { return }
-        CollectUploader.upload(kind: "recognition", contentType: "application/json", body: data) { [weak self] ok, message in
+        CollectUploader.upload(kind: "findad", contentType: "application/json", body: data) { [weak self] ok, message in
             guard let self = self else { return }
-            if ok {
-                self.log(stillSeesAds ? "已反馈：清完还出广告（附识别数据）" : "识别数据已上传", .success)
-                self.banner = stillSeesAds ? "已反馈，我们会照着这份数据找漏掉的广告商。" : "识别数据已上传，谢谢帮忙攒指纹库。"
-            } else {
-                self.log("识别数据上传失败：\(message)", .warning)
-                self.banner = "上传失败：\(message)"
-            }
+            self.log(ok ? "找广告结果已上传" : "找广告结果上传失败：\(message)", ok ? .success : .warning)
+            self.banner = ok ? "这次找广告的结果已上传。" : "上传失败：\(message)"
         }
     }
 

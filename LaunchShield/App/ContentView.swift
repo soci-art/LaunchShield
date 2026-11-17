@@ -190,7 +190,18 @@ struct ContentView: View {
                         .font(.system(size: 25))
                         .foregroundStyle(Color.primaryText.opacity(0.88))
                 }
-                if state.checkedIDs.isEmpty {
+                if state.checkedIDs.isEmpty && !state.targetChosen {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("未选择应用")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        Text("点「更换」选一个，或者一键勾选全部")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.secondaryText)
+                    }
+                    Spacer()
+                    StatusBadge(text: "未选择", tint: .orange)
+                } else if state.checkedIDs.isEmpty {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(state.target.name)
                             .font(.system(size: 18, weight: .semibold))
@@ -541,9 +552,9 @@ struct ContentView: View {
                     .panel()
             } else {
                 VStack(spacing: 0) {
-                    let preview = Array(state.recipes.prefix(3))
-                    ForEach(Array(preview.enumerated()), id: \.element.id) { index, recipe in
-                        recipeRow(recipe)
+                    let preview = Array(recipeSummaries.prefix(4))
+                    ForEach(Array(preview.enumerated()), id: \.offset) { index, summary in
+                        appRecipeRow(summary)
                         if index < preview.count - 1 {
                             rowDivider
                         }
@@ -551,8 +562,56 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 15)
                 .panel()
+                if state.recipes.contains(where: { $0.frozen }) {
+                    Button {
+                        state.unfreezeAll()
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "sun.max")
+                            Text("全部解冻（文件和文件夹，不用备份）")
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.accentCyan)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
+    }
+
+    /// 主页按应用归并：一个应用一行，不管它守了多少个文件。
+    private var recipeSummaries: [(bundleID: String, name: String, count: Int, frozen: Int, recurred: Int)] {
+        Dictionary(grouping: state.recipes, by: { $0.bundleID }).map { bundleID, items in
+            (bundleID: bundleID,
+             name: items.first?.appName ?? bundleID,
+             count: items.count,
+             frozen: items.filter { $0.frozen }.count,
+             recurred: items.filter { $0.lastState == RecipeState.recurred.rawValue }.count)
+        }.sorted { $0.name < $1.name }
+    }
+
+    private func appRecipeRow(_ summary: (bundleID: String, name: String, count: Int, frozen: Int, recurred: Int)) -> some View {
+        HStack(spacing: 11) {
+            Image(systemName: summary.recurred > 0 ? "exclamationmark.shield" : "shield.lefthalf.filled")
+                .font(.system(size: 15))
+                .foregroundStyle(summary.recurred > 0 ? Color.orange : Color.accentCyan)
+                .frame(width: 26, height: 34)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(summary.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.primaryText)
+                Text("共 \(summary.count) 个文件 · 已冻结 \(summary.frozen) 个")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            Spacer()
+            if summary.recurred > 0 {
+                StatusBadge(text: "有复发", tint: .orange)
+            } else {
+                StatusBadge(text: "守护中", tint: .green)
+            }
+        }
+        .padding(.vertical, 7)
     }
 
     private func recipeRow(_ recipe: Recipe) -> some View {

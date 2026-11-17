@@ -10,11 +10,28 @@ struct RecipesView: View {
                     if state.recipes.isEmpty {
                         emptyCard
                     } else {
+                        if state.recipes.contains(where: { $0.frozen }) {
+                            Button {
+                                state.unfreezeAll()
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "sun.max")
+                                    Text("全部解冻（文件和文件夹一起解，不用备份）")
+                                    Spacer()
+                                }
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.accentCyan)
+                                .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .panel()
+                            }
+                            .buttonStyle(.plain)
+                        }
                         ForEach(state.recipes) { recipe in
                             card(recipe)
                         }
                     }
-                    Text("配方只记录 Bundle ID 和容器内的相对路径。文件 0 字节＝正常；变大＝已复发；冻结的文件删不掉也换不掉。")
+                    Text("配方只记录 Bundle ID 和容器内的相对路径。文件 0 字节＝正常；变大＝已复发；冻结的文件删不掉也换不掉。从守护列表移除一个文件时，会先把这个文件解冻。")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)

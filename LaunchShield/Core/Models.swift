@@ -188,6 +188,41 @@ struct AppRecognition {
     let unknownDirs: [String]
 }
 
+/// 收集数据 v2：一个文件的指纹（路径、大小、类型，图片带宽高、视频带时长秒数）。
+struct CollectedFile {
+    let path: String
+    let size: UInt64
+    var width: Int?
+    var height: Int?
+    var duration: Double?
+}
+
+/// 收集数据 v2：一个小配置文件的结构（只记键名，不记内容）。
+struct CollectedConfig {
+    let path: String
+    let size: UInt64
+    let keys: [String]
+}
+
+/// 收集数据 v2：某个应用的深度数据（上传时现采）。
+struct DeepAppData {
+    let bundleID: String
+    let name: String
+    let dirs: [String]
+    let files: [CollectedFile]
+    let configs: [CollectedConfig]
+}
+
+/// 用户手动标记的广告文件（用户自己认定的，权重最高，单独成一类上传）。
+struct ManualMark: Codable, Identifiable {
+    var bundleID: String
+    var appName: String
+    var relativePath: String
+    var size: UInt64
+    var markedAt: Date
+    var id: String { bundleID + "|" + relativePath }
+}
+
 struct SplashResolution {
     let key: String
     let url: String

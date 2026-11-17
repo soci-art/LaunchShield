@@ -32,7 +32,7 @@ struct FindAdView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text(state.checkedIDs.isEmpty
+            Text(state.checkedIDs.isEmpty && state.targetChosen
                  ? "请先完全退出 \(state.target.name)。"
                  : "请先完全退出要处理的应用。")
         }
@@ -138,8 +138,48 @@ struct FindAdView: View {
         .background(Color.cyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
+    private var clearButton: some View {
+        Button {
+            showConfirm = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "eraser.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("清零选中的 \(state.selectedCandidatePaths.count) 个文件")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(Color.primaryText)
+            .padding(.horizontal, 17)
+            .frame(height: 56)
+            .background(LinearGradient(colors: [Color.cyan.opacity(0.88), Color.blue.opacity(0.82)],
+                                       startPoint: .leading,
+                                       endPoint: .trailing),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(state.selectedCandidatePaths.isEmpty)
+        .opacity(state.selectedCandidatePaths.isEmpty ? 0.5 : 1)
+    }
+
     private var candidateSection: some View {
         VStack(alignment: .leading, spacing: 10) {
+            clearButton
+            Button {
+                state.uploadFindings()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "icloud.and.arrow.up")
+                    Text("上传这次找广告的结果")
+                    Spacer()
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.accentCyan)
+                .padding(.horizontal, 17)
+                .frame(height: 44)
+                .background(Color.accentCyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
             HStack {
                 Text("候选（\(state.candidates.count)）")
                     .font(.system(size: 13, weight: .semibold))
@@ -158,12 +198,24 @@ struct FindAdView: View {
             }
             VStack(spacing: 0) {
                 ForEach(state.candidates) { candidate in
-                    Button {
-                        toggle(candidate)
-                    } label: {
-                        row(candidate)
+                    HStack(spacing: 0) {
+                        Button {
+                            toggle(candidate)
+                        } label: {
+                            row(candidate)
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            state.toggleMark(bundleID: candidate.bundleID, appName: candidate.appName,
+                                             relativePath: candidate.relativePath, size: candidate.size)
+                        } label: {
+                            Image(systemName: state.isMarked(bundleID: candidate.bundleID, relativePath: candidate.relativePath) ? "flag.fill" : "flag")
+                                .font(.system(size: 14))
+                                .foregroundStyle(state.isMarked(bundleID: candidate.bundleID, relativePath: candidate.relativePath) ? Color.orange : Color.secondaryText)
+                                .frame(width: 36, height: 44)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                     if candidate.id != state.candidates.last?.id {
                         Divider()
                             .overlay(Color.primaryText.opacity(0.06))
@@ -173,30 +225,6 @@ struct FindAdView: View {
             }
             .padding(.horizontal, 12)
             .panel()
-
-            Button {
-                showConfirm = true
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "eraser.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text("清零选中的 \(state.selectedCandidatePaths.count) 个文件")
-                        .font(.system(size: 15, weight: .semibold))
-                    Spacer()
-                }
-                .foregroundStyle(Color.primaryText)
-                .padding(.horizontal, 17)
-                .frame(height: 56)
-                .background(LinearGradient(colors: [Color.cyan.opacity(0.88), Color.blue.opacity(0.82)],
-                                           startPoint: .leading,
-                                           endPoint: .trailing),
-                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(state.selectedCandidatePaths.isEmpty)
-            .opacity(state.selectedCandidatePaths.isEmpty ? 0.5 : 1)
-        }
-    }
 
     private func toggle(_ candidate: DiffCandidate) {
         if state.selectedCandidatePaths.contains(candidate.id) {
@@ -221,6 +249,14 @@ struct FindAdView: View {
                         .foregroundStyle(Color.primaryText)
                         .lineLimit(2)
                         .truncationMode(.middle)
+                    if state.isMarked(bundleID: candidate.bundleID, relativePath: candidate.relativePath) {
+                        Text("我标记的")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.orange, in: Capsule())
+                    }
                     if candidate.likelyAd {
                         Text("疑似广告")
                             .font(.system(size: 9, weight: .bold))

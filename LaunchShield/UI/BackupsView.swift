@@ -5,6 +5,7 @@ struct BackupsView: View {
     @State private var showRestoreAll = false
     @State private var showDeleteAll = false
     @State private var recordToDelete: BackupRecord?
+    @State private var expandedApps: Set<String> = []
 
     var body: some View {
         SheetPage("备份记录") {
@@ -37,8 +38,8 @@ struct BackupsView: View {
                             .foregroundStyle(Color.accentCyan)
                             .buttonStyle(.plain)
                         }
-                        ForEach(state.backups) { record in
-                            card(record)
+                        ForEach(appGroups, id: \.bundleID) { group in
+                            appGroupSection(group)
                         }
                     }
                 }
@@ -59,7 +60,7 @@ struct BackupsView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("删了之后，这些素材就没有备份了，之后想还原也还原不了。")
+            Text("删了就恢复不了文件内容了：冻结的文件之后只能解冻、回不到原样。确定要全删？")
         }
         .confirmationDialog("确定要删除这份备份吗？", isPresented: Binding(
             get: { recordToDelete != nil },
@@ -72,6 +73,52 @@ struct BackupsView: View {
             Button("取消", role: .cancel) { recordToDelete = nil }
         } message: {
             Text("删了之后，这条素材就没有备份了，之后想还原也还原不了。")
+        }
+    }
+
+    /// 按应用归并：一个应用一行（带份数），点开才看单个文件。
+    private var appGroups: [(bundleID: String, name: String, records: [BackupRecord])] {
+        Dictionary(grouping: state.backups, by: { $0.bundleID }).map { bundleID, records in
+            (bundleID: bundleID,
+             name: records.first?.appName ?? bundleID,
+             records: records.sorted { $0.createdAt > $1.createdAt })
+        }.sorted { $0.name < $1.name }
+    }
+
+    private func appGroupSection(_ group: (bundleID: String, name: String, records: [BackupRecord])) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                if expandedApps.contains(group.bundleID) {
+                    expandedApps.remove(group.bundleID)
+                } else {
+                    expandedApps.insert(group.bundleID)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: expandedApps.contains(group.bundleID) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.secondaryText)
+                    Text(group.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    Spacer()
+                    Text("\(group.records.count) 份")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.secondaryText)
+                    Text(Format.bytes(group.records.reduce(0) { $0 + $1.originalSize }))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .panel()
+            }
+            .buttonStyle(.plain)
+            if expandedApps.contains(group.bundleID) {
+                ForEach(group.records) { record in
+                    card(record)
+                }
+            }
         }
     }
 
