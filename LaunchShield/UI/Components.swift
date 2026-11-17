@@ -138,9 +138,20 @@ extension View {
     func appAlert(_ state: AppState, active: Bool = true) -> some View {
         alert("提醒", isPresented: Binding(
             get: { active && state.alertText != nil },
-            set: { if !$0 { state.alertText = nil } }
+            set: { if !$0 { state.alertText = nil; state.rulesUpdateVersion = nil } }
         )) {
-            Button("好") { state.alertText = nil }
+            if state.rulesUpdateVersion != nil {
+                Button("更新规则") {
+                    state.alertText = nil
+                    state.updateRules()
+                }
+                Button("以后再说", role: .cancel) {
+                    state.rulesUpdateVersion = nil
+                    state.alertText = nil
+                }
+            } else {
+                Button("好") { state.alertText = nil }
+            }
         } message: {
             Text(state.alertText ?? "")
         }

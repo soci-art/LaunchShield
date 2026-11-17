@@ -131,4 +131,24 @@ enum RulesStore {
             done(true, "规则已更新到第 \(parsed.version) 版：\(groupCount) 家广告商、\(dirCount) 个目录，扫描会按新规则走")
         }.resume()
     }
+
+    /// 只查服务器上的规则版本号，不下载、不改本地规则。
+    /// 查不到（没网、服务器没放规则、格式不对）一律回 nil，调用方安静收场。
+    static func checkLatestVersion(completion: @escaping (Int?) -> Void) {
+        var request = URLRequest(url: CollectUploader.base.appendingPathComponent("rules"))
+        request.timeoutInterval = 20
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            func done(_ version: Int?) {
+                DispatchQueue.main.async { completion(version) }
+            }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200, let data,
+                  let parsed = try? JSONDecoder().decode(RulesFile.self, from: data),
+                  !parsed.groups.isEmpty else {
+                done(nil)
+                return
+            }
+            done(parsed.version)
+        }.resume()
+    }
 }

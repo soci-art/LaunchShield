@@ -36,6 +36,8 @@ final class AppState: ObservableObject {
     @Published var updateStatus = ""
     @Published var rulesStatus = ""
     @Published var availableVersion: String?
+    /// 服务器上有更新的规则、等用户在提醒弹窗里点「更新规则」时非空。
+    @Published var rulesUpdateVersion: Int?
     @Published var downloadProgress: Double?
     @Published var downloadedIPA: URL?
     @Published var recipes: [Recipe] = []
@@ -145,6 +147,7 @@ final class AppState: ObservableObject {
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
         loadMarks()
         checkUpdateOnLaunch()
+        checkRulesOnLaunch()
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
@@ -2181,10 +2184,31 @@ final class AppState: ObservableObject {
         rulesStatus = "正在更新规则…"
         RulesStore.update { [weak self] ok, message in
             guard let self else { return }
+            self.rulesUpdateVersion = nil
             self.rulesStatus = message
             self.log(message, ok ? .success : .warning)
             // 成功失败都弹窗：只写在按钮下面那行小字里，用户容易看不见。
             self.alertText = message
+        }
+    }
+
+    /// 启动时悄悄查一次规则：服务器版本比本地新才提醒（同一个版本一天
+    /// 最多提醒一次），弹窗里点「更新规则」直接下载套用；没网、查不到、
+    /// 已经是最新都安安静静，不弹窗、不报错。
+    private func checkRulesOnLaunch() {
+        RulesStore.checkLatestVersion { [weak self] latest in
+            guard let self, let latest else { return }
+            let current = RulesStore.currentVersion
+            guard latest > current else { return }
+            let day = DateFormatter()
+            day.dateFormat = "yyyy-MM-dd"
+            let stamp = "\(latest)@\(day.string(from: Date()))"
+            guard UserDefaults.standard.string(forKey: "rules.updateReminded") != stamp else { return }
+            UserDefaults.standard.set(stamp, forKey: "rules.updateReminded")
+            self.rulesUpdateVersion = latest
+            self.rulesStatus = "有新规则（第 \(latest) 版）"
+            self.alertText = "广告识别规则有新版本：第 \(latest) 版（现在用的是\(current == 0 ? "内置规则" : "第 \(current) 版")）。点「更新规则」马上就能用上，不用更新应用。"
+            self.log("启动检测规则：服务器第 \(latest) 版，本地\(current == 0 ? "内置规则" : "第 \(current) 版")", .info)
         }
     }
 
