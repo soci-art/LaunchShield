@@ -189,9 +189,24 @@
 
     // Shared App Group containers: the metadata plist's identifier IS the
     // group id (e.g. group.com.example.app), which is what we label by.
+    // NOTE: wq_enumerate does not serve this root — its inode scan refuses
+    // to start for AppGroup (millions of ids), so it returns nothing.
+    // List the folder directly and merge in the LaunchServices database
+    // paths instead (same trick as the app-container fallback).
     NSMutableArray<WQAppContainer *> *result = [NSMutableArray array];
     NSString *root = @"/private/var/mobile/Containers/Shared/AppGroup";
-    for (NSString *path in wq_enumerate(root, 0, nil, nil) ?: @[]) {
+    NSMutableSet<NSString *> *paths = [NSMutableSet set];
+    NSString *error = nil;
+    for (NSString *name in wq_list(root, &error) ?: @[]) {
+        if (name.length && ![name hasPrefix:@"."]) {
+            [paths addObject:[root stringByAppendingPathComponent:name]];
+        }
+    }
+    for (NSString *path in wq_ls_container_paths(nil) ?: @[]) {
+        if ([path hasPrefix:root]) [paths addObject:path];
+    }
+    wq_log(@"containers: shared group folder yielded %lu candidate paths", (unsigned long)paths.count);
+    for (NSString *path in paths) {
         NSString *identifier = [self metadataLabelForPath:path];
         if (!identifier.length) identifier = [self labelForPath:path];
         if (!identifier.length) continue;
