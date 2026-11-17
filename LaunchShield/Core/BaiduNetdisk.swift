@@ -29,7 +29,8 @@ enum BaiduNetdisk {
                     "Library/tencent_gdtmob", "Library/Caches/GDT"]),
         ("穿山甲", ["Library/Caches/com.hackemist.CSJSDImageCache/default",
                     "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache"]),
-        ("BeiZi", ["Library/Caches/BeiZiMaterial"])
+        ("BeiZi", ["Library/Caches/BeiZiMaterial"]),
+        ("美数", ["Library/Caches/MSAdSDK"])
     ]
 
     // MARK: - Splash derivation
