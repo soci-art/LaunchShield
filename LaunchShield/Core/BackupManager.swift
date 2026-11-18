@@ -118,7 +118,7 @@ struct BackupManager {
             } catch {
                 try? FileManager.default.removeItem(at: rollbackDirectory)
                 if let failure = error as? ChannelFailure { throw failure }
-                throw ChannelFailure("无法保护当前文件，取消恢复：\\(error.localizedDescription)")
+                throw ChannelFailure("无法保护当前文件，取消恢复：\(error.localizedDescription)")
             }
         }
 
@@ -130,7 +130,7 @@ struct BackupManager {
             try channel.restore(path: target, from: local.path)
             let restored = try channel.md5(target)
             guard restored.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                throw ChannelFailure("写回后校验不一致：现在是 \\(restored.prefix(8))…，应为 \\(record.md5.prefix(8))…")
+                throw ChannelFailure("写回后校验不一致：现在是 \(restored.prefix(8))…，应为 \(record.md5.prefix(8))…")
             }
             try? FileManager.default.removeItem(at: rollbackDirectory)
             return restored
@@ -145,7 +145,7 @@ struct BackupManager {
                     }
                     rollbackResult = "已恢复原文件"
                 } catch {
-                    rollbackResult = "自动回滚失败：\\(error.localizedDescription)"
+                    rollbackResult = "自动回滚失败：\(error.localizedDescription)"
                 }
             } else if existing == nil {
                 do {
@@ -154,14 +154,14 @@ struct BackupManager {
                     }
                     rollbackResult = "已清理本次创建的残留文件"
                 } catch {
-                    rollbackResult = "清理残留文件失败：\\(error.localizedDescription)"
+                    rollbackResult = "清理残留文件失败：\(error.localizedDescription)"
                 }
             }
             if wasImmutable {
                 try? channel.setImmutable(target, true)
             }
             try? FileManager.default.removeItem(at: rollbackDirectory)
-            throw ChannelFailure("恢复失败：\\(error.localizedDescription)；\\(rollbackResult)")
+            throw ChannelFailure("恢复失败：\(error.localizedDescription)；\(rollbackResult)")
         }
     }
 
