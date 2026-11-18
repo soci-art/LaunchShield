@@ -57,6 +57,8 @@ struct AppPickerView: View {
                                 row(container)
                             }
                             .buttonStyle(.plain)
+                            .disabled(state.isWhitelisted(container.bundleID))
+                            .opacity(state.isWhitelisted(container.bundleID) ? 0.45 : 1)
                             if container.id != filtered.last?.id {
                                 Divider()
                                     .overlay(Color.primaryText.opacity(0.06))
@@ -101,7 +103,9 @@ struct AppPickerView: View {
                     .lineLimit(1)
             }
             Spacer()
-            if container.bundleID == state.target.bundleID {
+            if state.isWhitelisted(container.bundleID) {
+                StatusBadge(text: "已排除", tint: .orange)
+            } else if container.bundleID == state.target.bundleID {
                 StatusBadge(text: "当前", tint: .cyan)
             }
         }
