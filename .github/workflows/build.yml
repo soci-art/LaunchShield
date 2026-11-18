@@ -2,6 +2,16 @@ name: Build unsigned IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "本次 Nightly 版本号（例如 3.3.5）"
+        required: true
+        type: string
+      replace_previous_prerelease:
+        description: "发布前删除旧 Nightly 及其 Tag（默认开启）"
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -27,25 +37,18 @@ jobs:
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
 
-      - name: Calculate next rolling prerelease version
+      - name: Validate manual version
         id: version
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          CURRENT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' LaunchShield/LaunchShield-Info.plist)
-          CURRENT_BUILD="${GITHUB_RUN_NUMBER}"
-
-          # 取正式版和预发行中最高的语义版本，再递增 patch。
-          RELEASE_VERSION="$(gh release list --limit 100 --json tagName --jq '.[].tagName' | sed -nE 's/^v?([0-9]+\.[0-9]+\.[0-9]+)(-.*)?$/\1/p' | sort -V | tail -1)"
-          BASE_VERSION="$CURRENT_VERSION"
-          if [ -n "$RELEASE_VERSION" ] && [ "$(printf '%s\n%s\n' "$BASE_VERSION" "$RELEASE_VERSION" | sort -V | tail -1)" = "$RELEASE_VERSION" ]; then
-            BASE_VERSION="$RELEASE_VERSION"
+          set -euo pipefail
+          NEXT_VERSION="$VERSION_INPUT"
+          if [[ ! "$NEXT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本号格式无效，请使用 x.y.z，例如 3.3.5"
+            exit 1
           fi
-
-          IFS=. read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
-          NEXT_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
-          NEXT_BUILD="$CURRENT_BUILD"
-
+          NEXT_BUILD="$GITHUB_RUN_NUMBER"
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$NEXT_BUILD" >> "$GITHUB_OUTPUT"
           echo "IPA_NAME=LaunchShield-$NEXT_VERSION-unsigned.ipa" >> "$GITHUB_ENV"
@@ -84,19 +87,28 @@ jobs:
           unzip -l "$IPA_NAME" | head -20
           ls -la "$IPA_NAME"
 
-      - name: Replace rolling prerelease after successful build
+      - name: Publish Nightly (optionally replace previous prereleases)
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_VERSION: ${{ steps.version.outputs.version }}
+          REPLACE_PREVIOUS: ${{ inputs.replace_previous_prerelease }}
         run: |
+          set -euo pipefail
           TAG="v$NEXT_VERSION"
+
+          # Check tag collision before any cleanup, so an old release is never deleted on conflict.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::版本 $NEXT_VERSION 对应的 Tag 已存在，请填写新的版本号。"
+            exit 1
+          fi
+
           cat > /tmp/notes.md <<NOTES
           Nightly
 
           本次为 prerelease 分支的 Nightly 滚动测试构建。
-          - 版本号按正式版与历史预发行中的最高版本自动递增 patch。
+          - 版本号由本次工作流运行时手动指定。
           - 构建号使用 GitHub Actions 运行编号，保证每次运行递增。
-          - 新 IPA 构建成功后，自动删除上一轮预发行及其标签，再发布当前版本。
+          - 是否删除旧 Nightly 由本次运行的选项决定。
           - 正式版不会被删除。
 
           安装与兼容：
@@ -104,14 +116,18 @@ jobs:
           - 具体可用通道取决于 iOS 版本、签名方式及签名中包含的 App Group 权限；请以应用内检测结果为准。
           NOTES
 
-          # 只在新 IPA 已成功打包后清理旧预发行；正式版不会被删除。
-          gh release list --limit 100 --json tagName,isPrerelease \
-            --jq '.[] | select(.isPrerelease == true) | .tagName' |
-          while IFS= read -r OLD_TAG; do
-            [ -n "$OLD_TAG" ] || continue
-            echo "Deleting previous prerelease: $OLD_TAG"
-            gh release delete "$OLD_TAG" --yes --cleanup-tag
-          done
+          # 仅当本次明确选择替换时，才删除旧 Nightly；正式版始终保留。
+          if [ "$REPLACE_PREVIOUS" = "true" ]; then
+            gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease == true) | .tagName' |
+            while IFS= read -r OLD_TAG; do
+              [ -n "$OLD_TAG" ] || continue
+              echo "Deleting previous prerelease: $OLD_TAG"
+              gh release delete "$OLD_TAG" --yes --cleanup-tag
+            done
+          else
+            echo "Keeping all previous prereleases."
+          fi
 
           gh release create "$TAG" "$IPA_NAME" \
             --prerelease \
