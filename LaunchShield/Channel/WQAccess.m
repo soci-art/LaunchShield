@@ -569,11 +569,11 @@ BOOL wq_grant(NSString *path)
     return handle >= 0;
 }
 
-BOOL wq_probe_worse_query(NSString **errorText)
+BOOL wq_probe_channel(NSString **errorText)
 {
     // This is the same directory the file browser must enumerate. A successful
-    // App Group lookup alone is insufficient: the probe must obtain a token
-    // and then list the real app-data root. No files are created or modified.
+    // App Group lookup alone is insufficient: the active route must obtain a
+    // token and then list the real app-data root. No files are created or modified.
     NSString *root = @"/private/var/mobile/Containers/Data/Application";
     if (!wq_grant(root)) {
         if (errorText) *errorText = @"系统未能签发访问令牌（worse_query grant 失败；详见诊断日志）";
