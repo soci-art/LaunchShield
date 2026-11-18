@@ -136,16 +136,13 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
             return ok;
         }
         case WQRouteStateWorse: {
-            if (!wq_app_group()) {
-                _worseProbeError = wq_app_group_error() ?: @"缺少可用的 App Group。";
-                wq_log(@"channel availability: route=worse app_group=missing");
-                return NO;
-            }
-            NSString *probeError = nil;
-            BOOL ok = wq_probe_channel(&probeError);
-            _worseProbeError = ok ? nil : (probeError ?: @"worse_query 实际授权验证失败。");
-            wq_log(@"channel availability: route=worse app_group=available probe=%@ reason=%@",
-                   ok ? @"available" : @"failed", _worseProbeError ?: @"none");
+            // Do not require a sandbox-extension grant for the parent directory.
+            // worse_query grants concrete container targets; the parent probe can
+            // return -6 even when those individual container grants work.
+            BOOL ok = wq_app_group() != nil;
+            _worseProbeError = nil;
+            wq_log(@"channel availability: route=worse app_group=%@",
+                   ok ? @"available" : @"missing");
             return ok;
         }
         case WQRouteStateUnset:
