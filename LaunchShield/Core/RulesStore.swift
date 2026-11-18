@@ -51,14 +51,56 @@ enum RulesStore {
             .appendingPathComponent("ad-rules.json")
     }
 
+    /// 验证服务器和磁盘上的规则；规则只能包含容器内相对目录，不能携带路径跳转。
+    private static func isValid(_ rules: RulesFile) -> Bool {
+        guard rules.version > 0,
+              !rules.groups.isEmpty,
+              rules.groups.count <= 100,
+              rules.keywords.count <= 500 else { return false }
+
+        var totalDirectories = 0
+        for group in rules.groups {
+            let name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.count <= 80,
+                  !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+                  !group.directories.isEmpty,
+                  group.directories.count <= 500 else { return false }
+            totalDirectories += group.directories.count
+            if totalDirectories > 5000 { return false }
+
+            var seen = Set<String>()
+            for directory in group.directories {
+                guard isSafeRelativeDirectory(directory), seen.insert(directory).inserted else {
+                    return false
+                }
+            }
+        }
+
+        for keyword in rules.keywords {
+            guard !keyword.isEmpty, keyword.count <= 80,
+                  !keyword.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func isSafeRelativeDirectory(_ path: String) -> Bool {
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\\\"),
+              !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !parts.isEmpty && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
     private static func loadIfNeeded() {
         lock.lock()
         defer { lock.unlock() }
         guard !didLoad else { return }
         didLoad = true
         guard let data = try? Data(contentsOf: fileURL),
+              data.count <= 1_048_576,
               let parsed = try? JSONDecoder().decode(RulesFile.self, from: data),
-              !parsed.groups.isEmpty else { return }
+              isValid(parsed) else { return }
         downloaded = parsed
     }
 
@@ -105,29 +147,29 @@ enum RulesStore {
                 DispatchQueue.main.async { completion(ok, message) }
             }
             if let error {
-                done(false, "更新规则失败：\(error.localizedDescription)")
+                done(false, "更新规则失败：\\(error.localizedDescription)")
                 return
             }
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200, let data else {
-                done(false, code == 404 ? "服务器上还没有放规则" : "更新规则失败：服务器返回 \(code)")
+                done(false, code == 404 ? "服务器上还没有放规则" : "更新规则失败：服务器返回 \\(code)")
                 return
             }
-            guard let parsed = try? JSONDecoder().decode(RulesFile.self, from: data),
-                  !parsed.groups.isEmpty,
-                  parsed.groups.allSatisfy({ !$0.name.isEmpty && !$0.directories.isEmpty }) else {
-                done(false, "更新规则失败：服务器上的规则格式不对")
+            guard data.count <= 1_048_576,
+                  let parsed = try? JSONDecoder().decode(RulesFile.self, from: data),
+                  isValid(parsed) else {
+                done(false, "更新规则失败：规则格式不正确或包含不安全路径")
                 return
             }
             let current = currentVersion
             guard parsed.version > current else {
-                done(true, "规则已是最新（\(current == 0 ? "内置规则" : "第 \(current) 版")）")
+                done(true, "规则已是最新（\\(current == 0 ? "内置规则" : "第 \\(current) 版")）")
                 return
             }
             do {
                 try data.write(to: fileURL, options: [.atomic])
             } catch {
-                done(false, "更新规则失败：存不下来（\(error.localizedDescription)）")
+                done(false, "更新规则失败：存不下来（\\(error.localizedDescription)）")
                 return
             }
             lock.lock()
@@ -136,7 +178,7 @@ enum RulesStore {
             lock.unlock()
             let groupCount = parsed.groups.count
             let dirCount = parsed.groups.reduce(0) { $0 + $1.directories.count }
-            done(true, "规则已更新到第 \(parsed.version) 版：\(groupCount) 家广告商、\(dirCount) 个目录，扫描会按新规则走")
+            done(true, "规则已更新到第 \\(parsed.version) 版：\\(groupCount) 家广告商、\\(dirCount) 个目录，扫描会按新规则走")
         }.resume()
     }
 
@@ -149,10 +191,10 @@ enum RulesStore {
             func done(_ version: Int?) {
                 DispatchQueue.main.async { completion(version) }
             }
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard code == 200, let data,
+            guard let data, data.count <= 1_048_576,
+                  (response as? HTTPURLResponse)?.statusCode == 200,
                   let parsed = try? JSONDecoder().decode(RulesFile.self, from: data),
-                  !parsed.groups.isEmpty else {
+                  isValid(parsed) else {
                 done(nil)
                 return
             }
