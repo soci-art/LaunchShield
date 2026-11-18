@@ -55,7 +55,7 @@ static WQRouteState wq_route_compute(void)
     // Certificate signing can use worse_query only when its own signature
     // actually provides a usable App Group. Do not advertise a route that
     // cannot even stage the token query.
-    if ([method isEqualToString:WQSignMethodCert])
+    if ([method isEqualToString:@"cert"])
         return wq_app_group() != nil ? WQRouteStateWorse : WQRouteStateMissingAppGroup;
     // Free ID: only a group borrowed from the installing host (a SideStore /
     // LiveContainer group) counts. The app's own profile group belongs to a
