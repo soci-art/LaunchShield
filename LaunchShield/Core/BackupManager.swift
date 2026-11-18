@@ -26,6 +26,7 @@ struct BackupManager {
         let directory = store.backupDirectoryURL(for: id)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Self.validateBackupDirectory(directory, root: store.backupRoot)
         } catch {
             throw ChannelFailure("建备份文件夹失败：\(error.localizedDescription)")
         }
@@ -71,8 +72,10 @@ struct BackupManager {
             throw ChannelFailure("目标容器路径不安全，拒绝恢复")
         }
 
+        let directory = store.backupDirectoryURL(for: record.id)
         let local = store.backupFileURL(for: record)
         do {
+            try Self.validateBackupDirectory(directory, root: store.backupRoot)
             try Self.validateLocalBackup(local, expectedSize: record.originalSize)
         } catch {
             throw ChannelFailure("备份文件校验失败，未改动目标：\(error.localizedDescription)")
@@ -139,6 +142,19 @@ struct BackupManager {
         !name.isEmpty && name != "." && name != ".."
             && !name.contains("/") && !name.contains("\\")
             && !name.unicodeScalars.contains(where: { $0.value == 0 })
+    }
+
+    private static func validateBackupDirectory(_ directory: URL, root: URL) throws {
+        let rootURL = root.standardizedFileURL
+        let directoryURL = directory.standardizedFileURL
+        let rootValues = try rootURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        let directoryValues = try directoryURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        let rootPrefix = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true,
+              directoryURL.path.hasPrefix(rootPrefix),
+              directoryValues.isDirectory == true, directoryValues.isSymbolicLink != true else {
+            throw ChannelFailure("备份目录结构不安全")
+        }
     }
 
     private static func validateLocalBackup(_ url: URL, expectedSize: UInt64) throws {
