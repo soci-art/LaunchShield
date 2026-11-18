@@ -139,7 +139,7 @@ struct ContentView: View {
                     Circle()
                         .fill(state.channelReady ? Color.green : Color.orange)
                         .frame(width: 7, height: 7)
-                    Text(state.channelChecking ? "正在准备…" : (state.channelReady ? "通道就绪" : "通道不可用"))
+                    Text(state.channelChecking ? "正在检测通道" : (state.channelReady ? "通道就绪" : "通道不可用"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                 }
