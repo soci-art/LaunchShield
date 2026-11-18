@@ -32,7 +32,7 @@ final class AppState: ObservableObject {
     /// 通道就绪改成异步探明：冷启动先出界面，不再被通道发现堵住首帧。
     @Published private(set) var channelReady = false
     @Published private(set) var channelChecking = true
-    /// 从应用签名配置自动识别的签名方式："free" / "cert"。
+    /// 自动识别的签名方式："cert" / "free" / "livecontainer"。
     @Published private(set) var signMethod: String? = nil
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
@@ -407,7 +407,7 @@ final class AppState: ObservableObject {
             "系统版本：\(systemText)",
             "设备：\(UIDevice.current.model)",
             "访问路线：\(channel.routeDetail)",
-            "签名方式：\(signMethod == "cert" ? "证书签名（自动识别）" : (signMethod == "free" ? "免费 ID 签名（自动识别）" : "无法识别"))",
+            "签名方式：\(signMethod == "cert" ? "证书签名（自动识别）" : (signMethod == "livecontainer" ? "LiveContainer（自动识别）" : (signMethod == "free" ? "免费 ID 签名（自动识别）" : "无法识别")))",
             "共享组：\(channel.groupText)",
             "导出时间：\(Format.fullDate(Date()))"
         ])
