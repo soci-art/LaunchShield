@@ -123,7 +123,7 @@ struct ContentView: View {
                         .font(.system(size: 25, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.primaryText)
                 }
-                Text("启动素材管理工具")
+                Text("去除应用的开屏广告")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.secondaryText)
             }
