@@ -14,6 +14,7 @@
 #import "bad_query.h"
 #import <CommonCrypto/CommonDigest.h>
 #import <sys/stat.h>
+#import <errno.h>
 
 @implementation WQOp
 
@@ -459,8 +460,16 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 
 - (WQOp *)statPath:(NSString *)path
 {
+    struct stat st;
+    if (!wq_stat(path, &st)) {
+        int errorCode = errno;
+        if (errorCode == ENOENT || errorCode == ENOTDIR) {
+            return [WQOp fail:@"目标不存在"];
+        }
+        return [WQOp fail:[NSString stringWithFormat:@"无法检查目标（errno=%d）", errorCode]];
+    }
     WQFileItem *item = [self itemAtPath:path name:path.lastPathComponent];
-    if (!item) return [WQOp fail:@"找不到这个文件"];
+    if (!item) return [WQOp fail:@"无法读取目标属性"];
     return [WQOp ok:item];
 }
 
