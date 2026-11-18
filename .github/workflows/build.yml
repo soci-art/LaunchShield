@@ -70,7 +70,8 @@ jobs:
 
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "IPA_NAME=LaunchShield-$NEXT_VERSION-unsigned.ipa" >> "$GITHUB_ENV"
+          IPA_NAME="LaunchShield-$NEXT_VERSION-unsigned.ipa"
+          echo "IPA_NAME=$IPA_NAME" >> "$GITHUB_ENV"
 
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist"
