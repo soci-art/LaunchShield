@@ -202,17 +202,19 @@ struct RecipesView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(Color.secondaryText)
                         }
+                        Spacer(minLength: 8)
+                        if recurred > 0 {
+                            StatusBadge(text: "有复发", tint: .orange)
+                        } else if missing == group.items.count {
+                            StatusBadge(text: "文件不见了", tint: .red)
+                        } else {
+                            StatusBadge(text: "守护中", tint: .green)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Spacer()
-                if recurred > 0 {
-                    StatusBadge(text: "有复发", tint: .orange)
-                } else if missing == group.items.count {
-                    StatusBadge(text: "文件不见了", tint: .red)
-                } else {
-                    StatusBadge(text: "守护中", tint: .green)
-                }
                 Button("结束守护") {
                     appToEndGuard = group.bundleID
                 }
