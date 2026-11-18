@@ -244,38 +244,77 @@ final class AppState: ObservableObject {
         log("还没选签名方式，拦下了一次功能使用", .info)
     }
 
-    /// 清除缓存（清单第 11 条）：只清能重新生成的东西——下载的规则
-    /// 文件、新版安装包、全盘扫描记录。备份、配方、守护名单和用户
-    /// 手动标记都是用户数据，不碰。
+    /// 只清理可重新生成的数据：规则下载副本、更新 IPA、Caches 与 tmp。
+    /// 配方、备份、守护名单、用户标记和持久运行日志均属于用户数据，不碰。
     func clearCache() {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let targets: [(url: URL, name: String)] = [
-            (docs.appendingPathComponent("ad-rules.json"), "下载的规则文件"),
-            (docs.appendingPathComponent("LaunchShield-新版.ipa"), "下载的新版安装包"),
-            (caches.appendingPathComponent("wq-container-scan.plist"), "全盘扫描记录"),
-        ]
-        var freed = 0
+        let temporary = fm.temporaryDirectory
+        var freed: Int64 = 0
         var removed: [String] = []
-        for target in targets {
-            guard let size = (try? fm.attributesOfItem(atPath: target.url.path))?[.size] as? Int else { continue }
-            if (try? fm.removeItem(at: target.url)) != nil {
+
+        func sizeOfItem(at url: URL) -> Int64 {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .isSymbolicLinkKey])
+            if values?.isSymbolicLink == true { return 0 }
+            if values?.isDirectory == true {
+                let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey, .isSymbolicLinkKey])
+                var total: Int64 = 0
+                while let child = enumerator?.nextObject() as? URL {
+                    let childValues = try? child.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .isSymbolicLinkKey])
+                    if childValues?.isSymbolicLink == true {
+                        enumerator?.skipDescendants()
+                    } else if childValues?.isDirectory != true {
+                        total += Int64(childValues?.fileSize ?? 0)
+                    }
+                }
+                return total
+            }
+            return Int64(values?.fileSize ?? 0)
+        }
+
+        func removeItem(_ url: URL, label: String) {
+            guard fm.fileExists(atPath: url.path) else { return }
+            let size = sizeOfItem(at: url)
+            do {
+                try fm.removeItem(at: url)
                 freed += size
-                removed.append(target.name)
+                removed.append(label)
+            } catch {
+                log("缓存清理失败：\(label)，\(error.localizedDescription)", .warning)
             }
         }
+
+        removeItem(docs.appendingPathComponent("ad-rules.json"), label: "下载的规则文件")
+        removeItem(docs.appendingPathComponent("LaunchShield-新版.ipa"), label: "更新下载的 IPA")
+
+        // Caches 中只放可重建数据：扫描索引、缩略图、识别/目录缓存等。
+        // 清空其内容但保留目录本身，避免影响后续写入。
+        if let children = try? fm.contentsOfDirectory(at: caches, includingPropertiesForKeys: nil) {
+            for child in children {
+                removeItem(child, label: "应用缓存")
+            }
+        }
+
+        // tmp 仅用于解压和处理中间文件；不清理 Documents/Application Support。
+        if let children = try? fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil) {
+            for child in children {
+                removeItem(child, label: "临时文件")
+            }
+        }
+
         if removed.contains("下载的规则文件") { RulesStore.resetDownloaded() }
-        if downloadedIPA != nil { downloadedIPA = nil }
+        if removed.contains("更新下载的 IPA") || downloadedIPA != nil { downloadedIPA = nil }
+
         if removed.isEmpty {
             alertText = "没有可清的缓存。"
             log("清除缓存：没有可清的东西", .info)
         } else {
             let sizeText = freed >= 1_000_000
                 ? String(format: "约 %.1f MB", Double(freed) / 1_000_000)
-                : "\(max(1, freed / 1000)) KB"
-            alertText = "缓存清完了：\(removed.joined(separator: "、"))，一共腾出 \(sizeText)。"
-            log("清除缓存：\(removed.joined(separator: "、"))，腾出 \(freed) 字节", .success)
+                : "\(max(1, Int(freed) / 1000)) KB"
+            alertText = "缓存清完了：\(Array(Set(removed)).joined(separator: "、"))，一共腾出 \(sizeText)。"
+            log("清除缓存：\(Array(Set(removed)).joined(separator: "、"))，腾出 \(freed) 字节", .success)
         }
     }
 
