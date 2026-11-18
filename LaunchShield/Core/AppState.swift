@@ -36,6 +36,43 @@ final class AppState: ObservableObject {
     @Published private(set) var signMethod: String? = nil
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
+    /// App 排除白名单：以 Bundle ID 为唯一标识，保存在本机。
+    @Published var appWhitelist: [String: String] =
+        UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:]
+    var whitelistedBundleIDs: Set<String> { Set(appWhitelist.keys.map { $0.lowercased() }) }
+    func isWhitelisted(_ bundleID: String) -> Bool {
+        whitelistedBundleIDs.contains(bundleID.lowercased())
+    }
+    func whitelistName(for bundleID: String) -> String {
+        appWhitelist[bundleID.lowercased()] ?? containers.first(where: { $0.bundleID.caseInsensitiveCompare(bundleID) == .orderedSame })?.name ?? bundleID
+    }
+    func addToWhitelist(_ container: ContainerInfo) {
+        addWhitelistBundleID(container.bundleID, displayName: container.name)
+    }
+    @discardableResult
+    func addWhitelistBundleID(_ rawID: String, displayName: String? = nil) -> Bool {
+        let bundleID = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard bundleID.range(of: "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$", options: .regularExpression) != nil else {
+            alertText = "Bundle ID 格式不正确，请输入类似 com.example.app 的标识符。"
+            return false
+        }
+        let key = bundleID.lowercased()
+        appWhitelist[key] = displayName?.isEmpty == false ? displayName! : (containers.first(where: { $0.bundleID.lowercased() == key })?.name ?? bundleID)
+        UserDefaults.standard.set(appWhitelist, forKey: "ls.appWhitelist")
+        checkedIDs = Set(checkedIDs.filter { $0.lowercased() != key })
+        scanTargets.removeAll { $0.bundleID.lowercased() == key }
+        candidates.removeAll { $0.bundleID.lowercased() == key }
+        beforeSnapshots = beforeSnapshots.filter { $0.key.lowercased() != key }
+        afterSnapshots = afterSnapshots.filter { $0.key.lowercased() != key }
+        log("已将应用加入排除白名单：\\(appWhitelist[key] ?? bundleID)（\\(bundleID)）", .notice)
+        return true
+    }
+    func removeFromWhitelist(_ bundleID: String) {
+        let key = bundleID.lowercased()
+        appWhitelist.removeValue(forKey: key)
+        UserDefaults.standard.set(appWhitelist, forKey: "ls.appWhitelist")
+        log("已从排除白名单移除：\\(bundleID)，该应用恢复正常处理", .notice)
+    }
     /// 一键勾选选中的应用（批量扫描/清零的目标集）；为空时按单个目标走。
     @Published var checkedIDs: Set<String> = []
     /// 最近一次扫描的识别数据（供上传攒指纹库用）。
@@ -468,11 +505,12 @@ final class AppState: ObservableObject {
     // MARK: - 一键勾选
 
     var checkedContainers: [ContainerInfo] {
-        containers.filter { checkedIDs.contains($0.bundleID) }
+        containers.filter { checkedIDs.contains($0.bundleID) && !isWhitelisted($0.bundleID) }
     }
 
     /// 找广告的范围：一键勾选时是全部勾选的应用，否则是当前单个目标。
     var findAdScope: [ContainerInfo] {
+        if targetChosen && checkedIDs.isEmpty && isWhitelisted(target.bundleID) { return [] }
         let base: [ContainerInfo]
         if !checkedContainers.isEmpty {
             base = checkedContainers
@@ -533,7 +571,7 @@ final class AppState: ObservableObject {
     }
 
     var allUserAppsChecked: Bool {
-        let userApps = containers.filter { !$0.isSystem && !$0.isGame }
+        let userApps = containers.filter { !$0.isSystem && !$0.isGame && !isWhitelisted($0.bundleID) }
         return !userApps.isEmpty && userApps.allSatisfy { checkedIDs.contains($0.bundleID) }
     }
 
@@ -556,7 +594,7 @@ final class AppState: ObservableObject {
             alertText = "已取消一键勾选，现在按单个目标应用处理。"
             return
         }
-        let userApps = containers.filter { !$0.isSystem && !$0.isGame }
+        let userApps = containers.filter { !$0.isSystem && !$0.isGame && !isWhitelisted($0.bundleID) }
         let games = containers.filter { !$0.isSystem && $0.isGame }
         checkedIDs = Set(userApps.map { $0.bundleID })
         beforeSnapshots = [:]
@@ -583,6 +621,9 @@ final class AppState: ObservableObject {
             }
         } else if !targetChosen {
             alertText = "先选一个应用，或者点「一键勾选」，再扫描。"
+            return
+        } else if isWhitelisted(target.bundleID) {
+            alertText = "当前目标应用已加入排除白名单，LaunchShield 不会对它执行任何操作。"
             return
         } else if let group = groupContainers.first(where: { $0.bundleID == target.bundleID }) {
             scanSet = [group]
@@ -746,7 +787,12 @@ final class AppState: ObservableObject {
             alertText = "没有可清零的素材，先扫描一次。"
             return
         }
-        let targets = scanTargets
+        let targets = scanTargets.filter { !isWhitelisted($0.bundleID) }
+        guard !targets.isEmpty else {
+            scanTargets = []
+            alertText = "待处理文件均属于白名单应用，已全部跳过。"
+            return
+        }
         isBusy = true
         busyText = "正在清零 \(targets.count) 个文件…"
         log("开始清零：\(targets.count) 个文件，逐个先备份再截断", .notice)
@@ -904,7 +950,7 @@ final class AppState: ObservableObject {
 
     func restoreAll() {
         guard requireChannel() else { return }
-        let records = backupManager.originalBackups()
+        let records = backupManager.originalBackups().filter { !isWhitelisted($0.bundleID) }
         guard !records.isEmpty else {
             alertText = "还没有备份可以还原。"
             return
@@ -917,7 +963,7 @@ final class AppState: ObservableObject {
     func restoreBackups(_ selected: [BackupRecord]) {
         guard requireChannel() else { return }
         let ids = Set(selected.map { $0.id })
-        let records = backupManager.originalBackups().filter { ids.contains($0.id) }
+        let records = backupManager.originalBackups().filter { ids.contains($0.id) && !isWhitelisted($0.bundleID) }
         guard !records.isEmpty else {
             alertText = "选中的备份里没有可还原的原件。"
             return
@@ -926,6 +972,11 @@ final class AppState: ObservableObject {
     }
 
     private func performRestore(_ records: [BackupRecord]) {
+        let records = records.filter { !isWhitelisted($0.bundleID) }
+        guard !records.isEmpty else {
+            alertText = "选中的备份均属于白名单应用，已跳过还原。"
+            return
+        }
         isBusy = true
         busyText = "正在还原 \(records.count) 个文件…"
         log("开始还原：\(records.count) 个备份，逐个写回并核对 MD5", .notice)
@@ -2018,7 +2069,7 @@ final class AppState: ObservableObject {
 
     private func guardTick(deep: Bool) {
         guard guardService.isRunning else { return }
-        let list = recipes
+        let list = recipes.filter { !isWhitelisted($0.bundleID) }
         guard !list.isEmpty else { return }
 
         var truncated = 0
@@ -2061,6 +2112,7 @@ final class AppState: ObservableObject {
         var bundleIDs = Set(recipes.map { $0.bundleID })
         if targetChosen { bundleIDs.insert(target.bundleID) }
         bundleIDs.formUnion(checkedIDs)
+        bundleIDs = Set(bundleIDs.filter { !isWhitelisted($0) })
         var cleared = 0
         var newBackups: [BackupRecord] = []
         var newRecipes: [Recipe] = []
