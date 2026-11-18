@@ -58,10 +58,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)answerFullScan:(BOOL)yes;
 - (void)stopFullScan;
 
-/// Whether the chosen signature method has a working route. When NO, every
+/// Whether the detected signing mode has a working route. When NO, every
 /// other call fails and `unavailableReason` says why, in Chinese.
 @property (nonatomic, readonly) BOOL available;
 @property (nonatomic, readonly, copy, nullable) NSString *groupID;
+/// Automatically detected signing mode: @"free" or @"cert".
+@property (nonatomic, readonly, copy) NSString *signMethod;
 @property (nonatomic, readonly, copy) NSString *unavailableReason;
 
 /// "bad_query" or "worse_query"; a Chinese label when there is no route
@@ -73,8 +75,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSString *groupText;
 @property (nonatomic, readonly) BOOL usesBadQuery;
 
-/// Forgets the cached route so the next query follows the signature method
-/// stored in UserDefaults. Call it right after the home screen writes it.
+/// Forgets the cached route so the next query re-reads the signed profile.
 - (void)resetRoute;
 
 /// Every app data container (the container manager's class 2).
