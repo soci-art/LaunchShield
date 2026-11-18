@@ -2,9 +2,8 @@
 //  WQRoute.h
 //  LaunchShield
 //
-//  Picks the sandbox-grant backend from the signature method the user chose
-//  on the home screen (UserDefaults key ls.signMethod: "free" or "cert"; the
-//  key is absent until something is chosen). bad_query (Taj C / forcequit,
+//  Picks the sandbox-grant backend from the signing mode detected in the
+//  app's embedded provisioning profile. bad_query (Taj C / forcequit,
 //  GPL-3.0-or-later) covers a free-ID signature without a borrowed App Group on
 //  iOS 26.0-26.6.1; everything else goes through worse_query in WQAccess.
 //  A free ID only counts a group borrowed from the installing host, never the
@@ -17,7 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// The route selected from the signature method and available entitlements.
 typedef NS_ENUM(NSInteger, WQRouteState) {
-    /// No signature method chosen yet: the channel stays closed.
+    /// Signing mode could not be detected: the channel stays closed.
     WQRouteStateUnset = 0,
     /// worse_query: a certificate, or a free ID installed by a host whose
     /// group it borrowed.
@@ -30,11 +29,13 @@ typedef NS_ENUM(NSInteger, WQRouteState) {
     WQRouteStateUnsupported,
 };
 
+/// Automatically detected signing mode: @"free" or @"cert".
+NSString *wq_route_sign_method(void);
+
 /// Current route. Resolved once, then cached until wq_route_reset().
 WQRouteState wq_route_state(void);
 
-/// Forgets the resolved route so the next query reads the user's choice
-/// again. Call it after the signature method changes.
+/// Forgets the resolved route so the next query re-reads the signed profile.
 void wq_route_reset(void);
 
 /// YES only when the current state is bad.
