@@ -138,7 +138,7 @@ extension View {
     func appAlert(_ state: AppState, active: Bool = true) -> some View {
         alert("提醒", isPresented: Binding(
             get: { active && state.alertText != nil },
-            set: { if !$0 { state.alertText = nil; state.rulesUpdateVersion = nil } }
+            set: { if !$0 { state.rulesUpdateVersion = nil; state.alertText = nil } }
         )) {
             if state.rulesUpdateVersion != nil {
                 Button("更新规则") {

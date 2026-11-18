@@ -3,6 +3,7 @@ import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var guardService = GuardService.shared
 
     @State private var showAppPicker = false
@@ -47,6 +48,11 @@ struct ContentView: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .appAlert(state, active: !(showAppPicker || showTutorial || showFindAd || showRecipes || showBackups || showLogs))
+        .onChange(of: scenePhase) { _, phase in
+            // 回到前台时补查一次更新提醒（节流在 AppState 里）：
+            // 发版时应用正开着的情况，靠这次补查才不会漏弹。
+            if phase == .active { state.recheckRemindersIfStale() }
+        }
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
         }

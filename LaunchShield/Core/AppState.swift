@@ -46,7 +46,21 @@ final class AppState: ObservableObject {
     @Published var splash: SplashResolution?
     @Published var isBusy = false
     @Published var busyText = ""
-    @Published var alertText: String?
+    @Published var alertText: String? {
+        didSet {
+            // 规则提醒排在别的弹窗后面时先候着：当前弹窗一关，候着的
+            // 规则提醒接着弹，不再被顶掉（两个启动检查同批完成时发生过）。
+            if alertText == nil, let queued = queuedRulesAlert {
+                queuedRulesAlert = nil
+                rulesUpdateVersion = queued.version
+                alertText = queued.text
+            }
+        }
+    }
+    /// 等当前弹窗关掉后要补弹的规则更新提醒（版本号＋文案）。
+    private var queuedRulesAlert: (version: Int, text: String)?
+    /// 上次跑启动提醒检查（应用＋规则）的时间；回前台补查的节流用。
+    private var lastReminderCheckAt: Date?
     @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
@@ -146,8 +160,7 @@ final class AppState: ObservableObject {
         recipes = store.file.recipes
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
         loadMarks()
-        checkUpdateOnLaunch()
-        checkRulesOnLaunch()
+        runReminderChecks()
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
@@ -2192,9 +2205,28 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 启动提醒检查（应用更新＋规则更新）串行跑：先应用后规则，
+    /// 免得两个弹窗互相顶掉。启动时跑一次；应用回前台时由
+    /// recheckRemindersIfStale 按节流补跑——发版时应用正开着、
+    /// 进程没重启的情况靠补跑才不会漏掉提醒。
+    private func runReminderChecks() {
+        lastReminderCheckAt = Date()
+        checkUpdateOnLaunch { [weak self] in
+            self?.checkRulesOnLaunch()
+        }
+    }
+
+    /// 回前台补查提醒：距上次检查不到 1 小时就不查，免得频繁打扰
+    /// 服务器；同一版本一天最多弹一次的闸门在各检查里把着。
+    func recheckRemindersIfStale() {
+        if let last = lastReminderCheckAt, Date().timeIntervalSince(last) < 3600 { return }
+        runReminderChecks()
+    }
+
     /// 启动时悄悄查一次规则：服务器版本比本地新才提醒（同一个版本一天
     /// 最多提醒一次），弹窗里点「更新规则」直接下载套用；没网、查不到、
-    /// 已经是最新都安安静静，不弹窗、不报错。
+    /// 已经是最新都安安静静，不弹窗、不报错。要是应用更新弹窗正占着，
+    /// 规则提醒先候着，等那个弹窗关了再补弹，不互相顶掉。
     private func checkRulesOnLaunch() {
         RulesStore.checkLatestVersion { [weak self] latest in
             guard let self, let latest else { return }
@@ -2205,18 +2237,25 @@ final class AppState: ObservableObject {
             let stamp = "\(latest)@\(day.string(from: Date()))"
             guard UserDefaults.standard.string(forKey: "rules.updateReminded") != stamp else { return }
             UserDefaults.standard.set(stamp, forKey: "rules.updateReminded")
-            self.rulesUpdateVersion = latest
             self.rulesStatus = "有新规则（第 \(latest) 版）"
-            self.alertText = "广告识别规则有新版本：第 \(latest) 版（现在用的是\(current == 0 ? "内置规则" : "第 \(current) 版")）。点「更新规则」马上就能用上，不用更新应用。"
+            let text = "广告识别规则有新版本：第 \(latest) 版（现在用的是\(current == 0 ? "内置规则" : "第 \(current) 版")）。点「更新规则」马上就能用上，不用更新应用。"
+            if self.alertText == nil {
+                self.rulesUpdateVersion = latest
+                self.alertText = text
+            } else {
+                self.queuedRulesAlert = (version: latest, text: text)
+            }
             self.log("启动检测规则：服务器第 \(latest) 版，本地\(current == 0 ? "内置规则" : "第 \(current) 版")", .info)
         }
     }
 
     /// 启动时悄悄查一次正式版：有新版才提醒（同一个版本一天最多提醒
     /// 一次），没有就什么都不说——像 Drift 那样，不用用户自己去点。
-    private func checkUpdateOnLaunch() {
+    private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {
         CollectUploader.fetchVersion { [weak self] info, _ in
-            guard let self, let info, info.version != "0.0.0" else { return }
+            guard let self else { completion(); return }
+            defer { completion() }
+            guard let info, info.version != "0.0.0" else { return }
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
             guard Self.isVersion(info.version, newerThan: current) else { return }
             let day = DateFormatter()
