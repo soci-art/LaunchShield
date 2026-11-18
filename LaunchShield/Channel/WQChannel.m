@@ -192,6 +192,11 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     return @"没有拿到";
 }
 
+- (NSString *)signMethod
+{
+    return wq_route_sign_method();
+}
+
 - (NSString *)routeName
 {
     return wq_route_name();
@@ -211,7 +216,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 {
     switch (wq_route_state()) {
         case WQRouteStateUnset:
-            return @"还没选签名方式：在主页上方选一下你装这个应用时用的签名方式，通道才能打开。";
+            return @"无法自动识别当前签名方式，请重新安装应用后再试。";
         case WQRouteStateMissingAppGroup:
             return _worseProbeError ?: (wq_app_group_error() ?: @"签名配置缺少可用的 App Groups entitlement；请使用启用 App Groups 的显式 App ID 重新签名。");
         case WQRouteStateUnsupported:
