@@ -230,6 +230,38 @@ NSString *wq_app_group_error(void)
     return wq_group_failure ?: @"没有拿到可用的共享组，这个功能用不了。";
 }
 
+// LaunchShield: a group this signature did not get from its own profile.
+// The candidates are the ones wq_app_group() looks at, minus every group the
+// app's own embedded profile names: a certificate install names its group in
+// the profile, while a LiveContainer install can't read the profile (profile:
+// none) and only sees the host's group (SideStore's) in the entitlements. So
+// "not in the profile list" is exactly what separates a borrowed group from
+// the app's own, and the free-ID route must not count the app's own group.
+NSString *wq_borrowed_group(void)
+{
+    static NSString *group;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSArray<NSString *> *profile = wq_profile_groups();
+        NSArray<NSString *> *entitled = wq_entitlement_groups();
+        NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+        for (NSString *candidate in profile) {
+            if (![candidates containsObject:candidate]) [candidates addObject:candidate];
+        }
+        for (NSString *candidate in entitled) {
+            if (![candidates containsObject:candidate]) [candidates addObject:candidate];
+        }
+        for (NSString *candidate in candidates) {
+            if ([profile containsObject:candidate]) continue;
+            if (!wq_group_usable(candidate)) continue;
+            group = candidate;
+            break;
+        }
+        wq_log(@"App group borrowed: %@", group ?: @"NONE");
+    });
+    return group;
+}
+
 #pragma mark - worse_query
 
 typedef void *(*cq_create_fn)(void);

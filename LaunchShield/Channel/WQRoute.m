@@ -5,11 +5,14 @@
 //  GPL-3.0-or-later. The route follows the signature method the user picked,
 //  not the system version alone:
 //    cert                     -> worse_query (a group must exist)
-//    free + a group (also a   -> worse_query, any version
-//           borrowed group)
-//    free, no group, 26.0-26.6.1 -> bad_query
-//    free, no group, anything else -> unsupported
+//    free + a borrowed group  -> worse_query, any version
+//    free, no borrowed group, 26.0-26.6.1 -> bad_query
+//    free, no borrowed group, anything else -> unsupported
 //    nothing picked           -> no route
+//
+// The free branch ignores the group the app's own profile names: a
+// certificate install that picked "free ID" must not look like a ready
+// channel. Only a group borrowed from the installing host counts.
 //
 
 #import "WQRoute.h"
@@ -61,9 +64,10 @@ static WQRouteState wq_route_compute(void)
     // A certificate always runs worse_query; the version and the group are
     // not looked at.
     if ([method isEqualToString:WQSignMethodCert]) return WQRouteStateWorse;
-    // Free ID: any group that really opens counts, including one borrowed
-    // from a SideStore / LiveContainer host.
-    if (wq_app_group() != nil) return WQRouteStateWorse;
+    // Free ID: only a group borrowed from the installing host (a SideStore /
+    // LiveContainer group) counts. The app's own profile group belongs to a
+    // certificate install and must leave this branch alone.
+    if (wq_borrowed_group() != nil) return WQRouteStateWorse;
     return wq_route_version_supports_bad_query() ? WQRouteStateBad : WQRouteStateUnsupported;
 }
 
@@ -83,6 +87,7 @@ WQRouteState wq_route_state(void)
     if (gResolved) return gState;
     gState = wq_route_compute();
     gResolved = YES;
+    wq_log(@"route: borrowedGroup=%@", wq_borrowed_group() ?: @"none");
     wq_log(@"route: signMethod=%@ state=%@", wq_route_sign_method() ?: @"none",
            wq_route_state_label(gState));
     return gState;

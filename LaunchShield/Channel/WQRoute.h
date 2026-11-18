@@ -5,8 +5,10 @@
 //  Picks the sandbox-grant backend from the signature method the user chose
 //  on the home screen (UserDefaults key ls.signMethod: "free" or "cert"; the
 //  key is absent until something is chosen). bad_query (Taj C / forcequit,
-//  GPL-3.0-or-later) covers a free-ID signature without a usable App Group on
+//  GPL-3.0-or-later) covers a free-ID signature without a borrowed App Group on
 //  iOS 26.0-26.6.1; everything else goes through worse_query in WQAccess.
+//  A free ID only counts a group borrowed from the installing host, never the
+//  one the app's own provisioning profile names.
 //
 
 #import <Foundation/Foundation.h>
@@ -17,11 +19,12 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, WQRouteState) {
     /// No signature method chosen yet: the channel stays closed.
     WQRouteStateUnset = 0,
-    /// worse_query: a certificate, or a free ID that came with a group.
+    /// worse_query: a certificate, or a free ID installed by a host whose
+    /// group it borrowed.
     WQRouteStateWorse,
-    /// bad_query: free ID without a group, on iOS 26.0-26.6.1.
+    /// bad_query: free ID without a borrowed group, on iOS 26.0-26.6.1.
     WQRouteStateBad,
-    /// Free ID without a group on a version bad_query does not cover.
+    /// Free ID without a borrowed group on a version bad_query does not cover.
     WQRouteStateUnsupported,
 };
 

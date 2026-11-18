@@ -25,6 +25,12 @@ NSString *wq_log_text(void);
 NSString *_Nullable wq_app_group(void);
 // Chinese explanation for the user when wq_app_group() is nil; nil otherwise.
 NSString *_Nullable wq_app_group_error(void);
+// A group that was borrowed from the host app that installed us (SideStore,
+// LiveContainer): same candidates as wq_app_group(), minus every group the
+// app's own embedded profile names, first one that really opens. Nil when
+// there is no such group. The free-ID route uses this; wq_app_group() stays
+// as it is for the certificate route and the worse_query availability check.
+NSString *_Nullable wq_borrowed_group(void);
 
 // Asks for a sandbox extension covering path (once per path). Returns YES
 // when one is held for it.
