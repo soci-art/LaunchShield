@@ -286,7 +286,10 @@ final class AppState: ObservableObject {
         }
 
         removeItem(docs.appendingPathComponent("ad-rules.json"), label: "下载的规则文件")
-        removeItem(docs.appendingPathComponent("LaunchShield-新版.ipa"), label: "更新下载的 IPA")
+        let updateIPA = downloadedIPA ?? docs.appendingPathComponent("LaunchShield-新版.ipa")
+        if updateIPA.standardizedFileURL.path.hasPrefix(docs.standardizedFileURL.path + "/"), updateIPA.pathExtension.lowercased() == "ipa" {
+            removeItem(updateIPA, label: "更新下载的 IPA")
+        }
 
         // Caches 中只放可重建数据：扫描索引、缩略图、识别/目录缓存等。
         // 清空其内容但保留目录本身，避免影响后续写入。
@@ -297,10 +300,14 @@ final class AppState: ObservableObject {
         }
 
         // tmp 仅用于解压和处理中间文件；不清理 Documents/Application Support。
-        if let children = try? fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil) {
-            for child in children {
-                removeItem(child, label: "临时文件")
+        if downloadProgress == nil {
+            if let children = try? fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil) {
+                for child in children {
+                    removeItem(child, label: "临时文件")
+                }
             }
+        } else {
+            log("缓存清理：检测到更新正在下载，暂时跳过临时目录", .notice)
         }
 
         if removed.contains("下载的规则文件") { RulesStore.resetDownloaded() }
