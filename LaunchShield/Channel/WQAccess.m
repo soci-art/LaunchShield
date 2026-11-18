@@ -500,6 +500,8 @@ BOOL wq_grant(NSString *path)
     struct stat st;
     BOOL badQuery = wq_route_is_bad_query();
     if (!badQuery && lstat(key.fileSystemRepresentation, &st) != 0) {
+        int error = errno;
+        wq_log(@"grant: target does not exist or cannot be inspected %@ (errno=%d)", key, error);
         [gGrantLock unlock];
         return NO;  // worse_query needs an existing target
     }
@@ -562,8 +564,32 @@ BOOL wq_grant(NSString *path)
         gGrants[key] = @(handle);
         [gGrantOrder addObject:key];
     }
+    if (handle < 0) wq_log(@"grant: failed for %@ (grant=%lld)", key, handle);
     [gGrantLock unlock];
     return handle >= 0;
+}
+
+BOOL wq_probe_channel(NSString **errorText)
+{
+    // This is the same directory the file browser must enumerate. A successful
+    // App Group lookup alone is insufficient: the active route must obtain a
+    // token and then list the real app-data root. No files are created or modified.
+    NSString *root = @"/private/var/mobile/Containers/Data/Application";
+    if (!wq_grant(root)) {
+        if (errorText) *errorText = @"系统未能签发访问令牌（通道授权 grant 失败；详见诊断日志）";
+        return NO;
+    }
+    NSString *listError = nil;
+    NSArray<NSString *> *entries = wq_list(root, &listError);
+    if (!entries) {
+        if (errorText) *errorText = listError.length
+            ? [NSString stringWithFormat:@"已取得授权，但无法列出应用容器目录（%@）", listError]
+            : @"已取得授权，但无法列出应用容器目录";
+        return NO;
+    }
+    wq_log(@"route probe: active route granted and listed app-data root (%lu entries)",
+           (unsigned long)entries.count);
+    return YES;
 }
 
 static BOOL wq_is_denied(int err) { return err == EPERM || err == EACCES; }
