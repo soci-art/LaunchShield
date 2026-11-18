@@ -16,6 +16,7 @@ final class Channel {
 
     var isAvailable: Bool { raw.available }
     var groupID: String? { raw.groupID }
+    var signMethod: String? { raw.signMethod }
     var unavailableReason: String { raw.unavailableReason }
 
     /// 按用户选的签名方式判出的路线名；没路线时是中文说明（未选择/系统不支持）。
@@ -27,7 +28,7 @@ final class Channel {
     func answerFullScan(_ yes: Bool) { raw.answerFullScan(yes) }
     func stopFullScan() { raw.stopFullScan() }
 
-    /// 签名方式变了：让底层忘掉判好的路线，下次查询按新选择重判。
+    /// 重新读取签名配置并让底层重判路线。
     func resetRoute() { raw.resetRoute() }
 
     func containers() -> [ContainerInfo] {
