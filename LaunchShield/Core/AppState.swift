@@ -62,7 +62,14 @@ final class AppState: ObservableObject {
         checkedIDs = Set(checkedIDs.filter { $0.lowercased() != key })
         scanTargets.removeAll { $0.bundleID.lowercased() == key }
         candidates.removeAll { $0.bundleID.lowercased() == key }
+        selectedCandidatePaths = Set(selectedCandidatePaths.filter { path in candidates.contains { $0.id == path } })
+        lastRecognition.removeAll { $0.bundleID.lowercased() == key }
         beforeSnapshots = beforeSnapshots.filter { $0.key.lowercased() != key }
+        if target.bundleID.lowercased() == key {
+            beforeSnapshot = nil
+            afterSnapshot = nil
+            splash = nil
+        }
         afterSnapshots = afterSnapshots.filter { $0.key.lowercased() != key }
         log("已将应用加入排除白名单：\(appWhitelist[key] ?? bundleID)（\(bundleID)）", .notice)
         return true
@@ -1568,14 +1575,15 @@ final class AppState: ObservableObject {
     // MARK: - Recipes
 
     func checkRecipes(silent: Bool = false) {
-        let list = recipes
+        let excludedIDs = whitelistedBundleIDs
+        let list = recipes.filter { !excludedIDs.contains($0.bundleID.lowercased()) }
         guard !list.isEmpty, channel.isAvailable else { return }
         work.async {
-            var updated = list
+            var updated = self.recipes
             var normal = 0
             var recurred = 0
             var other = 0
-            for index in updated.indices {
+            for index in updated.indices where !excludedIDs.contains(updated[index].bundleID.lowercased()) {
                 updated[index].lastCheckedAt = Date()
                 guard let container = self.channel.containerPath(for: updated[index].bundleID) else {
                     updated[index].lastState = RecipeState.missing.rawValue
@@ -1606,6 +1614,10 @@ final class AppState: ObservableObject {
     }
 
     func replaceRecipe(_ recipe: Recipe) {
+        guard !isWhitelisted(recipe.bundleID) else {
+            alertText = "该应用已加入排除白名单，不能执行重新清零。"
+            return
+        }
         guard requireChannel() else { return }
         guard let root = channel.containerPath(for: recipe.bundleID) else {
             alertText = "找不到 \(recipe.appName) 的数据容器。"
@@ -1656,6 +1668,10 @@ final class AppState: ObservableObject {
     }
 
     func setFrozen(_ recipe: Recipe, frozen: Bool) {
+        guard !isWhitelisted(recipe.bundleID) else {
+            alertText = "该应用已加入排除白名单，不能修改冻结状态。"
+            return
+        }
         guard requireChannel() else { return }
         guard let root = channel.containerPath(for: recipe.bundleID) else { return }
         work.async {
@@ -1681,6 +1697,10 @@ final class AppState: ObservableObject {
     }
 
     func setPlaceholder(_ recipe: Recipe, enabled: Bool) {
+        guard !isWhitelisted(recipe.bundleID) else {
+            alertText = "该应用已加入排除白名单，不能执行占位操作。"
+            return
+        }
         guard requireChannel() else { return }
         guard let root = channel.containerPath(for: recipe.bundleID) else { return }
         isBusy = true
@@ -1747,6 +1767,10 @@ final class AppState: ObservableObject {
 
     /// 移出守护列表时默认解冻：不能只删名单、把文件还冻在原地没人管。
     func removeRecipe(_ recipe: Recipe) {
+        guard !isWhitelisted(recipe.bundleID) else {
+            alertText = "该应用已加入排除白名单，守护条目保持不变。"
+            return
+        }
         let finish = {
             self.recipes.removeAll { $0.id == recipe.id }
             self.store.file.recipes = self.recipes
@@ -1775,7 +1799,7 @@ final class AppState: ObservableObject {
     /// 批量移除选中的守护条目（多选模式用）：和逐个移除一个口径——
     /// 冻着的先解冻、占位文件夹删掉，再从名单里拿掉。其他条目不动。
     func removeRecipes(_ selected: [Recipe]) {
-        let ids = Set(selected.map { $0.id })
+        let ids = Set(selected.filter { !isWhitelisted($0.bundleID) }.map { $0.id })
         let targets = recipes.filter { ids.contains($0.id) }
         guard !targets.isEmpty else {
             alertText = "先勾选要移除的条目。"
@@ -1822,6 +1846,7 @@ final class AppState: ObservableObject {
     func refreezeRelapsed() {
         guard requireChannel() else { return }
         let targets = recipes.filter {
+            !isWhitelisted($0.bundleID) &&
             $0.lastState == RecipeState.recurred.rawValue && !$0.placeholder
         }
         guard !targets.isEmpty else {
@@ -1872,12 +1897,13 @@ final class AppState: ObservableObject {
     }
 
     func clearMissingRecipes() {
-        let missing = recipes.filter { $0.lastState == RecipeState.missing.rawValue }
+        let missing = recipes.filter { !isWhitelisted($0.bundleID) && $0.lastState == RecipeState.missing.rawValue }
         guard !missing.isEmpty else {
             alertText = "没有「文件不见了」的条目要清。"
             return
         }
-        recipes.removeAll { $0.lastState == RecipeState.missing.rawValue }
+        let missingIDs = Set(missing.map { $0.id })
+        recipes.removeAll { missingIDs.contains($0.id) }
         store.file.recipes = recipes
         store.save()
         log("已清除 \(missing.count) 个「文件不见了」的守护条目", .notice)
@@ -1888,6 +1914,10 @@ final class AppState: ObservableObject {
     /// 占位文件夹删掉、广告文件夹也一并解冻（跟移出单个文件的口径一致，
     /// 不能把文件还冻在原地没人管）。其他应用的守护不动。
     func endGuard(forApp bundleID: String) {
+        guard !isWhitelisted(bundleID) else {
+            alertText = "该应用已加入排除白名单，不会执行结束守护或解冻。"
+            return
+        }
         guard requireChannel() else { return }
         let targets = recipes.filter { $0.bundleID == bundleID }
         guard !targets.isEmpty else {
