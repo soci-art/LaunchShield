@@ -6,7 +6,8 @@
 //  on the home screen (UserDefaults key ls.signMethod: "free" or "cert"; the
 //  key is absent until something is chosen). bad_query (Taj C / forcequit,
 //  GPL-3.0-or-later) covers a free-ID signature without a borrowed App Group on
-//  iOS 26.0-26.6.1; everything else goes through worse_query in WQAccess.
+//  iOS 26.0-26.6.1. Certificate signing requires a usable App Group for
+//  worse_query; actual route availability is verified by WQChannel.
 //  A free ID only counts a group borrowed from the installing host, never the
 //  one the app's own provisioning profile names.
 //
@@ -24,6 +25,8 @@ typedef NS_ENUM(NSInteger, WQRouteState) {
     WQRouteStateWorse,
     /// bad_query: free ID without a borrowed group, on iOS 26.0-26.6.1.
     WQRouteStateBad,
+    /// Certificate signing without a usable App Group entitlement.
+    WQRouteStateMissingAppGroup,
     /// Free ID without a borrowed group on a version bad_query does not cover.
     WQRouteStateUnsupported,
 };
