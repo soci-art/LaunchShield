@@ -162,16 +162,18 @@ struct BackupsView: View {
                         Text(group.name)
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
+                        Spacer(minLength: 8)
+                        Text("\(group.records.count) 份")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.secondaryText)
+                        Text(Format.bytes(group.records.reduce(0) { $0 + $1.originalSize }))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.secondaryText)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Spacer()
-                Text("\(group.records.count) 份")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.secondaryText)
-                Text(Format.bytes(group.records.reduce(0) { $0 + $1.originalSize }))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
                 Button("删除") {
                     appToDelete = group.bundleID
                 }
