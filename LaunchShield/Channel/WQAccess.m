@@ -141,6 +141,19 @@ static NSArray<NSString *> *wq_profile_groups(void)
     return result;
 }
 
+// Certificate-signed builds carry their own App Group in the embedded
+// provisioning profile. Free Apple ID installs (including SideStore and
+// LiveContainer) do not; a host-borrowed group is exposed only in the live
+// entitlements and is handled separately by wq_borrowed_group().
+NSString *wq_detect_sign_method(void)
+{
+    NSArray<NSString *> *profileGroups = wq_profile_groups();
+    NSString *method = profileGroups.count > 0 ? @"cert" : @"free";
+    wq_log(@"signature detection: method=%@ profileGroups=%@", method,
+           profileGroups.count ? [profileGroups componentsJoinedByString:@", "] : @"none");
+    return method;
+}
+
 static NSArray<NSString *> *wq_entitlement_groups(void)
 {
     NSMutableArray<NSString *> *result = [NSMutableArray array];
