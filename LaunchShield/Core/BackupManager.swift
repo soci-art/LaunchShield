@@ -15,7 +15,7 @@ struct BackupManager {
         guard Self.isSafeRelativePath(relativePath) else {
             throw ChannelFailure("文件相对路径不安全，已取消备份")
         }
-        guard let item = channel.item(at: path), !item.isDirectory, !item.isSymlink else {
+        guard let item = try channel.inspectItem(at: path), !item.isDirectory, !item.isSymlink else {
             throw ChannelFailure("目标不是普通文件（或是符号链接），已取消备份")
         }
         let id = UUID()
@@ -85,7 +85,7 @@ struct BackupManager {
         }
 
         let target = container + "/" + record.relativePath
-        let existing = channel.item(at: target)
+        let existing = try channel.inspectItem(at: target)
         if let existing, existing.isSymlink {
             throw ChannelFailure("目标是符号链接，拒绝覆盖")
         }
@@ -148,7 +148,7 @@ struct BackupManager {
                 }
             } else if existing == nil {
                 do {
-                    if channel.item(at: target) != nil {
+                    if try channel.inspectItem(at: target) != nil {
                         try channel.delete(target)
                     }
                     rollbackResult = "已清理本次创建的残留文件"
