@@ -2,8 +2,8 @@
 //  WQRoute.m
 //  LaunchShield
 //
-//  GPL-3.0-or-later. The route follows the signature method the user picked,
-//  not the system version alone:
+//  GPL-3.0-or-later. The route follows the signing mode detected from the
+//  embedded provisioning profile, together with the available host entitlements:
 //    cert + usable App Group  -> worse_query candidate
 //    cert + no usable group   -> unavailable (explicit App ID + App Groups required)
 //    free + a borrowed group  -> worse_query, any version
@@ -19,11 +19,6 @@
 #import "WQRoute.h"
 #import "WQAccess.h"
 #import "bad_query.h"
-
-// Written by the home screen; values are "free" or "cert".
-static NSString *const WQSignMethodKey = @"ls.signMethod";
-static NSString *const WQSignMethodFree = @"free";
-static NSString *const WQSignMethodCert = @"cert";
 
 static WQRouteState gState = WQRouteStateUnset;
 static BOOL gResolved;
@@ -49,13 +44,9 @@ static BOOL wq_route_version_supports_bad_query(void)
     return v.minorVersion < 6 || (v.minorVersion == 6 && v.patchVersion <= 1);
 }
 
-static NSString *wq_route_sign_method(void)
+NSString *wq_route_sign_method(void)
 {
-    NSString *method = [[NSUserDefaults standardUserDefaults] stringForKey:WQSignMethodKey];
-    if (![method isKindOfClass:NSString.class] || method.length == 0) return nil;
-    if ([method isEqualToString:WQSignMethodFree]) return WQSignMethodFree;
-    if ([method isEqualToString:WQSignMethodCert]) return WQSignMethodCert;
-    return nil;
+    return wq_detect_sign_method();
 }
 
 static WQRouteState wq_route_compute(void)
@@ -81,7 +72,7 @@ static NSString *wq_route_state_label(WQRouteState state)
         case WQRouteStateBad: return @"bad_query";
         case WQRouteStateMissingAppGroup: return @"缺少 App Group";
         case WQRouteStateUnsupported: return @"系统不支持";
-        case WQRouteStateUnset: return @"未选择";
+        case WQRouteStateUnset: return @"无法识别";
     }
     return @"未选择";
 }
@@ -134,7 +125,7 @@ NSString *wq_route_detail(void)
         case WQRouteStateUnsupported:
             return [NSString stringWithFormat:@"系统不支持（iOS %@，免费 ID 签名只支持 iOS 26.0–26.6.1）", version];
         case WQRouteStateUnset:
-            return @"还没选签名方式";
+            return @"无法自动识别当前签名方式";
     }
     return @"还没选签名方式";
 }
