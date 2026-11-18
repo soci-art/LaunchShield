@@ -2,6 +2,11 @@ name: Build and publish official IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "本次正式版版本号（例如 3.3.5）"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -39,30 +44,29 @@ jobs:
             -derivedDataPath build/DD \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
-      - name: Set rolling version and package IPA
+      - name: Set manual version and package IPA
         id: version
         shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
           APP_PATH="$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
           echo "App: $APP_PATH"
           test -n "$APP_PATH"
 
-          # Use the highest existing stable semantic-version tag, then bump patch.
-          git fetch --tags --force
-          HIGHEST="0.0.0"
-          while IFS= read -r TAG; do
-            VERSION="${TAG#v}"
-            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              if [ "$(printf '%s\n%s\n' "$HIGHEST" "$VERSION" | sort -V | tail -1)" = "$VERSION" ]; then
-                HIGHEST="$VERSION"
-              fi
-            fi
-          done < <(git tag --list 'v[0-9]*')
-
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$HIGHEST"
-          NEXT_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          NEXT_VERSION="$VERSION_INPUT"
+          if [[ ! "$NEXT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本号格式无效，请使用 x.y.z，例如 3.3.5"
+            exit 1
+          fi
           TAG="v$NEXT_VERSION"
+
+          # Never overwrite an existing tag or release.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::版本 $NEXT_VERSION 对应的 Tag 已存在，请填写新的版本号。"
+            exit 1
+          fi
 
           # Keep the app's bundle version aligned with the new release.
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEXT_VERSION" "$APP_PATH/Info.plist"
@@ -98,7 +102,7 @@ jobs:
           本次发布由 main 分支手动构建。
           IPA：${{ env.IPA_NAME }}
 
-          此次发布采用滚动版本号。每次成功构建都会创建新的正式版 Release，
+          版本号由本次工作流运行时手动指定。
           不删除、不覆盖任何历史 Release、tag 或 IPA 附件。
           NOTES
 
