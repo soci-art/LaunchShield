@@ -1087,17 +1087,30 @@ final class AppState: ObservableObject {
                     self.afterSnapshot = nil
                     self.candidates = []
                     self.selectedCandidatePaths = []
-                    self.log("第一次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件", .success)
-                    self.alertText = multi
+                    let incomplete = snaps.values.filter { $0.truncated }.count
+                    self.log("第一次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件\(incomplete > 0 ? "；其中 \(incomplete) 个扫描不完整" : "")",
+                             incomplete > 0 ? .warning : .success)
+                    let nextStep = multi
                         ? "现在去打开有广告的应用，让开屏广告播一次，再回来拍第二次快照。"
                         : "现在去打开\(scope[0].name)，让开屏广告播一次，再回来拍第二次快照。"
+                    self.alertText = incomplete > 0
+                        ? "有 \(incomplete) 个应用未能完整扫描。请先检查日志/访问权限，再进行对比；\(nextStep)"
+                        : nextStep
                 } else {
                     self.afterSnapshots = snaps
                     self.afterSnapshot = snaps.values.first
                     var all: [DiffCandidate] = []
+                    var incompleteNames: [String] = []
                     for container in scope {
                         guard let first = self.beforeSnapshots[container.bundleID],
-                              let second = snaps[container.bundleID] else { continue }
+                              let second = snaps[container.bundleID] else {
+                            incompleteNames.append(container.name)
+                            continue
+                        }
+                        guard !first.truncated, !second.truncated else {
+                            incompleteNames.append(container.name)
+                            continue
+                        }
                         all += SnapshotDiff.diff(before: first, after: second, appName: container.name)
                     }
                     all.sort { first, second in
@@ -1106,11 +1119,18 @@ final class AppState: ObservableObject {
                         return first.delta > second.delta
                     }
                     self.candidates = Array(all.prefix(400))
-                    self.selectedCandidatePaths = Set(self.candidates.filter { $0.autoVerdict }.map { $0.id })
-                    self.log("第二次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件，\(self.candidates.count) 个候选", .success)
-                    self.alertText = self.candidates.isEmpty
-                        ? "这次没有发现新文件或变大的文件。可以再让广告播一次试试。"
-                        : "请勾选确实是广告素材的文件，再点清零。"
+                    self.selectedCandidatePaths = incompleteNames.isEmpty
+                        ? Set(self.candidates.filter { $0.autoVerdict }.map { $0.id })
+                        : []
+                    self.log("第二次快照完成：\(snaps.count) 个应用，共 \(totalFiles) 个文件，\(self.candidates.count) 个候选\(incompleteNames.isEmpty ? "" : "；扫描不完整：\(incompleteNames.joined(separator: "、"))")",
+                             incompleteNames.isEmpty ? .success : .warning)
+                    if !incompleteNames.isEmpty {
+                        self.alertText = "以下应用扫描不完整，已跳过它们的前后对比：\(incompleteNames.joined(separator: "、"))。请检查日志/访问权限后重新拍快照。"
+                    } else {
+                        self.alertText = self.candidates.isEmpty
+                            ? "完整扫描后没有发现新文件或变大的文件。可以再让广告播一次试试。"
+                            : "请勾选确实是广告素材的文件，再点清零。"
+                    }
                 }
                 if !failedNames.isEmpty {
                     self.log("这些应用没拍上快照（找不到容器）：\(failedNames.joined(separator: "、"))", .warning)
@@ -1121,7 +1141,10 @@ final class AppState: ObservableObject {
 
     /// 找广告「自动判定」一组：把选择换成自动判定的候选，供一键清零用。
     func selectAutoCandidates() {
-        selectedCandidatePaths = Set(candidates.filter { $0.autoVerdict }.map { $0.id })
+        let completeBundleIDs = Set(afterSnapshots.values.filter { !$0.truncated }.map { $0.bundleID })
+        selectedCandidatePaths = Set(candidates.filter {
+            completeBundleIDs.contains($0.bundleID) && $0.autoVerdict
+        }.map { $0.id })
     }
 
     func clearSelectedCandidates() {
@@ -1149,16 +1172,30 @@ final class AppState: ObservableObject {
                 }
                 let appBundleID = candidate.bundleID.isEmpty ? self.target.bundleID : candidate.bundleID
                 let appName = candidate.appName.isEmpty ? self.target.name : candidate.appName
-                let full = root + "/" + candidate.relativePath
+                let parts = candidate.relativePath.split(separator: "/", omittingEmptySubsequences: false)
+                guard !candidate.relativePath.isEmpty, !candidate.relativePath.hasPrefix("/"),
+                      !candidate.relativePath.contains("\\"), !candidate.relativePath.unicodeScalars.contains(where: { $0.value == 0 }),
+                      parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+                    failure = "\(candidate.appName)：候选路径不安全，已跳过"
+                    continue
+                }
+                let full = root.hasSuffix("/") ? root + candidate.relativePath : root + "/" + candidate.relativePath
                 if DatabaseFile.matches(relativePath: candidate.relativePath) {
                     skippedDB += 1
                     self.log("跳过数据库文件：\(appName) \(candidate.relativePath)", .info)
                     continue
                 }
+                let wasImmutable = self.channel.isImmutable(full)
                 do {
-                    if self.channel.isImmutable(full) {
-                        try self.channel.setImmutable(full, false)
+                    guard let current = self.channel.item(at: full),
+                          !current.isDirectory, !current.isSymlink else {
+                        throw ChannelFailure("目标已不存在、不是普通文件或已变成符号链接")
                     }
+                    guard current.size == candidate.size,
+                          abs(current.modified.timeIntervalSince(candidate.modified)) <= 2 else {
+                        throw ChannelFailure("文件在第二次快照后发生变化，已取消清零；请重新扫描")
+                    }
+                    if wasImmutable { try self.channel.setImmutable(full, false) }
                     let record = try self.backupManager.backup(path: full,
                                                                relativePath: candidate.relativePath,
                                                                bundleID: appBundleID,
@@ -1166,6 +1203,10 @@ final class AppState: ObservableObject {
                                                                source: "前后对比确认",
                                                                channel: self.channel)
                     newBackups.append(record)
+                    let sourceMD5AfterBackup = try self.channel.md5(full)
+                    guard sourceMD5AfterBackup.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                        throw ChannelFailure("备份后源文件内容发生变化，已取消清零")
+                    }
                     try self.channel.truncate(full)
                     done += 1
                     self.log("已清零确认的素材：\(appName) \(candidate.relativePath)", .success)
@@ -1179,6 +1220,13 @@ final class AppState: ObservableObject {
                                              lastCheckedAt: Date(),
                                              lastState: RecipeState.normal.rawValue))
                 } catch {
+                    if wasImmutable {
+                        do {
+                            if self.channel.item(at: full) != nil { try self.channel.setImmutable(full, true) }
+                        } catch {
+                            self.log("恢复原冻结状态失败：\(appName) \(candidate.relativePath)：\(error.localizedDescription)", .warning)
+                        }
+                    }
                     if failure == nil {
                         failure = "\(candidate.relativePath)：\(error.localizedDescription)"
                     }

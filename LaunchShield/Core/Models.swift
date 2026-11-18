@@ -206,17 +206,15 @@ struct DiffCandidate: Identifiable, Hashable {
         return isNew && kind != .other
     }
 
-    /// 强判定（自动判定组）：落在已知广告目录里、名字带冷开/开屏，
-    /// 或者新下的大图/视频。应用自己的资源目录（解包资源、颜色表、
-    /// 系统开屏缓存）一律排除——构建 13 实测它们会被「新增图片」
-    /// 误勾，这里不让它们进自动组。
+    /// 自动判定只采用较强证据：命中已知广告 SDK 目录，或文件名包含
+    /// 明确的广告素材标记。通用 splash/launch 名称和大图片不自动勾选，
+    /// 避免误伤应用自己的启动资源及用户媒体。
     var autoVerdict: Bool {
         let lower = relativePath.lowercased()
         if lower.contains("extracted_dirs/") || lower.contains("monet_res/")
             || lower.contains("splashboard") {
             return false
         }
-        // 个人内容（聊天图、短视频、表情包）永远不自动判定为广告。
         if PersonalMedia.isPersonal(bundleID: bundleID, relativePath: relativePath) {
             return false
         }
@@ -226,16 +224,13 @@ struct DiffCandidate: Identifiable, Hashable {
                 if lower == dir || lower.hasPrefix(dir + "/") { return true }
             }
         }
-        if lower.contains("cold_launch") || lower.contains("coldlaunch")
-            || lower.contains("splash") {
-            return true
+        // Generic splash/launch names and large media are not strong ad evidence.
+        let strongMarkers = ["appopen", "openad", "splashad", "ad_splash",
+                             "admaterial", "ad_material", "ad_cache"]
+        let components = lower.split(separator: "/")
+        return components.contains { component in
+            strongMarkers.contains { component.contains($0) }
         }
-        // 应用自家的启动图/引导图（图片/视频才算，路径带 boot/launch/guide）。
-        if (kind == .image || kind == .video), LaunchImageHint.matches(lower) {
-            return true
-        }
-        if isNew, kind == .image || kind == .video, size >= 30_000 { return true }
-        return false
     }
 }
 

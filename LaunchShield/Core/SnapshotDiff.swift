@@ -8,12 +8,14 @@ enum SnapshotDiff {
         var entries: [String: ContainerSnapshot.Entry] = [:]
         var stack: [(path: String, relative: String)] = [(root, "")]
         var truncated = false
+        var reachedLimit = false
 
         while let current = stack.popLast() {
             let children: [FileItem]
             do {
                 children = try channel.children(of: current.path)
             } catch {
+                truncated = true
                 continue
             }
             for item in children {
@@ -24,13 +26,14 @@ enum SnapshotDiff {
                 } else {
                     if entries.count >= limit {
                         truncated = true
+                        reachedLimit = true
                         break
                     }
                     entries[relative] = ContainerSnapshot.Entry(size: item.size,
                                                                 modified: item.modified.timeIntervalSince1970)
                 }
             }
-            if truncated { break }
+            if reachedLimit { break }
         }
 
         return ContainerSnapshot(bundleID: bundleID,
