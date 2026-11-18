@@ -2168,6 +2168,7 @@ final class AppState: ObservableObject {
     /// 冻结，并登记成配方。成功返回 true。
     private func autoClearFile(_ file: TargetFile, source: String,
                                newBackups: inout [BackupRecord], newRecipes: inout [Recipe]) -> Bool {
+        if isWhitelisted(file.bundleID) { return false }
         if DatabaseFile.matches(relativePath: file.relativePath) { return false }
         let ownerID = file.bundleID.isEmpty ? BaiduNetdisk.bundleID : file.bundleID
         let ownerName = file.appName.isEmpty ? BaiduNetdisk.displayName : file.appName
