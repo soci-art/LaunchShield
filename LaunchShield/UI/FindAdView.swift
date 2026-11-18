@@ -59,7 +59,7 @@ struct FindAdView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("这一组落在广告目录、名字带冷开/开屏，或是新下的大图/视频；应用自己的资源图已经排除。清之前会先备份。")
+            Text("这一组仅包含高置信度广告候选。通用启动图、大图片、个人内容、数据库和应用内部资源不会仅凭文件名或体积进入自动清理组。清理前会先备份。")
         }
     }
 
@@ -254,7 +254,7 @@ struct FindAdView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
             }
-            Text("落在广告目录、名字带冷开/开屏，或新下的大图/视频；应用自己的资源图已排除，不用再手选。")
+            Text("只收录高置信度候选：必须有明确广告目录证据，并通过个人内容、数据库和应用内部资源排除。清理前仍会备份并要求确认。")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -376,12 +376,12 @@ struct FindAdView: View {
                             .background(Color.orange, in: Capsule())
                     }
                     if candidate.likelyAd {
-                        Text("疑似广告")
+                        Text("\(candidate.adAssessment.level.label) · \(candidate.adAssessment.score)")
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(candidate.adAssessment.level == .high ? .orange : .secondary)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.14), in: Capsule())
+                            .background(Color.orange.opacity(0.10), in: Capsule())
                     }
                 }
                 if !state.checkedIDs.isEmpty && !candidate.appName.isEmpty {

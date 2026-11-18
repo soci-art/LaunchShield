@@ -198,39 +198,100 @@ struct DiffCandidate: Identifiable, Hashable {
     var sizeText: String { Format.bytes(size) }
     var modifiedText: String { Format.date(modified) }
 
-    /// Rough call on whether this file is ad material: it sits in a known ad
-    /// SDK's territory, or it is a brand-new image/video.
-    var likelyAd: Bool {
-        let path = relativePath.lowercased()
-        if RulesStore.keywords.contains(where: { path.contains($0) }) { return true }
-        return isNew && kind != .other
-    }
-
-    /// 自动判定只采用较强证据：命中已知广告 SDK 目录，或文件名包含
-    /// 明确的广告素材标记。通用 splash/launch 名称和大图片不自动勾选，
-    /// 避免误伤应用自己的启动资源及用户媒体。
-    var autoVerdict: Bool {
+    /// 多维广告证据评分。评分只用于排序和提示，不直接授权删除。
+    /// 个人内容、数据库、应用内部文件和系统资源始终先行排除。
+    var adAssessment: AdAssessment {
         let lower = relativePath.lowercased()
-        if lower.contains("extracted_dirs/") || lower.contains("monet_res/")
-            || lower.contains("splashboard") {
-            return false
+        let components = lower.split(separator: "/").map(String.init)
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        let internalExtensions: Set<String> = [
+            "db", "sqlite", "sqlite3", "plist", "json", "log", "mnn",
+            "blm", "dyld", "dyld4", "tflite", "onnx", "model", "bin", "dat"
+        ]
+        let excludedPathMarkers = ["extracted_dirs", "monet_res", "splashboard"]
+        let isExcluded = PersonalMedia.isPersonal(bundleID: bundleID, relativePath: relativePath)
+            || DatabaseFile.matches(relativePath: relativePath)
+            || internalExtensions.contains(ext)
+            || components.contains(where: { excludedPathMarkers.contains($0) })
+            || components.contains("logs")
+        if isExcluded {
+            return AdAssessment(score: 0, reasons: ["个人数据、数据库或应用内部资源，已排除"],
+                                level: .excluded, isAutoEligible: false)
         }
-        if PersonalMedia.isPersonal(bundleID: bundleID, relativePath: relativePath) {
-            return false
-        }
+
+        var score = 0
+        var reasons: [String] = []
+        var matchedKnownDirectory = false
         for group in RulesStore.groups {
             for directory in group.directories {
-                let dir = directory.lowercased()
-                if lower == dir || lower.hasPrefix(dir + "/") { return true }
+                let dir = directory.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if lower == dir || lower.hasPrefix(dir + "/") {
+                    score += 70
+                    reasons.append("命中广告 SDK 目录：\(group.group)")
+                    matchedKnownDirectory = true
+                    break
+                }
             }
+            if matchedKnownDirectory { break }
         }
-        // Generic splash/launch names and large media are not strong ad evidence.
+
         let strongMarkers = ["appopen", "openad", "splashad", "ad_splash",
-                             "admaterial", "ad_material", "ad_cache"]
-        let components = lower.split(separator: "/")
-        return components.contains { component in
+                             "admaterial", "ad_material", "ad_cache", "interstitialad",
+                             "rewardvideo", "nativead"]
+        let matchedStrongMarker = components.contains { component in
             strongMarkers.contains { component.contains($0) }
         }
+        if matchedStrongMarker {
+            score += 55
+            reasons.append("文件路径包含明确广告素材标记")
+        }
+
+        let keywords = RulesStore.keywords.map { $0.lowercased() }
+        let matchedKeyword = components.contains { component in
+            keywords.contains { keyword in !keyword.isEmpty && component.contains(keyword) }
+        }
+        if matchedKeyword {
+            score += 25
+            reasons.append("命中广告 SDK 关键词")
+        }
+
+        if kind != .other {
+            score += 8
+            reasons.append("文件类型为图片或视频")
+        }
+        if isNew {
+            score += 12
+            reasons.append("广告播放期间新生成")
+        } else if delta > 0 {
+            score += 6
+            reasons.append("广告播放期间文件体积增加")
+        }
+
+        // boot/launch/guide/splash 等通用名称不足以证明是广告。
+        let level: AdAssessment.Level
+        if score >= 80 {
+            level = .high
+        } else if score >= 40 {
+            level = .medium
+        } else {
+            level = .low
+        }
+        let autoEligible = kind != .other && (
+            matchedKnownDirectory && score >= 80
+                || matchedStrongMarker && matchedKeyword && score >= 80
+        )
+        return AdAssessment(score: min(score, 100), reasons: reasons,
+                            level: level, isAutoEligible: autoEligible)
+    }
+
+    var likelyAd: Bool {
+        adAssessment.level == .high || adAssessment.level == .medium
+    }
+
+    /// 仅高置信度且有明确广告目录证据的候选可进入批量清理组。
+    /// UI 仍会要求用户二次确认，实际清理前还会执行备份。
+    var autoVerdict: Bool {
+        adAssessment.isAutoEligible
     }
 }
 
