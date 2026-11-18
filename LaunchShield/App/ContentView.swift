@@ -7,6 +7,7 @@ struct ContentView: View {
     @ObservedObject private var guardService = GuardService.shared
 
     @State private var showAppPicker = false
+    @State private var showWhitelist = false
     @State private var showTutorial = false
     @State private var showFindAd = false
     @State private var showRecipes = false
@@ -58,6 +59,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
+        }
+        .sheet(isPresented: $showWhitelist) {
+            AppWhitelistView().environmentObject(state)
         }
         .sheet(isPresented: $showTutorial) {
             TutorialView()
@@ -374,6 +378,35 @@ struct ContentView: View {
                 }
                 smallButton("找广告", symbol: "magnifyingglass") { if requireSign() { showFindAd = true } }
             }
+            HStack(spacing: 10) {
+                Image(systemName: "hand.raised.slash")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+                    .frame(width: 30, height: 30)
+                    .background(Color.accentCyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("排除白名单")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    Text(state.appWhitelist.isEmpty ? "指定应用完全跳过扫描、清理和守护" : "已排除 \\(state.appWhitelist.count) 个应用")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+                Spacer()
+                Button { showWhitelist = true } label: {
+                    HStack(spacing: 4) {
+                        Text("管理")
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 9)
+            .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             Label("操作前请先完全退出目标应用", systemImage: "info.circle")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
@@ -927,5 +960,157 @@ struct ContentView: View {
         .font(.system(size: 10, weight: .medium))
         .foregroundStyle(Color.secondaryText.opacity(0.65))
         .padding(.top, 2)
+    }
+}
+
+
+/// App 排除白名单管理：可从已识别应用选择，也可手动录入 Bundle ID。
+private struct AppWhitelistView: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var manualBundleID = ""
+
+    private var filteredApps: [ContainerInfo] {
+        let apps = state.containers.filter { !$0.isGroup && $0.bundleID != AppState.ownBundleID }
+        guard !query.isEmpty else { return apps }
+        return apps.filter {
+            $0.name.localizedCaseInsensitiveContains(query) ||
+            $0.bundleID.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        SheetPage("排除白名单") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("加入白名单的应用不会被扫描、清理、找广告或守护。规则只按 Bundle ID 匹配。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Text("已排除应用")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        Spacer()
+                        Text("\(state.appWhitelist.count) 个")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.accentCyan)
+                    }
+                    if state.appWhitelist.isEmpty {
+                        Text("还没有添加应用")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.secondaryText)
+                            .padding(.vertical, 5)
+                    } else {
+                        ForEach(state.appWhitelist.keys.sorted(), id: \.self) { bundleID in
+                            HStack(spacing: 9) {
+                                Image(systemName: "app.fill")
+                                    .foregroundStyle(Color.accentCyan)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(state.whitelistName(for: bundleID))
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(Color.primaryText)
+                                    Text(bundleID)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(Color.secondaryText)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button("移除") { state.removeFromWhitelist(bundleID) }
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.orange)
+                                    .buttonStyle(.plain)
+                            }
+                            .padding(.vertical, 5)
+                        }
+                    }
+                }
+                .padding(13)
+                .panel(radius: 16)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("从已安装应用添加")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(Color.secondaryText)
+                        TextField("搜索应用名或 Bundle ID", text: $query)
+                            .font(.system(size: 12))
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+                    .padding(11)
+                    .background(Color.primaryText.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(filteredApps) { app in
+                                HStack(spacing: 9) {
+                                    Image(systemName: "app")
+                                        .foregroundStyle(Color.secondaryText)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(app.name)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(Color.primaryText)
+                                        Text(app.bundleID)
+                                            .font(.system(size: 9, design: .monospaced))
+                                            .foregroundStyle(Color.secondaryText)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    if state.isWhitelisted(app.bundleID) {
+                                        Text("已排除")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(Color.secondaryText)
+                                    } else {
+                                        Button("添加") { state.addToWhitelist(app) }
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(Color.accentCyan)
+                                            .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.vertical, 9)
+                                if app.id != filteredApps.last?.id {
+                                    Divider().overlay(Color.primaryText.opacity(0.06))
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                }
+                .padding(13)
+                .panel(radius: 16)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("手动添加 Bundle ID")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    HStack(spacing: 8) {
+                        TextField("com.example.app", text: $manualBundleID)
+                            .font(.system(size: 12, design: .monospaced))
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .padding(11)
+                            .background(Color.primaryText.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
+                        Button("添加") {
+                            if state.addWhitelistBundleID(manualBundleID) { manualBundleID = "" }
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                        .disabled(manualBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(13)
+                .panel(radius: 16)
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+        }
+        .appAlert(state)
+        .onAppear {
+            if state.containers.isEmpty { state.refreshContainers() }
+        }
     }
 }
