@@ -1,0 +1,28 @@
+---
+format_version: '11'
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: ios
+workflows:
+  ios-unsigned:
+    steps:
+    - activate-ssh-key@4: {}
+    - git-clone@8: {}
+    - script@1:
+        title: Build unsigned IPA
+        inputs:
+        - content: |
+            set -ex
+            xcodebuild -project LaunchShield.xcodeproj -scheme LaunchShield -configuration Release -destination "generic/platform=iOS" -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+            mkdir -p Payload
+            cp -r build/Build/Products/Release-iphoneos/LaunchShield.app Payload/
+            zip -r LaunchShield-unsigned.ipa Payload
+            cp LaunchShield-unsigned.ipa "$BITRISE_DEPLOY_DIR/"
+    - deploy-to-bitrise-io@2: {}
+app:
+  envs:
+  - BITRISE_PROJECT_PATH: LaunchShield.xcodeproj
+    opts:
+      is_expand: false
+  - BITRISE_SCHEME: LaunchShield
+    opts:
+      is_expand: false
