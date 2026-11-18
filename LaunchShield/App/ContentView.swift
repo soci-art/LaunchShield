@@ -106,7 +106,7 @@ struct ContentView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 17, style: .continuous)
                     .fill(LinearGradient(colors: [Color.cyan.opacity(0.95), Color.blue.opacity(0.78)],
@@ -118,16 +118,19 @@ struct ContentView: View {
                     .foregroundStyle(.white)
             }
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text("LaunchShield")
-                        .font(.system(size: 25, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.primaryText)
-                }
+                Text("LaunchShield")
+                    .font(.system(size: 25, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .layoutPriority(1)
                 Text("去除应用的开屏广告")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 4) {
                 HStack(spacing: 5) {
                     Circle()
@@ -136,6 +139,7 @@ struct ContentView: View {
                     Text(state.channelChecking ? "正在检测通道" : (state.channelReady ? "通道就绪" : "通道不可用"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
+                        .fixedSize()
                 }
             }
         }
