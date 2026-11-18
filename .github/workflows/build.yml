@@ -6,6 +6,11 @@ on:
 permissions:
   contents: write
 
+# 防止同一条预发行流水线同时运行，避免版本号冲突和重复替换。
+concurrency:
+  group: launchshield-prerelease
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-26
@@ -22,7 +27,34 @@ jobs:
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
 
+      - name: Calculate next rolling prerelease version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURRENT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' LaunchShield/LaunchShield-Info.plist)
+          CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' LaunchShield/LaunchShield-Info.plist)
+
+          # 取正式版和预发行中最高的语义版本，再递增 patch。
+          RELEASE_VERSION="$(gh release list --limit 100 --json tagName --jq '.[].tagName' | sed -nE 's/^v?([0-9]+\.[0-9]+\.[0-9]+)(-.*)?$/\1/p' | sort -V | tail -1)"
+          BASE_VERSION="$CURRENT_VERSION"
+          if [ -n "$RELEASE_VERSION" ] && [ "$(printf '%s\n%s\n' "$BASE_VERSION" "$RELEASE_VERSION" | sort -V | tail -1)" = "$RELEASE_VERSION" ]; then
+            BASE_VERSION="$RELEASE_VERSION"
+          fi
+
+          IFS=. read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          NEXT_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          NEXT_BUILD="$((CURRENT_BUILD + 1))"
+
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$NEXT_BUILD" >> "$GITHUB_OUTPUT"
+          echo "IPA_NAME=LaunchShield-$NEXT_VERSION-unsigned.ipa" >> "$GITHUB_ENV"
+          echo "Next version: $NEXT_VERSION (build $NEXT_BUILD)"
+
       - name: Build app (unsigned)
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+          NEXT_BUILD: ${{ steps.version.outputs.build }}
         run: |
           xcodebuild build \
             -project LaunchShield.xcodeproj \
@@ -33,49 +65,53 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
       - name: Package IPA (Info-ZIP)
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+          NEXT_BUILD: ${{ steps.version.outputs.build }}
         run: |
           APP_PATH="$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
           echo "App: $APP_PATH"
           test -n "$APP_PATH"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEXT_VERSION" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT_BUILD" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist"
           rm -rf Payload
           mkdir Payload
           cp -R "$APP_PATH" Payload/
-          zip -r -X LaunchShield-0.1.0-unsigned.ipa Payload
-          unzip -l LaunchShield-0.1.0-unsigned.ipa | head -20
-          ls -la LaunchShield-0.1.0-unsigned.ipa
+          zip -r -X "$IPA_NAME" Payload
+          unzip -l "$IPA_NAME" | head -20
+          ls -la "$IPA_NAME"
 
-      - name: Replace standing prerelease after successful build
+      - name: Replace rolling prerelease after successful build
         env:
           GH_TOKEN: ${{ github.token }}
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG="v0.1.0-test"
-          cat > /tmp/notes.md << 'NOTES'
-          LaunchShield 0.1.0 测试版
+          TAG="v$NEXT_VERSION"
+          cat > /tmp/notes.md <<NOTES
+          LaunchShield $NEXT_VERSION 测试版
 
           本次更新：
-          - 列表交互优化：备份记录按应用分组的整行均可点击展开，不再只有应用名称文字可点；删除操作保持独立。
-          - 守护应用：应用列表整行均可点击进入详情，主页守护应用预览行也可直接进入完整列表。
-          - 其他列表交互：统一检查并修正应用列表、文件列表等行项目的点击区域，避免只有标题文字响应。
-          - 备份管理：按应用归并备份，支持单应用删除、批量恢复和批量删除；恢复后核对原文件 MD5。
-          - 文件工具：大文件榜、按文件名搜索，文件带易读标签；聊天应用的个人图片和视频自动绕开。
-          - 找广告：前后快照对比、大文件榜、文件名搜索和深度扫描，帮助发现规则名单之外的候选文件。
-          - 应用守护：查看已守护应用及处理状态，可按应用结束守护、批量管理，并在打开时复查。
-          - 广告处理：先备份原文件，再进行 0 字节替换；支持还原并校验 MD5。
-          - 广告规则：规则由服务器下发，可在应用内更新，无需每次更新应用。
-          - 签名通道：支持按安装签名方式选择对应通道，并对不支持的环境给出提示。
+          - 版本号随每次成功构建自动递增。
+          - 预发行采用滚动发布：新包构建成功后，删除旧预发行及其标签，再发布本次版本。
 
           安装与兼容：
           - 本 IPA 未签名，需要使用适合自身设备的签名方式签名后安装。
           - 具体可用通道取决于 iOS 版本、签名方式及签名中包含的 App Group 权限；请以应用内检测结果为准。
           NOTES
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" --yes
-          fi
-          gh release create "$TAG" LaunchShield-0.1.0-unsigned.ipa \
+          # 只在新 IPA 已成功打包后清理旧预发行；正式版不会被删除。
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease == true) | .tagName' |
+          while IFS= read -r OLD_TAG; do
+            [ -n "$OLD_TAG" ] || continue
+            echo "Deleting previous prerelease: $OLD_TAG"
+            gh release delete "$OLD_TAG" --yes --cleanup-tag
+          done
+
+          gh release create "$TAG" "$IPA_NAME" \
             --prerelease \
-            --title "LaunchShield 0.1.0 测试版" \
+            --title "LaunchShield $NEXT_VERSION 测试版" \
             --notes-file /tmp/notes.md
