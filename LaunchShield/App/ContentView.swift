@@ -343,13 +343,13 @@ struct ContentView: View {
                         Text(state.target.name)
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
-                        Text(state.target.bundleID)
-                            .font(.system(size: 12, design: .monospaced))
+                        Text(state.isWhitelisted(state.target.bundleID) ? "已加入排除白名单" : state.target.bundleID)
+                            .font(.system(size: state.isWhitelisted(state.target.bundleID) ? 12 : 12, design: state.isWhitelisted(state.target.bundleID) ? .default : .monospaced))
                             .foregroundStyle(Color.secondaryText)
                     }
                     Spacer()
-                    StatusBadge(text: state.targetPath == nil ? "没有容器" : "已找到",
-                                tint: state.targetPath == nil ? .orange : .green)
+                    StatusBadge(text: state.isWhitelisted(state.target.bundleID) ? "已排除" : (state.targetPath == nil ? "没有容器" : "已找到"),
+                                tint: state.isWhitelisted(state.target.bundleID) || state.targetPath == nil ? .orange : .green)
                 } else {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("已勾选 \(state.checkedIDs.count) 个应用")
