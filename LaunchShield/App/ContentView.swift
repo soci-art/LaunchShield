@@ -379,7 +379,7 @@ struct ContentView: View {
                     Text("排除白名单")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
-                    Text(state.appWhitelist.isEmpty ? "指定应用完全跳过扫描、清理和守护" : "已排除 \\(state.appWhitelist.count) 个应用")
+                    Text(state.appWhitelist.isEmpty ? "指定应用完全跳过扫描、清理和守护" : "已排除 \(state.appWhitelist.count) 个应用")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.secondaryText)
                 }
