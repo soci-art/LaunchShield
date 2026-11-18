@@ -34,11 +34,48 @@ final class LibraryStore {
         file = decoded
     }
 
-    func save() {
+    /// Persist the complete library atomically and verify the bytes on disk.
+    /// The throwing form is used before destructive file operations so a
+    /// failed index write prevents the target from being truncated.
+    func saveOrThrow() throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted]
-        guard let data = try? encoder.encode(file) else { return }
-        try? data.write(to: jsonURL, options: .atomic)
+        let data = try encoder.encode(file)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try data.write(to: jsonURL, options: .atomic)
+        let written = try Data(contentsOf: jsonURL)
+        guard written == data else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSLocalizedDescriptionKey: "备份索引写入后校验不一致"
+            ])
+        }
+    }
+
+    /// Register a backup record durably before its source file is modified.
+    /// On failure the in-memory index is left unchanged and the caller must
+    /// skip truncation/freezing for that file.
+    func registerBackup(_ record: BackupRecord) throws {
+        if file.backups.contains(where: { $0.id == record.id }) { return }
+        let previous = file.backups
+        file.backups.append(record)
+        do {
+            try saveOrThrow()
+        } catch {
+            file.backups = previous
+            throw error
+        }
+    }
+
+    /// Best-effort save for non-destructive metadata updates. Critical
+    /// backup registration uses registerBackup(_:) and propagates errors.
+    @discardableResult
+    func save() -> Bool {
+        do {
+            try saveOrThrow()
+            return true
+        } catch {
+            return false
+        }
     }
 
     func backupFileURL(for record: BackupRecord) -> URL {
