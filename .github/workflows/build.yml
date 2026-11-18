@@ -11,6 +11,11 @@ on:
         description: "本次正式版内部构建号（正整数，例如 105）"
         required: true
         type: string
+      delete_previous_releases:
+        description: "发布前删除旧正式版 Release 及其 Tag（默认关闭）"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -102,6 +107,7 @@ jobs:
       - name: Publish official release (keep all previous releases and IPAs)
         env:
           GH_TOKEN: ${{ github.token }}
+          DELETE_PREVIOUS: ${{ inputs.delete_previous_releases }}
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
@@ -116,6 +122,19 @@ jobs:
           App 版本号和内部构建号均由本次工作流运行时手动指定。
           不删除、不覆盖任何历史 Release、tag 或 IPA 附件。
           NOTES
+
+          # Only remove previous official releases when explicitly selected.
+          if [ "$DELETE_PREVIOUS" = "true" ]; then
+            gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease == false) | .tagName' |
+            while IFS= read -r OLD_TAG; do
+              [ -n "$OLD_TAG" ] || continue
+              echo "Deleting previous official release: $OLD_TAG"
+              gh release delete "$OLD_TAG" --yes --cleanup-tag
+            done
+          else
+            echo "Keeping all previous official releases."
+          fi
 
           gh release create "$TAG" "${{ env.IPA_NAME }}" \
             --title "LaunchShield $VERSION" \
