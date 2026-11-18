@@ -32,8 +32,8 @@ final class AppState: ObservableObject {
     /// 通道就绪改成异步探明：冷启动先出界面，不再被通道发现堵住首帧。
     @Published private(set) var channelReady = false
     @Published private(set) var channelChecking = true
-    /// 用户在主页选的签名方式："free" / "cert"，没选过是 nil（没选就没有路线）。
-    @Published var signMethod: String? = UserDefaults.standard.string(forKey: "ls.signMethod")
+    /// 从应用签名配置自动识别的签名方式："free" / "cert"。
+    @Published private(set) var signMethod: String? = nil
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
     /// 一键勾选选中的应用（批量扫描/清零的目标集）；为空时按单个目标走。
@@ -131,6 +131,8 @@ final class AppState: ObservableObject {
 
     init() {
         backupManager = BackupManager(store: store)
+        UserDefaults.standard.removeObject(forKey: "ls.signMethod")
+        signMethod = channel.signMethod
         // 实时检测（清单第 12 条）：应用开着时每 30 分钟自动查一次
         // 更新（应用＋规则），有新版马上提醒，不用等重启或切回前台。
         reminderTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
@@ -227,21 +229,11 @@ final class AppState: ObservableObject {
         recheckChannel()
     }
 
-    /// 用户在主页选签名方式：存下来、让底层重判路线、再探一遍通道。
-    func setSignMethod(_ method: String) {
-        guard signMethod != method else { return }
-        signMethod = method
-        UserDefaults.standard.set(method, forKey: "ls.signMethod")
-        log(method == "cert" ? "签名方式选了：证书签名" : "签名方式选了：免费 ID 签名", .notice)
-        channel.resetRoute()
-        channelReady = false
-        channelChecking = true
-        recheckChannel()
-    }
+    /// 签名方式由应用自动识别，不再由用户手动选择。
 
     /// 功能门拦下一次使用时记一笔（清单第 10 条：日志要记全用户动作）。
     func noteSignGateBlocked() {
-        log("还没选签名方式，拦下了一次功能使用", .info)
+        log("签名方式未能自动识别，拦下了一次功能使用", .warning)
     }
 
     /// 只清理可重新生成的数据：更新 IPA、Caches 与 tmp；云端规则文件保留。
@@ -324,13 +316,15 @@ final class AppState: ObservableObject {
     }
 
     /// 通道发现放到后台：界面先出来，就绪后再补上容器、配方复查和启动补扫。
-    /// 没选签名方式时没有路线，这里记下原因就停。
+    /// 签名方式由底层读取签名配置自动识别。
     func recheckChannel() {
         work.async {
+            let detectedMethod = self.channel.signMethod
             let ok = self.channel.isAvailable
             let route = self.channel.routeDetail
             let group = self.channel.groupText
             DispatchQueue.main.async {
+                self.signMethod = detectedMethod
                 self.channelReady = ok
                 self.channelChecking = false
                 self.log("访问路线：\(route)", .info)
@@ -413,7 +407,7 @@ final class AppState: ObservableObject {
             "系统版本：\(systemText)",
             "设备：\(UIDevice.current.model)",
             "访问路线：\(channel.routeDetail)",
-            "签名方式：\(signMethod == "cert" ? "证书签名" : (signMethod == "free" ? "免费 ID 签名" : "未选择"))",
+            "签名方式：\(signMethod == "cert" ? "证书签名（自动识别）" : (signMethod == "free" ? "免费 ID 签名（自动识别）" : "无法识别"))",
             "共享组：\(channel.groupText)",
             "导出时间：\(Format.fullDate(Date()))"
         ])
