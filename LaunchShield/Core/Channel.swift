@@ -65,6 +65,18 @@ final class Channel {
         return FileItem(item)
     }
 
+    /// Safety-critical callers must distinguish a genuinely missing path from
+    /// an access/stat failure. Treating both as nil could make restore attempt
+    /// a create operation against an existing but unreadable target.
+    func inspectItem(at path: String) throws -> FileItem? {
+        let op = raw.statPath(path)
+        if op.ok, let item = op.value as? WQFileItem {
+            return FileItem(item)
+        }
+        if op.error == "目标不存在" { return nil }
+        throw ChannelFailure(op.error ?? "无法检查目标文件")
+    }
+
     func read(_ path: String, maxBytes: Int = 0) throws -> Data {
         let op = raw.readFile(path, maxBytes: UInt(maxBytes))
         guard op.ok, let data = op.value as? Data else {
