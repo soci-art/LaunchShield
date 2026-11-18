@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "本次 Nightly 版本号（例如 3.3.5）"
+        description: "本次 Nightly App 版本号（例如 3.3.5）"
+        required: true
+        type: string
+      build_number:
+        description: "本次 Nightly 内部构建号（正整数，例如 105）"
         required: true
         type: string
       replace_previous_prerelease:
@@ -41,6 +45,7 @@ jobs:
         id: version
         env:
           VERSION_INPUT: ${{ inputs.version }}
+          BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
         run: |
           set -euo pipefail
           NEXT_VERSION="$VERSION_INPUT"
@@ -48,7 +53,11 @@ jobs:
             echo "::error::版本号格式无效，请使用 x.y.z，例如 3.3.5"
             exit 1
           fi
-          NEXT_BUILD="$GITHUB_RUN_NUMBER"
+          NEXT_BUILD="$BUILD_NUMBER_INPUT"
+          if [[ ! "$NEXT_BUILD" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::构建号格式无效，请填写正整数，例如 105"
+            exit 1
+          fi
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$NEXT_BUILD" >> "$GITHUB_OUTPUT"
           echo "IPA_NAME=LaunchShield-$NEXT_VERSION-unsigned.ipa" >> "$GITHUB_ENV"
@@ -107,7 +116,7 @@ jobs:
 
           本次为 prerelease 分支的 Nightly 滚动测试构建。
           - 版本号由本次工作流运行时手动指定。
-          - 构建号使用 GitHub Actions 运行编号，保证每次运行递增。
+          - App 版本号和内部构建号均由本次工作流运行时手动指定。
           - 是否删除旧 Nightly 由本次运行的选项决定。
           - 正式版不会被删除。
 
