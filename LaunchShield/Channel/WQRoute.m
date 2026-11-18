@@ -61,9 +61,11 @@ static WQRouteState wq_route_compute(void)
 {
     NSString *method = wq_route_sign_method();
     if (!method) return WQRouteStateUnset;
-    // A certificate always runs worse_query; the version and the group are
-    // not looked at.
-    if ([method isEqualToString:WQSignMethodCert]) return WQRouteStateWorse;
+    // Certificate signing can use worse_query only when its own signature
+    // actually provides a usable App Group. Do not advertise a route that
+    // cannot even stage the token query.
+    if ([method isEqualToString:WQSignMethodCert])
+        return wq_app_group() != nil ? WQRouteStateWorse : WQRouteStateMissingAppGroup;
     // Free ID: only a group borrowed from the installing host (a SideStore /
     // LiveContainer group) counts. The app's own profile group belongs to a
     // certificate install and must leave this branch alone.
@@ -76,6 +78,7 @@ static NSString *wq_route_state_label(WQRouteState state)
     switch (state) {
         case WQRouteStateWorse: return @"worse_query";
         case WQRouteStateBad: return @"bad_query";
+        case WQRouteStateMissingAppGroup: return @"缺少 App Group";
         case WQRouteStateUnsupported: return @"系统不支持";
         case WQRouteStateUnset: return @"未选择";
     }
@@ -125,6 +128,8 @@ NSString *wq_route_detail(void)
             return [NSString stringWithFormat:@"bad_query（iOS %@，不需要共享组）", version];
         case WQRouteStateWorse:
             return [NSString stringWithFormat:@"worse_query（iOS %@，需要共享组）", version];
+        case WQRouteStateMissingAppGroup:
+            return wq_app_group_error() ?: @"缺少 App Groups entitlement；请使用启用 App Groups 的显式 App ID 重新签名。";
         case WQRouteStateUnsupported:
             return [NSString stringWithFormat:@"系统不支持（iOS %@，免费 ID 签名只支持 iOS 26.0–26.6.1）", version];
         case WQRouteStateUnset:
