@@ -15,7 +15,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// The route the channel runs on.
+/// The route selected from the signature method and available entitlements.
 typedef NS_ENUM(NSInteger, WQRouteState) {
     /// No signature method chosen yet: the channel stays closed.
     WQRouteStateUnset = 0,
