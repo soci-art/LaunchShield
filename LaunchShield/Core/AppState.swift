@@ -556,6 +556,10 @@ final class AppState: ObservableObject {
         let bid = bundleID.lowercased()
         return groupContainers.filter { group in
             var gid = group.bundleID.lowercased()
+            let normalizedGroupID = gid.hasPrefix("group.") ? String(gid.dropFirst(6)) : gid
+            if whitelistedBundleIDs.contains(where: { normalizedGroupID == $0 || normalizedGroupID.hasPrefix($0 + ".") }) {
+                return false
+            }
             if gid == bid { return true }
             if gid.hasPrefix("group.") { gid = String(gid.dropFirst(6)) }
             if gid == bid { return true }
@@ -1576,10 +1580,11 @@ final class AppState: ObservableObject {
 
     func checkRecipes(silent: Bool = false) {
         let excludedIDs = whitelistedBundleIDs
-        let list = recipes.filter { !excludedIDs.contains($0.bundleID.lowercased()) }
+        let allRecipes = recipes
+        let list = allRecipes.filter { !excludedIDs.contains($0.bundleID.lowercased()) }
         guard !list.isEmpty, channel.isAvailable else { return }
         work.async {
-            var updated = self.recipes
+            var updated = allRecipes
             var normal = 0
             var recurred = 0
             var other = 0
@@ -1974,6 +1979,7 @@ final class AppState: ObservableObject {
             alertText = "白名单应用不会执行解冻操作。"
             return
         }
+        let allowedRecipeIDs = Set(allowedRecipes.map { $0.id })
         isBusy = true
         busyText = "正在全部解冻…"
         work.async {
@@ -1998,7 +2004,9 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                for index in self.recipes.indices { self.recipes[index].frozen = false }
+                for index in self.recipes.indices where allowedRecipeIDs.contains(self.recipes[index].id) {
+                    self.recipes[index].frozen = false
+                }
                 self.store.file.recipes = self.recipes
                 self.store.save()
                 self.log("全部解冻完成：文件 \(files) 个、文件夹 \(dirs) 个，失败 \(failures) 个", failures == 0 ? .success : .warning)
