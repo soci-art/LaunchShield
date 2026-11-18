@@ -120,6 +120,8 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     if (cached >= 0 && now - checkedAt < 30) return cached == 1;
     int64_t handle = wq_route_bad_grant("/private/var/mobile/Containers/Data/Application");
     BOOL ok = handle >= 0;
+    wq_log(@"route probe: bad_query grant handle=%lld result=%@",
+           handle, ok ? @"ok" : @"failed");
     if (ok) bad_query_release(handle);
     cached = ok ? 1 : 0;
     checkedAt = now;
@@ -128,13 +130,25 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 
 - (BOOL)available
 {
-    switch (wq_route_state()) {
-        case WQRouteStateBad:
-            return [self badQueryGrantWorks];
-        case WQRouteStateWorse:
-            return wq_app_group() != nil;
+    WQRouteState state = wq_route_state();
+    switch (state) {
+        case WQRouteStateBad: {
+            BOOL ok = [self badQueryGrantWorks];
+            wq_log(@"channel availability: route=bad_query result=%@",
+                   ok ? @"available" : @"unavailable");
+            return ok;
+        }
+        case WQRouteStateWorse: {
+            BOOL ok = wq_app_group() != nil;
+            wq_log(@"channel availability: route=worse app_group=%@",
+                   ok ? @"available" : @"missing");
+            return ok;
+        }
         case WQRouteStateUnset:
+            wq_log(@"channel availability: route=unset");
+            return NO;
         case WQRouteStateUnsupported:
+            wq_log(@"channel availability: route=unsupported");
             return NO;
     }
     return NO;
