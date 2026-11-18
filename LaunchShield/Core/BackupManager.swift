@@ -131,10 +131,21 @@ struct BackupManager {
             guard restored.caseInsensitiveCompare(record.md5) == .orderedSame else {
                 throw ChannelFailure("写回后校验不一致：现在是 \(restored.prefix(8))…，应为 \(record.md5.prefix(8))…")
             }
+            if wasImmutable {
+                try channel.setImmutable(target, true)
+                guard channel.isImmutable(target) else {
+                    throw ChannelFailure("文件内容已还原，但原冻结状态未能恢复")
+                }
+            }
             try? FileManager.default.removeItem(at: rollbackDirectory)
             return restored
         } catch {
             var rollbackResult = "未能确认原文件恢复状态"
+            if wasImmutable {
+                // The write may have succeeded before verification/freezing failed.
+                // Ensure rollback can write, then restore the original lock below.
+                try? channel.setImmutable(target, false)
+            }
             if let rollbackFile, let previousMD5 {
                 do {
                     try channel.restore(path: target, from: rollbackFile.path)
