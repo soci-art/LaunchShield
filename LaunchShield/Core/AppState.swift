@@ -510,9 +510,10 @@ final class AppState: ObservableObject {
 
     /// 找广告的范围：一键勾选时是全部勾选的应用，否则是当前单个目标。
     var findAdScope: [ContainerInfo] {
-        if targetChosen && checkedIDs.isEmpty && isWhitelisted(target.bundleID) { return [] }
+        if !checkedIDs.isEmpty && checkedContainers.isEmpty { return [] }
+        if checkedIDs.isEmpty && (!targetChosen || isWhitelisted(target.bundleID)) { return [] }
         let base: [ContainerInfo]
-        if !checkedContainers.isEmpty {
+        if !checkedIDs.isEmpty {
             base = checkedContainers
         } else if !targetChosen {
             return []
@@ -596,6 +597,10 @@ final class AppState: ObservableObject {
         }
         let userApps = containers.filter { !$0.isSystem && !$0.isGame && !isWhitelisted($0.bundleID) }
         let games = containers.filter { !$0.isSystem && $0.isGame }
+        guard !userApps.isEmpty else {
+            alertText = "当前没有可勾选的应用（可能都已加入排除白名单）。"
+            return
+        }
         checkedIDs = Set(userApps.map { $0.bundleID })
         beforeSnapshots = [:]
         afterSnapshots = [:]
@@ -1934,13 +1939,18 @@ final class AppState: ObservableObject {
     /// 解完文件仍是 0 字节，应用自己会重新生成。
     func unfreezeAll() {
         guard requireChannel() else { return }
+        let allowedRecipes = recipes.filter { !isWhitelisted($0.bundleID) }
+        guard !allowedRecipes.isEmpty else {
+            alertText = "白名单应用不会执行解冻操作。"
+            return
+        }
         isBusy = true
         busyText = "正在全部解冻…"
         work.async {
             var files = 0, dirs = 0, failures = 0
-            for bundleID in Set(self.recipes.map { $0.bundleID }) {
+            for bundleID in Set(allowedRecipes.map { $0.bundleID }) {
                 guard let info = self.channel.container(for: bundleID) else { continue }
-                for recipe in self.recipes where recipe.bundleID == bundleID && recipe.frozen {
+                for recipe in allowedRecipes where recipe.bundleID == bundleID && recipe.frozen {
                     do {
                         try self.channel.setImmutable(RecipeEngine.fullPath(recipe, container: info.path), false)
                         files += 1
