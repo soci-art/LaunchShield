@@ -147,12 +147,12 @@ enum RulesStore {
                 DispatchQueue.main.async { completion(ok, message) }
             }
             if let error {
-                done(false, "更新规则失败：\\(error.localizedDescription)")
+                done(false, "更新规则失败：\(error.localizedDescription)")
                 return
             }
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard code == 200, let data else {
-                done(false, code == 404 ? "服务器上还没有放规则" : "更新规则失败：服务器返回 \\(code)")
+                done(false, code == 404 ? "服务器上还没有放规则" : "更新规则失败：服务器返回 \(code)")
                 return
             }
             guard data.count <= 1_048_576,
@@ -163,13 +163,13 @@ enum RulesStore {
             }
             let current = currentVersion
             guard parsed.version > current else {
-                done(true, "规则已是最新（\\(current == 0 ? "内置规则" : "第 \\(current) 版")）")
+                done(true, "规则已是最新（\(current == 0 ? "内置规则" : "第 \(current) 版")）")
                 return
             }
             do {
                 try data.write(to: fileURL, options: [.atomic])
             } catch {
-                done(false, "更新规则失败：存不下来（\\(error.localizedDescription)）")
+                done(false, "更新规则失败：存不下来（\(error.localizedDescription)）")
                 return
             }
             lock.lock()
@@ -178,7 +178,7 @@ enum RulesStore {
             lock.unlock()
             let groupCount = parsed.groups.count
             let dirCount = parsed.groups.reduce(0) { $0 + $1.directories.count }
-            done(true, "规则已更新到第 \\(parsed.version) 版：\\(groupCount) 家广告商、\\(dirCount) 个目录，扫描会按新规则走")
+            done(true, "规则已更新到第 \(parsed.version) 版：\(groupCount) 家广告商、\(dirCount) 个目录，扫描会按新规则走")
         }.resume()
     }
 
