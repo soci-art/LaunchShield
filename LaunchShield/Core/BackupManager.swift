@@ -120,7 +120,7 @@ struct BackupManager {
         var seen = Set<String>()
         var result: [BackupRecord] = []
         for record in store.file.backups.sorted(by: { $0.createdAt < $1.createdAt }) {
-            let key = record.bundleID + "\\n" + record.relativePath
+            let key = record.bundleID + "\n" + record.relativePath
             if seen.contains(key) { continue }
             seen.insert(key)
             result.append(record)
@@ -129,7 +129,7 @@ struct BackupManager {
     }
 
     private static func isSafeRelativePath(_ path: String) -> Bool {
-        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\\\"),
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"),
               !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         return !parts.isEmpty && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
@@ -137,7 +137,7 @@ struct BackupManager {
 
     private static func isSafeFileName(_ name: String) -> Bool {
         !name.isEmpty && name != "." && name != ".."
-            && !name.contains("/") && !name.contains("\\\\")
+            && !name.contains("/") && !name.contains("\\")
             && !name.unicodeScalars.contains(where: { $0.value == 0 })
     }
 
