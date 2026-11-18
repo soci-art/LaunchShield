@@ -122,6 +122,12 @@ struct ContentView: View {
                     Text("LaunchShield")
                         .font(.system(size: 25, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.primaryText)
+                    Text("预发行")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.12), in: Capsule())
                 }
                 Text("去除应用的开屏广告")
                     .font(.system(size: 13))
