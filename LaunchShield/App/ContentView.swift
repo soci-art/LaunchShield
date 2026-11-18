@@ -189,6 +189,14 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
+    /// 功能门（清单第 16 条）：没选签名方式时，功能入口一律先拦下来
+    /// 提醒去主页上方选；教程、日志、设置和维护类入口不走这里。
+    private func requireSign() -> Bool {
+        guard state.signMethod == nil else { return true }
+        state.alertText = "先选一下你的签名方式：在主页最上方选一下你装这个应用时用的签名方式，选好之后再用这些功能。"
+        return false
+    }
+
     // MARK: - Tutorial entry
 
     private var tutorialEntry: some View {
@@ -245,7 +253,7 @@ struct ContentView: View {
                                 .background(Color.primaryText.opacity(0.08), in: Capsule())
                         }
                         .buttonStyle(.plain)
-                        Button { state.answerFullScan(true) } label: {
+                        Button { if requireSign() { state.answerFullScan(true) } } label: {
                             Text("开始扫描")
                                 .font(.system(size: 13.5, weight: .semibold))
                                 .foregroundStyle(.white)
@@ -294,7 +302,7 @@ struct ContentView: View {
                     Text("这台设备需要全盘扫描一次，才能把应用找齐。")
                         .font(.system(size: 12.5))
                         .foregroundStyle(Color.secondaryText)
-                    Button { state.refreshContainers() } label: {
+                    Button { if requireSign() { state.refreshContainers() } } label: {
                         Text("开始全盘扫描")
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(.white)
@@ -320,7 +328,7 @@ struct ContentView: View {
                     .foregroundStyle(Color.secondaryText)
                 Spacer()
                 Button {
-                    showAppPicker = true
+                    if requireSign() { showAppPicker = true }
                 } label: {
                     Text(state.checkedIDs.isEmpty ? "更换" : "浏览应用列表")
                         .font(.system(size: state.checkedIDs.isEmpty ? 14 : 13, weight: .semibold))
@@ -378,9 +386,9 @@ struct ContentView: View {
             Divider().overlay(Color.primaryText.opacity(0.07))
             HStack(spacing: 10) {
                 smallButton(state.allUserAppsChecked ? "取消勾选" : "一键勾选", symbol: "checklist") {
-                    state.toggleCheckAllUserApps()
+                    if requireSign() { state.toggleCheckAllUserApps() }
                 }
-                smallButton("找广告", symbol: "magnifyingglass") { showFindAd = true }
+                smallButton("找广告", symbol: "magnifyingglass") { if requireSign() { showFindAd = true } }
             }
             Label("操作前请先完全退出目标应用", systemImage: "info.circle")
                 .font(.system(size: 12))
@@ -420,7 +428,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 Button {
-                    state.scanBaidu(deep: true)
+                    if requireSign() { state.scanBaidu(deep: true) }
                 } label: {
                     Label("深扫", systemImage: "magnifyingglass.circle")
                         .font(.system(size: 15, weight: .semibold))
@@ -428,7 +436,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 Button {
-                    state.scanBaidu()
+                    if requireSign() { state.scanBaidu() }
                 } label: {
                     Label("扫描", systemImage: "arrow.clockwise")
                         .font(.system(size: 15, weight: .semibold))
@@ -532,7 +540,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "操作", subtitle: "每个文件独立备份与处理")
             Button {
-                showClearConfirm = true
+                if requireSign() { showClearConfirm = true }
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "eraser.fill")
@@ -559,7 +567,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
 
             Button {
-                showRestoreConfirm = true
+                if requireSign() { showRestoreConfirm = true }
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "arrow.uturn.backward.circle")
@@ -584,7 +592,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
 
             Button {
-                showBackups = true
+                if requireSign() { showBackups = true }
             } label: {
                 HStack {
                     Label("备份记录", systemImage: "externaldrive")
@@ -616,7 +624,7 @@ struct ContentView: View {
                     .foregroundStyle(Color.secondaryText)
                 Spacer()
                 Toggle("", isOn: Binding(get: { guardService.isRunning },
-                                         set: { state.setGuard($0) }))
+                                         set: { if $0 && !requireSign() { return }; state.setGuard($0) }))
                     .labelsHidden()
                     .tint(.cyan)
             }
@@ -633,7 +641,7 @@ struct ContentView: View {
                     .foregroundStyle(Color.secondaryText)
             }
             Button {
-                state.startGuardAndHide()
+                if requireSign() { state.startGuardAndHide() }
             } label: {
                 Label("一键开启并隐藏", systemImage: "eye.slash")
                     .font(.system(size: 14, weight: .semibold))
@@ -727,7 +735,7 @@ struct ContentView: View {
                 SectionHeader(title: "已守护应用", subtitle: "每次打开本应用都会复查配方状态")
                 Spacer()
                 Button {
-                    showRecipes = true
+                    if requireSign() { showRecipes = true }
                 } label: {
                     Text("全部")
                         .font(.system(size: 15, weight: .medium))
@@ -756,7 +764,7 @@ struct ContentView: View {
                 .panel()
                 if state.recipes.contains(where: { $0.frozen }) {
                     Button {
-                        state.unfreezeAll()
+                        if requireSign() { state.unfreezeAll() }
                     } label: {
                         HStack(spacing: 7) {
                             Image(systemName: "sun.max")
