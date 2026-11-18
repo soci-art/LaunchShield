@@ -91,7 +91,7 @@ jobs:
         run: |
           TAG="v$NEXT_VERSION"
           cat > /tmp/notes.md <<NOTES
-          LaunchShield $NEXT_VERSION 测试版
+          LaunchShield Nightly
 
           本次为 prerelease 分支的滚动测试构建。
           - 版本号按正式版与历史预发行中的最高版本自动递增 patch。
@@ -115,5 +115,5 @@ jobs:
 
           gh release create "$TAG" "$IPA_NAME" \
             --prerelease \
-            --title "LaunchShield $NEXT_VERSION 测试版" \
+            --title "LaunchShield Nightly" \
             --notes-file /tmp/notes.md
