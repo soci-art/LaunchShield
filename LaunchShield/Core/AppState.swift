@@ -748,6 +748,7 @@ final class AppState: ObservableObject {
                                                                    appName: ownerName,
                                                                    source: targetFile.group,
                                                                    channel: self.channel)
+                        try self.store.registerBackup(record)
                         newBackups.append(record)
                         try self.channel.truncate(targetFile.path)
                         done += 1
@@ -819,9 +820,6 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                if !newBackups.isEmpty {
-                    self.store.file.backups.append(contentsOf: newBackups)
-                }
                 for recipe in newRecipes {
                     let exists = self.store.file.recipes.contains {
                         $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
@@ -1202,6 +1200,7 @@ final class AppState: ObservableObject {
                                                                appName: appName,
                                                                source: "前后对比确认",
                                                                channel: self.channel)
+                    try self.store.registerBackup(record)
                     newBackups.append(record)
                     let sourceMD5AfterBackup = try self.channel.md5(full)
                     guard sourceMD5AfterBackup.caseInsensitiveCompare(record.md5) == .orderedSame else {
@@ -1236,7 +1235,6 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                self.store.file.backups.append(contentsOf: newBackups)
                 for recipe in newRecipes {
                     let exists = self.store.file.recipes.contains {
                         $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
@@ -1537,12 +1535,13 @@ final class AppState: ObservableObject {
                 }
                 let size = self.channel.item(at: full)?.size ?? 0
                 if size > 0 {
-                    _ = try self.backupManager.backup(path: full,
-                                                      relativePath: recipe.relativePath,
-                                                      bundleID: recipe.bundleID,
-                                                      appName: recipe.appName,
-                                                      source: "复发后重新清零",
-                                                      channel: self.channel)
+                    let record = try self.backupManager.backup(path: full,
+                                                               relativePath: recipe.relativePath,
+                                                               bundleID: recipe.bundleID,
+                                                               appName: recipe.appName,
+                                                               source: "复发后重新清零",
+                                                               channel: self.channel)
+                    try self.store.registerBackup(record)
                 }
                 try self.channel.truncate(full)
                 DispatchQueue.main.async {
@@ -1601,12 +1600,13 @@ final class AppState: ObservableObject {
                     }
                     if let item = self.channel.item(at: full), !item.isDirectory {
                         if item.size > 0 {
-                            _ = try self.backupManager.backup(path: full,
-                                                              relativePath: recipe.relativePath,
-                                                              bundleID: recipe.bundleID,
-                                                              appName: recipe.appName,
-                                                              source: "占位前备份",
-                                                              channel: self.channel)
+                            let record = try self.backupManager.backup(path: full,
+                                                                       relativePath: recipe.relativePath,
+                                                                       bundleID: recipe.bundleID,
+                                                                       appName: recipe.appName,
+                                                                       source: "占位前备份",
+                                                                       channel: self.channel)
+                            try self.store.registerBackup(record)
                         }
                         try self.channel.delete(full)
                     }
@@ -1752,6 +1752,7 @@ final class AppState: ObservableObject {
                                                                 appName: recipe.appName,
                                                                 source: "复发重冻",
                                                                 channel: self.channel)
+                    try self.store.registerBackup(record)
                     newBackups.append(record)
                     try self.channel.truncate(full)
                     try self.channel.setImmutable(full, true)
@@ -1765,8 +1766,6 @@ final class AppState: ObservableObject {
                 self.isBusy = false
                 self.busyText = ""
                 if !newBackups.isEmpty {
-                    self.store.file.backups.append(contentsOf: newBackups)
-                    self.store.save()
                     self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 }
                 let completionText = done > 0
@@ -2050,7 +2049,6 @@ final class AppState: ObservableObject {
             let backupsToAdd = newBackups
             let recipesToAdd = newRecipes
             DispatchQueue.main.async {
-                self.store.file.backups.append(contentsOf: backupsToAdd)
                 for recipe in recipesToAdd {
                     let exists = self.store.file.recipes.contains {
                         $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
@@ -2083,6 +2081,7 @@ final class AppState: ObservableObject {
                                                   appName: ownerName,
                                                   source: source,
                                                   channel: channel)
+            try store.registerBackup(record)
             newBackups.append(record)
             try channel.truncate(file.path)
             try channel.setImmutable(file.path, true)
