@@ -182,6 +182,31 @@ enum PersonalMedia {
     }
 }
 
+/// 广告候选的证据评分。评分用于排序和提示，不单独授权删除。
+/// Level 区分明确排除项与不同置信度；实际处理仍由调用方和用户确认控制。
+struct AdAssessment: Hashable {
+    enum Level: Hashable {
+        case excluded
+        case high
+        case medium
+        case low
+
+        var label: String {
+            switch self {
+            case .excluded: return "已排除"
+            case .high: return "高置信度"
+            case .medium: return "中置信度"
+            case .low: return "低置信度"
+            }
+        }
+    }
+
+    let score: Int
+    let reasons: [String]
+    let level: Level
+    let isAutoEligible: Bool
+}
+
 struct DiffCandidate: Identifiable, Hashable {
     let relativePath: String
     let size: UInt64
