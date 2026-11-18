@@ -122,11 +122,10 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     static NSTimeInterval checkedAt;
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
     if (cached >= 0 && now - checkedAt < 30) return cached == 1;
-    int64_t handle = wq_route_bad_grant("/private/var/mobile/Containers/Data/Application");
-    BOOL ok = handle >= 0;
-    wq_log(@"route probe: bad_query grant handle=%lld result=%@",
-           handle, ok ? @"ok" : @"failed");
-    if (ok) bad_query_release(handle);
+    NSString *probeError = nil;
+    BOOL ok = wq_probe_channel(&probeError);
+    wq_log(@"route probe: bad_query result=%@ reason=%@",
+           ok ? @"available" : @"failed", probeError ?: @"none");
     cached = ok ? 1 : 0;
     checkedAt = now;
     return ok;
@@ -149,7 +148,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
                 return NO;
             }
             NSString *probeError = nil;
-            BOOL ok = wq_probe_worse_query(&probeError);
+            BOOL ok = wq_probe_channel(&probeError);
             _worseProbeError = ok ? nil : (probeError ?: @"worse_query 实际授权验证失败。");
             wq_log(@"channel availability: route=worse app_group=available probe=%@ reason=%@",
                    ok ? @"available" : @"failed", _worseProbeError ?: @"none");
