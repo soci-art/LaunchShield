@@ -67,8 +67,7 @@ struct BackupManager {
               record.md5.allSatisfy({ $0.isHexDigit }) else {
             throw ChannelFailure("备份记录不完整或路径不安全，拒绝恢复")
         }
-        guard container.hasPrefix("/"),
-              !container.split(separator: "/", omittingEmptySubsequences: false).contains("..") else {
+        guard Self.isSafeAbsoluteContainerPath(container) else {
             throw ChannelFailure("目标容器路径不安全，拒绝恢复")
         }
 
@@ -190,6 +189,13 @@ struct BackupManager {
         guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"),
               !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !parts.isEmpty && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    private static func isSafeAbsoluteContainerPath(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), path.count <= 4096, !path.contains("\\\\"),
+              !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
+        let parts = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
         return !parts.isEmpty && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 
