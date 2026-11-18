@@ -118,16 +118,10 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 
 - (BOOL)badQueryGrantWorks
 {
-    static NSInteger cached = -1;
-    static NSTimeInterval checkedAt;
-    NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    if (cached >= 0 && now - checkedAt < 30) return cached == 1;
     NSString *probeError = nil;
     BOOL ok = wq_probe_channel(&probeError);
     wq_log(@"route probe: bad_query result=%@ reason=%@",
            ok ? @"available" : @"failed", probeError ?: @"none");
-    cached = ok ? 1 : 0;
-    checkedAt = now;
     return ok;
 }
 
