@@ -170,14 +170,24 @@ static NSArray<NSString *> *wq_entitlement_keychain_groups(void)
 static BOOL wq_has_livecontainer_keychain_groups(void)
 {
     NSArray<NSString *> *groups = wq_entitlement_keychain_groups();
-    BOOL hasBase = NO;
-    BOOL hasNumbered = NO;
+    NSString *baseGroup = nil;
     for (NSString *group in groups) {
-        if ([group hasSuffix:@".com.kdt.livecontainer.shared"]) hasBase = YES;
-        else if ([group rangeOfString:@".com.kdt.livecontainer.shared."].location != NSNotFound)
-            hasNumbered = YES;
+        if ([group hasSuffix:@".com.kdt.livecontainer.shared"]) {
+            baseGroup = group;
+            break;
+        }
     }
-    return hasBase && hasNumbered;
+    if (!baseGroup) return NO;
+
+    // Match LiveContainer's documented 128-group entitlement set, not merely
+    // a single similarly named keychain group.
+    NSString *teamPrefix = [baseGroup substringToIndex:baseGroup.length - @".com.kdt.livecontainer.shared".length];
+    for (NSUInteger index = 1; index < 128; index++) {
+        NSString *expected = [NSString stringWithFormat:@"%@.com.kdt.livecontainer.shared.%lu",
+                              teamPrefix, (unsigned long)index];
+        if (![groups containsObject:expected]) return NO;
+    }
+    return YES;
 }
 
 NSString *wq_detect_sign_method(void)
