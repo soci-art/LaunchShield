@@ -91,7 +91,7 @@ struct ContentView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("会清理下载的规则文件、更新 IPA、扫描索引、缩略图、识别缓存和临时文件；备份、配方、守护名单、用户设置及运行日志不会动。")
+            Text("会清理更新 IPA、扫描索引、缩略图、识别缓存和临时文件；云端规则、备份、配方、守护名单、用户设置及运行日志均会保留。")
         }
         .confirmationDialog("确定要全部还原吗？", isPresented: $showRestoreConfirm, titleVisibility: .visible) {
             Button("逐个写回并核对 MD5", role: .destructive) {
