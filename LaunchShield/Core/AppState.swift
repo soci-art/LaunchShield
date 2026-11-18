@@ -3,6 +3,13 @@ import UIKit
 import ImageIO
 import AVFoundation
 
+
+/// 更新提醒的种类：应用新版或规则新版（清单第 12 条）。
+enum UpdateAlertKind {
+    case app
+    case rules
+}
+
 final class AppState: ObservableObject {
     /// LaunchShield 自己的 Bundle ID：永远排除在扫描/勾选/守护范围之外。
     /// 备份就存在自己的容器里，扫自己会把存着的别家广告图备份当素材
@@ -38,8 +45,10 @@ final class AppState: ObservableObject {
     @Published var updateStatus = ""
     @Published var rulesStatus = ""
     @Published var availableVersion: String?
-    /// 服务器上有更新的规则、等用户在提醒弹窗里点「更新规则」时非空。
-    @Published var rulesUpdateVersion: Int?
+    /// 有新版时要弹的更新提醒（清单第 12 条的新弹窗：一句话＋取消／更新两个按钮）。
+    @Published var updateAlert: UpdateAlertKind?
+    /// GitHub 最新正式版安装包的直达地址：查到新版时记下，下载时按三级顺序用。
+    var availableDownloadURL: URL?
     @Published var downloadProgress: Double?
     @Published var downloadedIPA: URL?
     @Published var recipes: [Recipe] = []
@@ -50,19 +59,50 @@ final class AppState: ObservableObject {
     @Published var busyText = ""
     @Published var alertText: String? {
         didSet {
-            // 规则提醒排在别的弹窗后面时先候着：当前弹窗一关，候着的
-            // 规则提醒接着弹，不再被顶掉（两个启动检查同批完成时发生过）。
-            if alertText == nil, let queued = queuedRulesAlert {
-                queuedRulesAlert = nil
-                rulesUpdateVersion = queued.version
-                alertText = queued.text
-            }
+            // 更新提醒排在别的弹窗后面时先候着：当前弹窗一关，候着的
+            // 更新提醒接着弹，不再被顶掉（两个检查同批完成时发生过）。
+            if alertText == nil { promotePendingUpdateAlert() }
         }
     }
-    /// 等当前弹窗关掉后要补弹的规则更新提醒（版本号＋文案）。
-    private var queuedRulesAlert: (version: Int, text: String)?
+    /// 等当前弹窗关掉后要补弹的更新提醒（应用或规则，二选一候着）。
+    private var pendingUpdateAlert: UpdateAlertKind?
+
+    /// 弹更新提醒：正有别的弹窗占着就先候着，不互相顶掉。
+    func presentUpdateAlert(_ kind: UpdateAlertKind) {
+        if updateAlert == nil, alertText == nil {
+            updateAlert = kind
+        } else {
+            pendingUpdateAlert = kind
+        }
+    }
+
+    private func promotePendingUpdateAlert() {
+        guard updateAlert == nil, let pending = pendingUpdateAlert else { return }
+        pendingUpdateAlert = nil
+        updateAlert = pending
+    }
+
+    /// 更新提醒里点了「更新」：应用就下载新版，规则就更新规则。
+    func confirmUpdateAlert() {
+        let kind = updateAlert
+        updateAlert = nil
+        switch kind {
+        case .app: downloadUpdate()
+        case .rules: updateRules()
+        case nil: break
+        }
+        promotePendingUpdateAlert()
+    }
+
+    /// 更新提醒里点了「取消」：关掉，有候着的接着弹。
+    func cancelUpdateAlert() {
+        updateAlert = nil
+        promotePendingUpdateAlert()
+    }
     /// 上次跑启动提醒检查（应用＋规则）的时间；回前台补查的节流用。
     private var lastReminderCheckAt: Date?
+    /// 实时检测的定时器（清单第 12 条）：应用开着时每 30 分钟查一次。
+    private var reminderTimer: Timer?
     @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
@@ -91,6 +131,11 @@ final class AppState: ObservableObject {
 
     init() {
         backupManager = BackupManager(store: store)
+        // 实时检测（清单第 12 条）：应用开着时每 30 分钟自动查一次
+        // 更新（应用＋规则），有新版马上提醒，不用等重启或切回前台。
+        reminderTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
+            self?.runReminderChecks()
+        }
         NotificationCenter.default.addObserver(forName: Notification.Name("LSFullScanConfirmRequested"),
                                                object: nil, queue: .main) { [weak self] note in
             let ids = (note.userInfo?["ids"] as? NSNumber)?.int64Value ?? 0
@@ -194,6 +239,46 @@ final class AppState: ObservableObject {
         recheckChannel()
     }
 
+    /// 功能门拦下一次使用时记一笔（清单第 10 条：日志要记全用户动作）。
+    func noteSignGateBlocked() {
+        log("还没选签名方式，拦下了一次功能使用", .info)
+    }
+
+    /// 清除缓存（清单第 11 条）：只清能重新生成的东西——下载的规则
+    /// 文件、新版安装包、全盘扫描记录。备份、配方、守护名单和用户
+    /// 手动标记都是用户数据，不碰。
+    func clearCache() {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let targets: [(url: URL, name: String)] = [
+            (docs.appendingPathComponent("ad-rules.json"), "下载的规则文件"),
+            (docs.appendingPathComponent("LaunchShield-新版.ipa"), "下载的新版安装包"),
+            (caches.appendingPathComponent("wq-container-scan.plist"), "全盘扫描记录"),
+        ]
+        var freed = 0
+        var removed: [String] = []
+        for target in targets {
+            guard let size = (try? fm.attributesOfItem(atPath: target.url.path))?[.size] as? Int else { continue }
+            if (try? fm.removeItem(at: target.url)) != nil {
+                freed += size
+                removed.append(target.name)
+            }
+        }
+        if removed.contains("下载的规则文件") { RulesStore.resetDownloaded() }
+        if downloadedIPA != nil { downloadedIPA = nil }
+        if removed.isEmpty {
+            alertText = "没有可清的缓存。"
+            log("清除缓存：没有可清的东西", .info)
+        } else {
+            let sizeText = freed >= 1_000_000
+                ? String(format: "约 %.1f MB", Double(freed) / 1_000_000)
+                : "\(max(1, freed / 1000)) KB"
+            alertText = "缓存清完了：\(removed.joined(separator: "、"))，一共腾出 \(sizeText)。"
+            log("清除缓存：\(removed.joined(separator: "、"))，腾出 \(freed) 字节", .success)
+        }
+    }
+
     /// 通道发现放到后台：界面先出来，就绪后再补上容器、配方复查和启动补扫。
     /// 没选签名方式时没有路线，这里记下原因就停。
     func recheckChannel() {
@@ -238,7 +323,7 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(true, forKey: key)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             GuardService.requestNotificationPermission()
-            CollectUploader.fetchVersion { info, _ in
+            GitHubUpdate.fetchLatest { info, _ in
                 self?.log(info != nil ? "首次检查：联网正常" : "首次检查：暂时连不上服务器，上传、更新规则和检查更新需要联网",
                           .info)
             }
@@ -2038,7 +2123,13 @@ final class AppState: ObservableObject {
 
     /// 日志页「导出 → 上传」：把运行日志传到收集箱。
     func uploadLog() {
-        let text = exportLogText()
+        var text = exportLogText()
+        // 上传封顶（清单第 10 条）：日志太长就只传最后约 1.5 MB，
+        // 开头注明截过，免得一份日志把收集箱撑爆。
+        if text.utf8.count > 1_500_000 {
+            let tail = String(decoding: Data(text.utf8.suffix(1_500_000)), as: UTF8.self)
+            text = "（日志太长，只传了最后约 1.5 MB）\n" + String(tail.drop(while: { $0 != "\n" }))
+        }
         CollectUploader.upload(kind: "log", contentType: "text/plain; charset=utf-8", body: Data(text.utf8)) { [weak self] ok, message in
             guard let self = self else { return }
             self.log(ok ? "日志已上传" : "日志上传失败：\(message)", ok ? .success : .warning)
@@ -2217,7 +2308,6 @@ final class AppState: ObservableObject {
         rulesStatus = "正在更新规则…"
         RulesStore.update { [weak self] ok, message in
             guard let self else { return }
-            self.rulesUpdateVersion = nil
             self.rulesStatus = message
             self.log(message, ok ? .success : .warning)
             // 成功失败都弹窗：只写在按钮下面那行小字里，用户容易看不见。
@@ -2258,24 +2348,18 @@ final class AppState: ObservableObject {
             guard UserDefaults.standard.string(forKey: "rules.updateReminded") != stamp else { return }
             UserDefaults.standard.set(stamp, forKey: "rules.updateReminded")
             self.rulesStatus = "有新规则（第 \(latest) 版）"
-            let text = "广告识别规则有新版本：第 \(latest) 版（现在用的是\(current == 0 ? "内置规则" : "第 \(current) 版")）。点「更新规则」马上就能用上，不用更新应用。"
-            if self.alertText == nil {
-                self.rulesUpdateVersion = latest
-                self.alertText = text
-            } else {
-                self.queuedRulesAlert = (version: latest, text: text)
-            }
-            self.log("启动检测规则：服务器第 \(latest) 版，本地\(current == 0 ? "内置规则" : "第 \(current) 版")", .info)
+            self.presentUpdateAlert(.rules)
+            self.log("检测规则：服务器第 \(latest) 版，本地\(current == 0 ? "内置规则" : "第 \(current) 版")", .info)
         }
     }
 
     /// 启动时悄悄查一次正式版：有新版才提醒（同一个版本一天最多提醒
     /// 一次），没有就什么都不说——像 Drift 那样，不用用户自己去点。
     private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {
-        CollectUploader.fetchVersion { [weak self] info, _ in
+        GitHubUpdate.fetchLatest { [weak self] info, _ in
             guard let self else { completion(); return }
             defer { completion() }
-            guard let info, info.version != "0.0.0" else { return }
+            guard let info else { return }
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
             guard Self.isVersion(info.version, newerThan: current) else { return }
             let day = DateFormatter()
@@ -2284,46 +2368,44 @@ final class AppState: ObservableObject {
             guard UserDefaults.standard.string(forKey: "app.updateReminded") != stamp else { return }
             UserDefaults.standard.set(stamp, forKey: "app.updateReminded")
             self.availableVersion = info.version
+            self.availableDownloadURL = info.downloadURL
             self.updateStatus = "有新版本 \(info.version)"
-            self.alertText = "正式版有新版本：\(info.version)。\(info.notes)"
-            self.log("启动检测更新：正式版 \(info.version)，当前 \(current)", .info)
+            self.presentUpdateAlert(.app)
+            self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
         }
     }
 
     func checkForUpdate() {
         updateStatus = "正在检查…"
         availableVersion = nil
+        availableDownloadURL = nil
         downloadedIPA = nil
-        CollectUploader.fetchVersion { [weak self] info, message in
+        GitHubUpdate.fetchLatest { [weak self] info, message in
             guard let self = self else { return }
             guard let info else {
                 self.updateStatus = "检查失败"
                 self.alertText = "检测更新失败：\(message)"
                 return
             }
-            do {
-                let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
-                if info.version == "0.0.0" {
-                    self.updateStatus = "还没有正式版"
-                    self.alertText = "还没有发布过正式版，你现在用的就是最新的测试版。"
-                } else if Self.isVersion(info.version, newerThan: current) {
-                    self.updateStatus = "有新版本 \(info.version)"
-                    self.availableVersion = info.version
-                    self.alertText = "正式版有新版本：\(info.version)。\(info.notes)"
-                } else {
-                    self.updateStatus = "已是最新"
-                    self.alertText = "已经是最新版本（\(current)）。"
-                }
-                self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
+            let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
+            if Self.isVersion(info.version, newerThan: current) {
+                self.updateStatus = "有新版本 \(info.version)"
+                self.availableVersion = info.version
+                self.availableDownloadURL = info.downloadURL
+                self.alertText = "正式版有新版本：\(info.version)。点「下载新版」就能下载，下载完分享出去签名。"
+            } else {
+                self.updateStatus = "已是最新"
+                self.alertText = "已经是最新版本（\(current)）。"
             }
+            self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
         }
     }
 
     /// 下载正式版新版安装包（带进度），下完存在本应用文稿里，等用户分享出去签名。
     func downloadUpdate() {
-        guard availableVersion != nil, downloadProgress == nil else { return }
+        guard availableVersion != nil, let directURL = availableDownloadURL, downloadProgress == nil else { return }
         downloadProgress = 0
-        CollectUploader.downloadIPA(progress: { [weak self] value in
+        GitHubUpdate.downloadIPA(from: directURL, progress: { [weak self] value in
             self?.downloadProgress = value
         }, completion: { [weak self] url, message in
             guard let self = self else { return }

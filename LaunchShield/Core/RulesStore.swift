@@ -62,6 +62,14 @@ enum RulesStore {
         downloaded = parsed
     }
 
+    /// 清除缓存时把下好的规则从内存里也撤掉，之后回到内置规则。
+    static func resetDownloaded() {
+        lock.lock()
+        defer { lock.unlock() }
+        downloaded = nil
+        didLoad = false
+    }
+
     /// 当前生效的分组名单：下过新规则用新规则，没下过用内置的。
     static var groups: [(group: String, directories: [String])] {
         loadIfNeeded()

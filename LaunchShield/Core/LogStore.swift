@@ -77,7 +77,11 @@ final class LogStore: ObservableObject {
     }
 
     func clear() {
-        queue.async { self.pendingLines.removeAll() }
+        queue.async {
+            self.pendingLines.removeAll()
+            self.lastPersistKey = nil
+            self.pendingRepeats = 0
+        }
         DispatchQueue.main.async { self.lines.removeAll() }
         queue.async {
             try? FileManager.default.removeItem(at: self.fileURL)
@@ -90,7 +94,7 @@ final class LogStore: ObservableObject {
         var text = header.joined(separator: "\n")
         text += "\n\n———— 运行日志 ————\n"
         if let stored = try? String(contentsOf: fileURL, encoding: .utf8), !stored.isEmpty {
-            text += stored
+            text += Self.collapseRepeats(stored)
         } else {
             text += lines.map { "[\(formatter.string(from: $0.date))] \($0.message)" }.joined(separator: "\n")
             text += "\n"
@@ -100,19 +104,72 @@ final class LogStore: ObservableObject {
 
     // MARK: - Private
 
+    /// 防重复刷屏（清单第 10 条，只在 queue 上碰）：同一条日志连着
+    /// 重复出现时只落盘第一条，后面的攒成计数，等不同的日志来了
+    /// 再补一行「重复了 N 次」。出过一台设备同一条权限错误刷了
+    /// 上千行、把日志撑到 305 KB 的事，不能再让它发生。
+    private var lastPersistKey: String?
+    private var pendingRepeats = 0
+
     private func persist(_ line: LogLine) {
         queue.async {
-            let text = "[\(self.formatter.string(from: line.date))] [\(line.level.rawValue)] \(line.message)\n"
-            guard let data = text.data(using: .utf8) else { return }
-            if let handle = try? FileHandle(forWritingTo: self.fileURL) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-            } else {
-                try? data.write(to: self.fileURL)
+            let key = "\(line.level.rawValue)|\(line.message)"
+            if key == self.lastPersistKey {
+                self.pendingRepeats += 1
+                return
             }
-            self.trimIfNeeded()
+            self.flushRepeatsLocked()
+            self.lastPersistKey = key
+            self.writeLineLocked(line)
         }
+    }
+
+    private func flushRepeatsLocked() {
+        guard pendingRepeats > 0 else { return }
+        let count = pendingRepeats
+        pendingRepeats = 0
+        writeLineLocked(LogLine(id: UUID(), date: Date(),
+                                message: "（上一条日志重复了 \(count) 次，已合并）", level: .info))
+    }
+
+    private func writeLineLocked(_ line: LogLine) {
+        let text = "[\(self.formatter.string(from: line.date))] [\(line.level.rawValue)] \(line.message)\n"
+        guard let data = text.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: self.fileURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: self.fileURL)
+        }
+        self.trimIfNeeded()
+    }
+
+    /// 导出时再兜一层：老日志文件里已经刷屏的重复行也合并掉，
+    /// 比对时去掉开头的 [时间] [级别]，只看正文。
+    private static func collapseRepeats(_ stored: String) -> String {
+        var out: [String] = []
+        var lastKey: String?
+        var run = 0
+        func flush() {
+            if run > 1 { out.append("（上一条日志重复了 \(run - 1) 次，已合并）") }
+            run = 0
+        }
+        for raw in stored.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            let parts = line.components(separatedBy: "] ")
+            let key = parts.count >= 3 ? parts.dropFirst(2).joined(separator: "] ") : line
+            if key == lastKey {
+                run += 1
+                continue
+            }
+            flush()
+            out.append(line)
+            lastKey = key
+            run = 1
+        }
+        flush()
+        return out.joined(separator: "\n") + "\n"
     }
 
     /// 存盘日志封顶：文件涨过 3 MB 就只留最后约 2 MB（从整行处切），

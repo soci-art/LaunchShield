@@ -138,22 +138,25 @@ extension View {
     func appAlert(_ state: AppState, active: Bool = true) -> some View {
         alert("提醒", isPresented: Binding(
             get: { active && state.alertText != nil },
-            set: { if !$0 { state.rulesUpdateVersion = nil; state.alertText = nil } }
+            set: { if !$0 { state.alertText = nil } }
         )) {
-            if state.rulesUpdateVersion != nil {
-                Button("更新规则") {
-                    state.alertText = nil
-                    state.updateRules()
-                }
-                Button("以后再说", role: .cancel) {
-                    state.rulesUpdateVersion = nil
-                    state.alertText = nil
-                }
-            } else {
-                Button("好") { state.alertText = nil }
-            }
+            Button("好") { state.alertText = nil }
         } message: {
             Text(state.alertText ?? "")
+        }
+    }
+
+    /// 更新提醒弹窗（清单第 12 条）：只显示一句话，不带版本号和说明，
+    /// 按钮只有「更新」和「取消」。
+    func updateAlert(_ state: AppState, active: Bool = true) -> some View {
+        alert("提醒", isPresented: Binding(
+            get: { active && state.updateAlert != nil },
+            set: { if !$0 { state.cancelUpdateAlert() } }
+        )) {
+            Button("更新") { state.confirmUpdateAlert() }
+            Button("取消", role: .cancel) { state.cancelUpdateAlert() }
+        } message: {
+            Text(state.updateAlert == .rules ? "有新规则更新" : "有新版本更新")
         }
     }
 }

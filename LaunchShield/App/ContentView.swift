@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var showBackups = false
     @State private var showLogs = false
     @State private var showClearConfirm = false
+    @State private var showClearCacheConfirm = false
     @State private var showRestoreConfirm = false
     @State private var ipaShareItem: ShareItem?
 
@@ -49,6 +50,7 @@ struct ContentView: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .appAlert(state, active: !(showAppPicker || showTutorial || showFindAd || showRecipes || showBackups || showLogs))
+        .updateAlert(state, active: !(showAppPicker || showTutorial || showFindAd || showRecipes || showBackups || showLogs))
         .onChange(of: scenePhase) { _, phase in
             // 回到前台时补查一次更新提醒（节流在 AppState 里）：
             // 发版时应用正开着的情况，靠这次补查才不会漏弹。
@@ -82,6 +84,14 @@ struct ContentView: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("请先完全退出目标应用（上滑关闭）。每个文件都会先备份，任何一步失败就停下，并告诉你停在哪个文件。")
+        }
+        .confirmationDialog("确定要清除缓存吗？", isPresented: $showClearCacheConfirm, titleVisibility: .visible) {
+            Button("清除", role: .destructive) {
+                state.clearCache()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("会清掉下载的规则文件、新版安装包和全盘扫描记录；备份、配方和守护名单不会动。")
         }
         .confirmationDialog("确定要全部还原吗？", isPresented: $showRestoreConfirm, titleVisibility: .visible) {
             Button("逐个写回并核对 MD5", role: .destructive) {
@@ -193,6 +203,7 @@ struct ContentView: View {
     /// 提醒去主页上方选；教程、日志、设置和维护类入口不走这里。
     private func requireSign() -> Bool {
         guard state.signMethod == nil else { return true }
+        state.noteSignGateBlocked()
         state.alertText = "先选一下你的签名方式：在主页最上方选一下你装这个应用时用的签名方式，选好之后再用这些功能。"
         return false
     }
@@ -898,6 +909,21 @@ struct ContentView: View {
                     state.downloadUpdate()
                 } label: {
                     Label("下载新版", systemImage: "arrow.down.to.line")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+            }
+            Divider().overlay(Color.primaryText.opacity(0.07))
+            HStack {
+                Label("清除缓存", systemImage: "trash")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                Button {
+                    showClearCacheConfirm = true
+                } label: {
+                    Text("清除")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.accentCyan)
                 }
