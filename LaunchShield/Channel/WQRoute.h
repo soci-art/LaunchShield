@@ -15,7 +15,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// The route the channel runs on.
+/// The route selected from the signature method and available entitlements.
 typedef NS_ENUM(NSInteger, WQRouteState) {
     /// No signature method chosen yet: the channel stays closed.
     WQRouteStateUnset = 0,
@@ -24,6 +24,8 @@ typedef NS_ENUM(NSInteger, WQRouteState) {
     WQRouteStateWorse,
     /// bad_query: free ID without a borrowed group, on iOS 26.0-26.6.1.
     WQRouteStateBad,
+    /// Certificate signing without a usable App Group entitlement.
+    WQRouteStateMissingAppGroup,
     /// Free ID without a borrowed group on a version bad_query does not cover.
     WQRouteStateUnsupported,
 };
