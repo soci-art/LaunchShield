@@ -27,7 +27,7 @@ struct BackupManager {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
-            throw ChannelFailure("建备份文件夹失败：\\(error.localizedDescription)")
+            throw ChannelFailure("建备份文件夹失败：\(error.localizedDescription)")
         }
         let local = directory.appendingPathComponent(fileName)
         do {
@@ -50,7 +50,7 @@ struct BackupManager {
         } catch {
             try? FileManager.default.removeItem(at: directory)
             if let failure = error as? ChannelFailure { throw failure }
-            throw ChannelFailure("备份失败：\\(error.localizedDescription)")
+            throw ChannelFailure("备份失败：\(error.localizedDescription)")
         }
     }
 
@@ -75,7 +75,7 @@ struct BackupManager {
         do {
             try Self.validateLocalBackup(local, expectedSize: record.originalSize)
         } catch {
-            throw ChannelFailure("备份文件校验失败，未改动目标：\\(error.localizedDescription)")
+            throw ChannelFailure("备份文件校验失败，未改动目标：\(error.localizedDescription)")
         }
         let backupMD5 = try BackupManager.md5(of: local)
         guard backupMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
@@ -95,7 +95,7 @@ struct BackupManager {
             try channel.restore(path: target, from: local.path)
             let restored = try channel.md5(target)
             guard restored.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                throw ChannelFailure("写回后校验不一致：现在是 \\(restored.prefix(8))…，应为 \\(record.md5.prefix(8))…")
+                throw ChannelFailure("写回后校验不一致：现在是 \(restored.prefix(8))…，应为 \(record.md5.prefix(8))…")
             }
             return restored
         } catch {
@@ -103,7 +103,7 @@ struct BackupManager {
                 try? channel.setImmutable(target, true)
             }
             if let failure = error as? ChannelFailure { throw failure }
-            throw ChannelFailure("恢复失败：\\(error.localizedDescription)")
+            throw ChannelFailure("恢复失败：\(error.localizedDescription)")
         }
     }
 
@@ -146,7 +146,8 @@ struct BackupManager {
         guard values.isRegularFile == true, values.isSymbolicLink != true else {
             throw ChannelFailure("备份不是普通文件或是符号链接")
         }
-        guard UInt64(values.fileSize ?? -1) == expectedSize else {
+        guard let fileSize = values.fileSize, fileSize >= 0,
+              UInt64(fileSize) == expectedSize else {
             throw ChannelFailure("备份文件大小与记录不一致")
         }
     }
