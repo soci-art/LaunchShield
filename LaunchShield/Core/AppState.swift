@@ -244,7 +244,7 @@ final class AppState: ObservableObject {
         log("还没选签名方式，拦下了一次功能使用", .info)
     }
 
-    /// 只清理可重新生成的数据：规则下载副本、更新 IPA、Caches 与 tmp。
+    /// 只清理可重新生成的数据：更新 IPA、Caches 与 tmp；云端规则文件保留。
     /// 配方、备份、守护名单、用户标记和持久运行日志均属于用户数据，不碰。
     func clearCache() {
         let fm = FileManager.default
@@ -285,7 +285,6 @@ final class AppState: ObservableObject {
             }
         }
 
-        removeItem(docs.appendingPathComponent("ad-rules.json"), label: "下载的规则文件")
         let updateIPA = downloadedIPA ?? docs.appendingPathComponent("LaunchShield-新版.ipa")
         if updateIPA.standardizedFileURL.path.hasPrefix(docs.standardizedFileURL.path + "/"), updateIPA.pathExtension.lowercased() == "ipa" {
             removeItem(updateIPA, label: "更新下载的 IPA")
@@ -310,7 +309,6 @@ final class AppState: ObservableObject {
             log("缓存清理：检测到更新正在下载，暂时跳过临时目录", .notice)
         }
 
-        if removed.contains("下载的规则文件") { RulesStore.resetDownloaded() }
         if removed.contains("更新下载的 IPA") || downloadedIPA != nil { downloadedIPA = nil }
 
         if removed.isEmpty {
