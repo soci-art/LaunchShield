@@ -53,14 +53,16 @@ static WQRouteState wq_route_compute(void)
 {
     NSString *method = wq_route_sign_method();
     if (!method) return WQRouteStateUnset;
+    // LiveContainer is identified by its dedicated keychain-access-group
+    // namespace. It still needs the host-borrowed App Group for worse_query.
+    if ([method isEqualToString:@"livecontainer"])
+        return wq_borrowed_group() != nil ? WQRouteStateWorse : WQRouteStateMissingAppGroup;
     // Certificate signing can use worse_query only when its own signature
     // actually provides a usable App Group. Do not advertise a route that
     // cannot even stage the token query.
     if ([method isEqualToString:@"cert"])
         return wq_app_group() != nil ? WQRouteStateWorse : WQRouteStateMissingAppGroup;
-    // Free ID: only a group borrowed from the installing host (a SideStore /
-    // LiveContainer group) counts. The app's own profile group belongs to a
-    // certificate install and must leave this branch alone.
+    // Free ID installs may also be hosted by SideStore and borrow its group.
     if (wq_borrowed_group() != nil) return WQRouteStateWorse;
     return wq_route_version_supports_bad_query() ? WQRouteStateBad : WQRouteStateUnsupported;
 }
