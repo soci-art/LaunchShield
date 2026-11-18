@@ -161,7 +161,7 @@ struct ContentView: View {
             Text("签名方式（自动识别）")
                 .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(Color.primaryText)
-            Text(state.signMethod == "cert" ? "已识别：证书签名" : (state.signMethod == "free" ? "已识别：免费 ID 签名" : "正在识别签名方式…"))
+            Text(state.signMethod == "cert" ? "已识别：证书签名" : (state.signMethod == "livecontainer" ? "已识别：LiveContainer" : (state.signMethod == "free" ? "已识别：免费 ID 签名" : "正在识别签名方式…")))
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(state.signMethod == nil ? Color.secondaryText : Color.accentCyan)
             Text("应用会读取自身签名配置自动判断，无需手动选择。")
