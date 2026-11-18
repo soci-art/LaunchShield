@@ -78,7 +78,7 @@ enum SnapshotDiff {
             result.append(DiffCandidate(relativePath: path,
                                         size: entry.size,
                                         modified: Date(timeIntervalSince1970: entry.modified),
-                                        reason: old.map { "变大了 \(Format.bytes(delta))" } ?? "刚新增",
+                                        reason: old.map { _ in "变大了 \(Format.bytes(delta))" } ?? "刚新增",
                                         isNew: old.map { _ in false } ?? true,
                                         delta: signedDelta,
                                         appName: appName,
