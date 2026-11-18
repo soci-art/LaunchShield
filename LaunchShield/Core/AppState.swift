@@ -64,14 +64,14 @@ final class AppState: ObservableObject {
         candidates.removeAll { $0.bundleID.lowercased() == key }
         beforeSnapshots = beforeSnapshots.filter { $0.key.lowercased() != key }
         afterSnapshots = afterSnapshots.filter { $0.key.lowercased() != key }
-        log("已将应用加入排除白名单：\\(appWhitelist[key] ?? bundleID)（\\(bundleID)）", .notice)
+        log("已将应用加入排除白名单：\(appWhitelist[key] ?? bundleID)（\(bundleID)）", .notice)
         return true
     }
     func removeFromWhitelist(_ bundleID: String) {
         let key = bundleID.lowercased()
         appWhitelist.removeValue(forKey: key)
         UserDefaults.standard.set(appWhitelist, forKey: "ls.appWhitelist")
-        log("已从排除白名单移除：\\(bundleID)，该应用恢复正常处理", .notice)
+        log("已从排除白名单移除：\(bundleID)，该应用恢复正常处理", .notice)
     }
     /// 一键勾选选中的应用（批量扫描/清零的目标集）；为空时按单个目标走。
     @Published var checkedIDs: Set<String> = []
