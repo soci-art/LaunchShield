@@ -186,14 +186,16 @@ struct BackupManager {
     }
 
     private static func isSafeRelativePath(_ path: String) -> Bool {
-        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"),
+        guard !path.isEmpty, path.count <= 512, !path.hasPrefix("/"), !path.contains("\"),
+              !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
               !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         return !parts.isEmpty && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 
     private static func isSafeAbsoluteContainerPath(_ path: String) -> Bool {
-        guard path.hasPrefix("/"), path.count <= 4096, !path.contains("\\\\"),
+        guard path.hasPrefix("/"), path.count <= 4096, !path.contains("\"),
+              !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
               !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
         let parts = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
         return !parts.isEmpty && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
