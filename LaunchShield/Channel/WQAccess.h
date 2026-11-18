@@ -16,6 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 void wq_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 NSString *wq_log_text(void);
 
+// Detects signing mode from the app's embedded provisioning profile.
+// A profile-provisioned App Group indicates certificate signing; without one,
+// the install is treated as free Apple ID signing (including SideStore / LiveContainer).
+NSString *wq_detect_sign_method(void);
+
 // Picks the app group the signer actually gave us. Nil when there is none.
 // LaunchShield: candidates come from the embedded provisioning profile's
 // application-groups list first (in the order the profile lists them), then
