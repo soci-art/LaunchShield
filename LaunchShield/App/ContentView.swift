@@ -802,26 +802,36 @@ struct ContentView: View {
     }
 
     private func appRecipeRow(_ summary: (bundleID: String, name: String, count: Int, frozen: Int, recurred: Int)) -> some View {
-        HStack(spacing: 11) {
-            Image(systemName: summary.recurred > 0 ? "exclamationmark.shield" : "shield.lefthalf.filled")
-                .font(.system(size: 15))
-                .foregroundStyle(summary.recurred > 0 ? Color.orange : Color.accentCyan)
-                .frame(width: 26, height: 34)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(summary.name)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.primaryText)
-                Text("共 \(summary.count) 个文件 · 已冻结 \(summary.frozen) 个")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
+        Button {
+            if requireSign() { showRecipes = true }
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: summary.recurred > 0 ? "exclamationmark.shield" : "shield.lefthalf.filled")
+                    .font(.system(size: 15))
+                    .foregroundStyle(summary.recurred > 0 ? Color.orange : Color.accentCyan)
+                    .frame(width: 26, height: 34)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(summary.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.primaryText)
+                    Text("共 \(summary.count) 个文件 · 已冻结 \(summary.frozen) 个")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+                Spacer()
+                if summary.recurred > 0 {
+                    StatusBadge(text: "有复发", tint: .orange)
+                } else {
+                    StatusBadge(text: "守护中", tint: .green)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.secondaryText.opacity(0.7))
             }
-            Spacer()
-            if summary.recurred > 0 {
-                StatusBadge(text: "有复发", tint: .orange)
-            } else {
-                StatusBadge(text: "守护中", tint: .green)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .padding(.vertical, 7)
     }
 
