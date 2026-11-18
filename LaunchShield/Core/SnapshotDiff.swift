@@ -79,7 +79,7 @@ enum SnapshotDiff {
                                         size: entry.size,
                                         modified: Date(timeIntervalSince1970: entry.modified),
                                         reason: old.map { "变大了 \(Format.bytes(delta))" } ?? "刚新增",
-                                        isNew: old == nil,
+                                        isNew: old.map { _ in false } ?? true,
                                         delta: signedDelta,
                                         appName: appName,
                                         bundleID: after.bundleID,

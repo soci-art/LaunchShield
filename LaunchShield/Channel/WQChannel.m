@@ -159,6 +159,12 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 - (void)resetRoute
 {
     wq_route_reset();
+    _containers = nil;
+    _containersAt = 0;
+    _containersLoaded = NO;
+    _groupContainers = nil;
+    _groupContainersAt = 0;
+    _groupContainersLoaded = NO;
 }
 
 - (NSString *)groupID
