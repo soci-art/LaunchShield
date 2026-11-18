@@ -157,67 +157,27 @@ struct ContentView: View {
     // MARK: - Signature method
 
     private var signCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("选择你的签名方式")
-                .font(.system(size: 19, weight: .bold))
+        VStack(alignment: .leading, spacing: 7) {
+            Text("签名方式（自动识别）")
+                .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(Color.primaryText)
-            Text("按你装这个应用时用的签名选，选错了通道用不了")
+            Text(state.signMethod == "cert" ? "已识别：证书签名" : (state.signMethod == "free" ? "已识别：免费 ID 签名" : "正在识别签名方式…"))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(state.signMethod == nil ? Color.secondaryText : Color.accentCyan)
+            Text("应用会读取自身签名配置自动判断，无需手动选择。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
-                .padding(.top, 6)
-            signOption(method: "free", title: "免费 ID 签名",
-                       subtitle: "免费 Apple ID 签名、SideStore／LiveContainer")
-            Rectangle()
-                .fill(Color.primaryText.opacity(0.07))
-                .frame(height: 1)
-                .padding(.leading, 42)
-            signOption(method: "cert", title: "证书签名",
-                       subtitle: "用证书签名安装的")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .panel(radius: 24)
     }
 
-    private func signOption(method: String, title: String, subtitle: String) -> some View {
-        let selected = state.signMethod == method
-        return Button {
-            state.setSignMethod(method)
-        } label: {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(selected ? Color.accentCyan : Color.secondaryText.opacity(0.45), lineWidth: 2)
-                        .frame(width: 22, height: 22)
-                    if selected {
-                        Circle()
-                            .fill(Color.accentCyan)
-                            .frame(width: 12, height: 12)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
-                    Text(subtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.secondaryText)
-                }
-                Spacer()
-            }
-            .padding(.top, 12)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// 功能门（清单第 16 条）：没选签名方式时，功能入口一律先拦下来
-    /// 提醒去主页上方选；教程、日志、设置和维护类入口不走这里。
+    /// 仅在底层无法识别签名方式时拦截文件功能；教程、日志、设置和维护类入口不走这里。
     private func requireSign() -> Bool {
         guard state.signMethod == nil else { return true }
         state.noteSignGateBlocked()
-        state.alertText = "先选一下你的签名方式：在主页最上方选一下你装这个应用时用的签名方式，选好之后再用这些功能。"
+        state.alertText = "暂时无法自动识别签名方式，文件通道功能已暂停。请重新安装应用；如果仍无法识别，请导出运行日志排查。"
         return false
     }
 
