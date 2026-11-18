@@ -121,7 +121,7 @@ struct BackupManager {
             }
         }
 
-        let wasImmutable = existing != nil && channel.isImmutable(target)
+        let wasImmutable = existing?.isImmutable ?? false
         do {
             if wasImmutable {
                 try channel.setImmutable(target, false)
