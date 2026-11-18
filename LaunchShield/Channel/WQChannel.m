@@ -83,6 +83,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     NSArray<WQAppContainer *> *_groupContainers;
     NSTimeInterval _groupContainersAt;
     BOOL _groupContainersLoaded;
+    NSString *_worseProbeError;
 }
 
 + (instancetype)shared
@@ -117,17 +118,10 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 
 - (BOOL)badQueryGrantWorks
 {
-    static NSInteger cached = -1;
-    static NSTimeInterval checkedAt;
-    NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    if (cached >= 0 && now - checkedAt < 30) return cached == 1;
-    int64_t handle = wq_route_bad_grant("/private/var/mobile/Containers/Data/Application");
-    BOOL ok = handle >= 0;
-    wq_log(@"route probe: bad_query grant handle=%lld result=%@",
-           handle, ok ? @"ok" : @"failed");
-    if (ok) bad_query_release(handle);
-    cached = ok ? 1 : 0;
-    checkedAt = now;
+    NSString *probeError = nil;
+    BOOL ok = wq_probe_channel(&probeError);
+    wq_log(@"route probe: bad_query result=%@ reason=%@",
+           ok ? @"available" : @"failed", probeError ?: @"none");
     return ok;
 }
 
@@ -142,13 +136,24 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
             return ok;
         }
         case WQRouteStateWorse: {
-            BOOL ok = wq_app_group() != nil;
-            wq_log(@"channel availability: route=worse app_group=%@",
-                   ok ? @"available" : @"missing");
+            if (!wq_app_group()) {
+                _worseProbeError = wq_app_group_error() ?: @"缺少可用的 App Group。";
+                wq_log(@"channel availability: route=worse app_group=missing");
+                return NO;
+            }
+            NSString *probeError = nil;
+            BOOL ok = wq_probe_channel(&probeError);
+            _worseProbeError = ok ? nil : (probeError ?: @"worse_query 实际授权验证失败。");
+            wq_log(@"channel availability: route=worse app_group=available probe=%@ reason=%@",
+                   ok ? @"available" : @"failed", _worseProbeError ?: @"none");
             return ok;
         }
         case WQRouteStateUnset:
             wq_log(@"channel availability: route=unset");
+            return NO;
+        case WQRouteStateMissingAppGroup:
+            _worseProbeError = wq_app_group_error();
+            wq_log(@"channel availability: route=worse app_group=missing");
             return NO;
         case WQRouteStateUnsupported:
             wq_log(@"channel availability: route=unsupported");
@@ -160,6 +165,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 - (void)resetRoute
 {
     wq_route_reset();
+    _worseProbeError = nil;
     _containers = nil;
     _containersAt = 0;
     _containersLoaded = NO;
@@ -180,6 +186,8 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
             return @"不需要（bad_query 走系统组）";
         case WQRouteStateWorse:
             return wq_app_group() ?: @"没有拿到";
+        case WQRouteStateMissingAppGroup:
+            return @"缺少 App Group";
         case WQRouteStateUnset:
         case WQRouteStateUnsupported:
             return @"这个签名方式不用共享组";
@@ -207,13 +215,16 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     switch (wq_route_state()) {
         case WQRouteStateUnset:
             return @"还没选签名方式：在主页上方选一下你装这个应用时用的签名方式，通道才能打开。";
+        case WQRouteStateMissingAppGroup:
+            return _worseProbeError ?: (wq_app_group_error() ?: @"签名配置缺少可用的 App Groups entitlement；请使用启用 App Groups 的显式 App ID 重新签名。");
         case WQRouteStateUnsupported:
             return @"系统不支持：免费 ID 签名只支持 iOS 26.0–26.6.1，你现在的系统用不了这条路线。";
         case WQRouteStateBad:
             return @"bad_query 在这台设备上没拿到访问权限。请确认系统版本（26.0–26.6.1）和签名方式后再试。";
         case WQRouteStateWorse: {
+            if (_worseProbeError.length) return _worseProbeError;
             NSString *reason = wq_app_group_error();
-            return reason.length ? reason : @"文件通道不可用。";
+            return reason.length ? reason : @"worse_query 授权验证失败。";
         }
     }
     return @"文件通道不可用。";
