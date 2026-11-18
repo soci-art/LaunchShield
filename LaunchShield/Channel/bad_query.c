@@ -81,6 +81,13 @@ int64_t bad_query(char* path, bool create, char *group_identifier, bool is_group
         query_set_class(query, 7);
         identifier = xpc_string_create(group_identifier);
     }
+    if (!identifier) {
+        BAD_QUERY_ERR("xpc identifier allocation failed path=%s group=%s", path,
+                      group_identifier ? group_identifier : "(system)");
+        query_free(query);
+        dlclose(mgr);
+        return -6;
+    }
     query_set_group_identifiers(query, identifier);
     query_set_part(query, 3);
     char *part = NULL;

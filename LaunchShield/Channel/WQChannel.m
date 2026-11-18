@@ -78,8 +78,10 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 @implementation WQChannel {
     NSArray<WQAppContainer *> *_containers;
     NSTimeInterval _containersAt;
+    BOOL _containersLoaded;
     NSArray<WQAppContainer *> *_groupContainers;
     NSTimeInterval _groupContainersAt;
+    BOOL _groupContainersLoaded;
 }
 
 + (instancetype)shared
@@ -253,7 +255,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     NSString *parent = @"/private/var/mobile/Containers/Data/Application";
     NSMutableSet<NSString *> *paths = [NSMutableSet set];
     for (NSString *path in wq_ls_container_paths(nil) ?: @[]) {
-        if ([path hasPrefix:parent]) [paths addObject:path];
+        if ([path hasPrefix:[parent stringByAppendingString:@"/"]]) [paths addObject:path];
     }
     NSString *error = nil;
     for (NSString *name in wq_list(parent, &error) ?: @[]) {
@@ -272,7 +274,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 - (NSArray<WQAppContainer *> *)appContainers
 {
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    if (_containers.count && now - _containersAt < 30) return _containers;
+    if (_containersLoaded && now - _containersAt < 30) return _containers;
 
     // Primary: the original scan machinery over both container roots (asks
     // the container manager every class, then the LaunchServices database,
@@ -328,13 +330,14 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     }];
     _containers = [result copy];
     _containersAt = now;
+    _containersLoaded = YES;
     return _containers;
 }
 
 - (NSArray<WQAppContainer *> *)groupContainers
 {
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    if (_groupContainers && now - _groupContainersAt < 30) return _groupContainers;
+    if (_groupContainersLoaded && now - _groupContainersAt < 30) return _groupContainers;
 
     // Shared App Group containers: the metadata plist's identifier IS the
     // group id (e.g. group.com.example.app), which is what we label by.
@@ -352,7 +355,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
         }
     }
     for (NSString *path in wq_ls_container_paths(nil) ?: @[]) {
-        if ([path hasPrefix:root]) [paths addObject:path];
+        if ([path hasPrefix:[root stringByAppendingString:@"/"]]) [paths addObject:path];
     }
     wq_log(@"containers: shared group folder yielded %lu candidate paths", (unsigned long)paths.count);
     for (NSString *path in paths) {
@@ -375,6 +378,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     wq_log(@"containers: resolved %lu shared group containers", (unsigned long)result.count);
     _groupContainers = [result copy];
     _groupContainersAt = now;
+    _groupContainersLoaded = YES;
     return _groupContainers;
 }
 

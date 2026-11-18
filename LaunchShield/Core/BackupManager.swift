@@ -216,6 +216,22 @@ struct BackupManager {
               directoryValues.isDirectory == true, directoryValues.isSymbolicLink != true else {
             throw ChannelFailure("备份目录结构不安全")
         }
+
+        // Reject symlinked ancestors as well as a symlink at the leaf. A
+        // lexical path-prefix check alone does not prevent traversal through
+        // a replaced intermediate directory.
+        var ancestor = directoryURL.deletingLastPathComponent()
+        while ancestor.path != rootURL.path && ancestor.path != "/" {
+            let values = try ancestor.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true,
+                  ancestor.path.hasPrefix(rootPrefix) else {
+                throw ChannelFailure("备份目录的上级路径不安全")
+            }
+            ancestor.deleteLastPathComponent()
+        }
+        guard ancestor.path == rootURL.path else {
+            throw ChannelFailure("备份目录不在受信任的备份根目录内")
+        }
     }
 
     private static func validateLocalBackup(_ url: URL, expectedSize: UInt64) throws {
