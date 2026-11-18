@@ -145,12 +145,50 @@ static NSArray<NSString *> *wq_profile_groups(void)
 // provisioning profile. Free Apple ID installs (including SideStore and
 // LiveContainer) do not; a host-borrowed group is exposed only in the live
 // entitlements and is handled separately by wq_borrowed_group().
+static NSArray<NSString *> *wq_entitlement_keychain_groups(void)
+{
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
+    if (!task) return result;
+    CFTypeRef value = SecTaskCopyValueForEntitlement(task, CFSTR("keychain-access-groups"), NULL);
+    if (value) {
+        NSArray *groups = (__bridge_transfer NSArray *)value;
+        for (id group in groups) {
+            if ([group isKindOfClass:NSString.class] && [group length] && ![result containsObject:group]) {
+                [result addObject:group];
+            }
+        }
+    }
+    CFRelease(task);
+    return result;
+}
+
+// LiveContainer's official signing entitlements include the dedicated
+// keychain namespace TEAMID.com.kdt.livecontainer.shared[.1 ... .127].
+// SideStore itself does not use this namespace, so it is a stronger
+// discriminator than the borrowed App Group shared by both environments.
+static BOOL wq_has_livecontainer_keychain_groups(void)
+{
+    NSArray<NSString *> *groups = wq_entitlement_keychain_groups();
+    BOOL hasBase = NO;
+    BOOL hasNumbered = NO;
+    for (NSString *group in groups) {
+        if ([group hasSuffix:@".com.kdt.livecontainer.shared"]) hasBase = YES;
+        else if ([group rangeOfString:@".com.kdt.livecontainer.shared."].location != NSNotFound)
+            hasNumbered = YES;
+    }
+    return hasBase && hasNumbered;
+}
+
 NSString *wq_detect_sign_method(void)
 {
     NSArray<NSString *> *profileGroups = wq_profile_groups();
-    NSString *method = profileGroups.count > 0 ? @"cert" : @"free";
-    wq_log(@"signature detection: method=%@ profileGroups=%@", method,
-           profileGroups.count ? [profileGroups componentsJoinedByString:@", "] : @"none");
+    BOOL isLiveContainer = wq_has_livecontainer_keychain_groups();
+    NSString *method = isLiveContainer ? @"livecontainer" : (profileGroups.count > 0 ? @"cert" : @"free");
+    wq_log(@"signature detection: method=%@ profileGroups=%@ livecontainerKeychain=%@",
+           method,
+           profileGroups.count ? [profileGroups componentsJoinedByString:@", "] : @"none",
+           isLiveContainer ? @"yes" : @"no");
     return method;
 }
 
