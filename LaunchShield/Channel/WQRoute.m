@@ -4,10 +4,14 @@
 //
 //  GPL-3.0-or-later. Version split follows QuinnTang74/3106's support policy:
 //  bad_query was verified on 26.0-26.6.1; Apple validated the part-domain
-//  traversal after that, so 26.7+ and 27.x use worse_query.
+//  traversal after that, so 26.7+ and 27.x use worse_query. The 26.0-26.6.1
+//  range is an overlap segment: an install that can open a usable App Group
+//  takes worse_query (the route its signer already provisioned), and only an
+//  install without a group falls back to bad_query.
 //
 
 #import "WQRoute.h"
+#import "WQAccess.h"
 #import "bad_query.h"
 
 static BOOL gResolved;
@@ -18,8 +22,10 @@ static void wq_route_resolve(void)
     if (gResolved) return;
     gResolved = YES;
     NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
-    if (v.majorVersion == 26) {
-        gBadQuery = v.minorVersion < 6 || (v.minorVersion == 6 && v.patchVersion <= 1);
+    BOOL overlap = v.majorVersion == 26 &&
+        (v.minorVersion < 6 || (v.minorVersion == 6 && v.patchVersion <= 1));
+    if (overlap) {
+        gBadQuery = wq_app_group() == nil;
     } else {
         gBadQuery = NO;
     }

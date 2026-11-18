@@ -2,9 +2,11 @@
 //  WQRoute.h
 //  LaunchShield
 //
-//  Picks the sandbox-grant backend for the running iOS build. bad_query
-//  (Taj C / forcequit, GPL-3.0-or-later) is used on the builds it was verified
-//  for (26.0-26.6.1); everything newer uses worse_query through WQAccess.
+//  Picks the sandbox-grant backend for the running iOS build. The builds
+//  bad_query (Taj C / forcequit, GPL-3.0-or-later) was verified for
+//  (26.0-26.6.1) form an overlap segment: installs with a usable App Group
+//  use worse_query through WQAccess, installs without one use bad_query.
+//  Everything newer always uses worse_query.
 //
 
 #import <Foundation/Foundation.h>
