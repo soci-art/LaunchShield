@@ -47,41 +47,34 @@ jobs:
           unzip -l LaunchShield-0.1.0-unsigned.ipa | head -20
           ls -la LaunchShield-0.1.0-unsigned.ipa
 
-      - name: Publish prerelease (standing test release, replace IPA only)
+      - name: Replace standing prerelease after successful build
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v0.1.0-test"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" LaunchShield-0.1.0-unsigned.ipa --clobber
-            echo "Replaced the IPA on the standing prerelease $TAG"
-            exit 0
-          fi
           cat > /tmp/notes.md << 'NOTES'
-          LaunchShield 0.1.0 测试版（功能版）
+          LaunchShield 0.1.0 测试版
 
-          本版内容：
-          - 跨应用文件通道：移植 kolbicz/WQFiles 的 WQAccess（worse_query，Taj C / forcequit），保留 GPL-3.0-or-later
-          - 容器浏览：按应用列出容器，查看路径、大小、修改时间，图片/视频缩略图
-          - 找广告：前后快照对比，列出刚新增或变大的候选，用户勾选确认后才处理
-          - 0 字节替换：原地截断，先备份（原路径/大小/MD5），一键还原并核对 MD5
-          - 配方：已守护应用列表，0 字节＝正常，变大＝复发，可一键重新清零，每次启动自动复查
-          - 百度网盘配方：按 kBDNCSplashLastAdsFormat_ 记录动态推导 MD5 文件名；优量汇/穿山甲/BeiZi 全清零清单
-          - 上锁：chmod、chflags 冻结/解冻、同名文件夹占位与取消
-          - 守护模式：画中画保活，每 3 秒查大小、每 30 秒比对目录，中断有记录
-          - 图标：浅色/深色两版成品图标已接入
+          本次更新：
+          - 列表交互优化：备份记录按应用分组的整行均可点击展开，不再只有应用名称文字可点；删除操作保持独立。
+          - 守护应用：应用列表整行均可点击进入详情，主页守护应用预览行也可直接进入完整列表。
+          - 其他列表交互：统一检查并修正应用列表、文件列表等行项目的点击区域，避免只有标题文字响应。
+          - 备份管理：按应用归并备份，支持单应用删除、批量恢复和批量删除；恢复后核对原文件 MD5。
+          - 文件工具：大文件榜、按文件名搜索，文件带易读标签；聊天应用的个人图片和视频自动绕开。
+          - 找广告：前后快照对比、大文件榜、文件名搜索和深度扫描，帮助发现规则名单之外的候选文件。
+          - 应用守护：查看已守护应用及处理状态，可按应用结束守护、批量管理，并在打开时复查。
+          - 广告处理：先备份原文件，再进行 0 字节替换；支持还原并校验 MD5。
+          - 广告规则：规则由服务器下发，可在应用内更新，无需每次更新应用。
+          - 签名通道：支持按安装签名方式选择对应通道，并对不支持的环境给出提示。
 
-          相对 WQFiles 上游新增/修改了什么：
-          - 只移植容器访问层（WQAccess 及其直接依赖 WQAccessSafety、WQScanJournal、WQCore、WQLocalization），
-            未引入其界面、归档、SQLite、网页服务、主题、分享等模块
-          - App Group 改为运行时发现：先读 embedded.mobileprovision 的 application-groups 列表，
-            再读签名 entitlements，逐个尝试打开并取第一个能用的；没有可用组时用中文明确报错，不静默失败
-          - 新增接口：wq_chmod、wq_set_immutable、wq_is_immutable、wq_list_containers
-          - 新增 WQChannel、WQAppCatalog 两个适配层，供 Swift 调用
-          - 未改动 WQAccess 的备份优先、原地写回、失败回滚与版本校验流程
-
-          安装：未签名 IPA，请用带 App Group 的证书和描述文件签名后安装；系统要求 iOS 26.0 或更新版本。
+          安装与兼容：
+          - 本 IPA 未签名，需要使用适合自身设备的签名方式签名后安装。
+          - 具体可用通道取决于 iOS 版本、签名方式及签名中包含的 App Group 权限；请以应用内检测结果为准。
           NOTES
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+          fi
           gh release create "$TAG" LaunchShield-0.1.0-unsigned.ipa \
             --prerelease \
             --title "LaunchShield 0.1.0 测试版" \
