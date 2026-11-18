@@ -1,4 +1,4 @@
-name: Build unsigned IPA
+name: Build and publish official IPA
 
 on:
   workflow_dispatch:
@@ -6,12 +6,19 @@ on:
 permissions:
   contents: write
 
+# Keep official releases serialized: never overlap two release builds.
+concurrency:
+  group: launchshield-main-release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Select latest Xcode 26
         run: |
@@ -32,57 +39,68 @@ jobs:
             -derivedDataPath build/DD \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
-      - name: Package IPA (Info-ZIP)
+      - name: Set rolling version and package IPA
+        id: version
+        shell: bash
         run: |
+          set -euo pipefail
           APP_PATH="$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
           echo "App: $APP_PATH"
           test -n "$APP_PATH"
+
+          # Use the highest existing stable semantic-version tag, then bump patch.
+          git fetch --tags --force
+          HIGHEST="0.0.0"
+          while IFS= read -r TAG; do
+            VERSION="${TAG#v}"
+            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              if [ "$(printf '%s\n%s\n' "$HIGHEST" "$VERSION" | sort -V | tail -1)" = "$VERSION" ]; then
+                HIGHEST="$VERSION"
+              fi
+            fi
+          done < <(git tag --list 'v[0-9]*')
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$HIGHEST"
+          NEXT_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+          TAG="v$NEXT_VERSION"
+
+          # Keep the app's bundle version aligned with the new release.
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEXT_VERSION" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$APP_PATH/Info.plist"
+
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "IPA_NAME=LaunchShield-$NEXT_VERSION-unsigned.ipa" >> "$GITHUB_ENV"
+
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist"
+
           rm -rf Payload
           mkdir Payload
           cp -R "$APP_PATH" Payload/
-          zip -r -X LaunchShield-0.1.0-unsigned.ipa Payload
-          unzip -l LaunchShield-0.1.0-unsigned.ipa | head -20
-          ls -la LaunchShield-0.1.0-unsigned.ipa
+          zip -r -X "$IPA_NAME" Payload
+          unzip -l "$IPA_NAME" | head -20
+          ls -la "$IPA_NAME"
 
-      - name: Publish prerelease (standing test release, replace IPA only)
+      - name: Publish official release (keep all previous releases and IPAs)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v0.1.0-test"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" LaunchShield-0.1.0-unsigned.ipa --clobber
-            echo "Replaced the IPA on the standing prerelease $TAG"
-            exit 0
-          fi
-          cat > /tmp/notes.md << 'NOTES'
-          LaunchShield 0.1.0 测试版（功能版）
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
 
-          本版内容：
-          - 跨应用文件通道：移植 kolbicz/WQFiles 的 WQAccess（worse_query，Taj C / forcequit），保留 GPL-3.0-or-later
-          - 容器浏览：按应用列出容器，查看路径、大小、修改时间，图片/视频缩略图
-          - 找广告：前后快照对比，列出刚新增或变大的候选，用户勾选确认后才处理
-          - 0 字节替换：原地截断，先备份（原路径/大小/MD5），一键还原并核对 MD5
-          - 配方：已守护应用列表，0 字节＝正常，变大＝复发，可一键重新清零，每次启动自动复查
-          - 百度网盘配方：按 kBDNCSplashLastAdsFormat_ 记录动态推导 MD5 文件名；优量汇/穿山甲/BeiZi 全清零清单
-          - 上锁：chmod、chflags 冻结/解冻、同名文件夹占位与取消
-          - 守护模式：画中画保活，每 3 秒查大小、每 30 秒比对目录，中断有记录
-          - 图标：浅色/深色两版成品图标已接入
+          cat > /tmp/notes.md << NOTES
+          LaunchShield $VERSION 正式版
 
-          相对 WQFiles 上游新增/修改了什么：
-          - 只移植容器访问层（WQAccess 及其直接依赖 WQAccessSafety、WQScanJournal、WQCore、WQLocalization），
-            未引入其界面、归档、SQLite、网页服务、主题、分享等模块
-          - App Group 改为运行时发现：先读 embedded.mobileprovision 的 application-groups 列表，
-            再读签名 entitlements，逐个尝试打开并取第一个能用的；没有可用组时用中文明确报错，不静默失败
-          - 新增接口：wq_chmod、wq_set_immutable、wq_is_immutable、wq_list_containers
-          - 新增 WQChannel、WQAppCatalog 两个适配层，供 Swift 调用
-          - 未改动 WQAccess 的备份优先、原地写回、失败回滚与版本校验流程
+          本次发布由 main 分支手动构建。
+          IPA：${{ env.IPA_NAME }}
 
-          安装：未签名 IPA，请用带 App Group 的证书和描述文件签名后安装；系统要求 iOS 26.0 或更新版本。
+          此次发布采用滚动版本号。每次成功构建都会创建新的正式版 Release，
+          不删除、不覆盖任何历史 Release、tag 或 IPA 附件。
           NOTES
-          gh release create "$TAG" LaunchShield-0.1.0-unsigned.ipa \
-            --prerelease \
-            --title "LaunchShield 0.1.0 测试版" \
+
+          gh release create "$TAG" "${{ env.IPA_NAME }}" \
+            --title "LaunchShield $VERSION" \
             --notes-file /tmp/notes.md
