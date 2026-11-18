@@ -353,7 +353,7 @@ struct ContentView: View {
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
                         Text(state.isWhitelisted(state.target.bundleID) ? "已加入排除白名单" : state.target.bundleID)
-                            .font(.system(size: state.isWhitelisted(state.target.bundleID) ? 12 : 12, design: state.isWhitelisted(state.target.bundleID) ? .default : .monospaced))
+                            .font(.system(size: 12))
                             .foregroundStyle(Color.secondaryText)
                     }
                     Spacer()
