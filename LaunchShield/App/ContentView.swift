@@ -23,6 +23,7 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
+                        signCard
                         fullScanCards
                         tutorialEntry
                         targetCard
@@ -128,6 +129,64 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Signature method
+
+    private var signCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("选择你的签名方式")
+                .font(.system(size: 19, weight: .bold))
+                .foregroundStyle(Color.primaryText)
+            Text("按你装这个应用时用的签名选，选错了通道用不了")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.secondaryText)
+                .padding(.top, 6)
+            signOption(method: "free", title: "免费 ID 签名",
+                       subtitle: "免费 Apple ID 签名、SideStore／LiveContainer")
+            Rectangle()
+                .fill(Color.primaryText.opacity(0.07))
+                .frame(height: 1)
+                .padding(.leading, 42)
+            signOption(method: "cert", title: "证书签名",
+                       subtitle: "用证书签名安装的")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel(radius: 24)
+    }
+
+    private func signOption(method: String, title: String, subtitle: String) -> some View {
+        let selected = state.signMethod == method
+        return Button {
+            state.setSignMethod(method)
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .stroke(selected ? Color.accentCyan : Color.secondaryText.opacity(0.45), lineWidth: 2)
+                        .frame(width: 22, height: 22)
+                    if selected {
+                        Circle()
+                            .fill(Color.accentCyan)
+                            .frame(width: 12, height: 12)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.secondaryText)
+                }
+                Spacer()
+            }
+            .padding(.top, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Tutorial entry

@@ -18,7 +18,7 @@ final class Channel {
     var groupID: String? { raw.groupID }
     var unavailableReason: String { raw.unavailableReason }
 
-    /// "bad_query" on iOS 26.0-26.6.1, "worse_query" on newer builds.
+    /// 按用户选的签名方式判出的路线名；没路线时是中文说明（未选择/系统不支持）。
     var routeName: String { raw.routeName }
     var routeDetail: String { raw.routeDetail }
     var groupText: String { raw.groupText }
@@ -26,6 +26,9 @@ final class Channel {
     /// 全盘扫描：把界面的答复（开始/先不）递给底层等着的那条线；停止同理。
     func answerFullScan(_ yes: Bool) { raw.answerFullScan(yes) }
     func stopFullScan() { raw.stopFullScan() }
+
+    /// 签名方式变了：让底层忘掉判好的路线，下次查询按新选择重判。
+    func resetRoute() { raw.resetRoute() }
 
     func containers() -> [ContainerInfo] {
         raw.appContainers().map {
