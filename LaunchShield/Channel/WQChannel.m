@@ -128,8 +128,21 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 
 - (BOOL)available
 {
-    if (wq_route_is_bad_query()) return [self badQueryGrantWorks];
-    return wq_app_group() != nil;
+    switch (wq_route_state()) {
+        case WQRouteStateBad:
+            return [self badQueryGrantWorks];
+        case WQRouteStateWorse:
+            return wq_app_group() != nil;
+        case WQRouteStateUnset:
+        case WQRouteStateUnsupported:
+            return NO;
+    }
+    return NO;
+}
+
+- (void)resetRoute
+{
+    wq_route_reset();
 }
 
 - (NSString *)groupID
@@ -139,8 +152,16 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 
 - (NSString *)groupText
 {
-    if (wq_route_is_bad_query()) return @"不需要（bad_query 走系统组）";
-    return wq_app_group() ?: @"没有拿到";
+    switch (wq_route_state()) {
+        case WQRouteStateBad:
+            return @"不需要（bad_query 走系统组）";
+        case WQRouteStateWorse:
+            return wq_app_group() ?: @"没有拿到";
+        case WQRouteStateUnset:
+        case WQRouteStateUnsupported:
+            return @"这个签名方式不用共享组";
+    }
+    return @"没有拿到";
 }
 
 - (NSString *)routeName
@@ -160,11 +181,19 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 
 - (NSString *)unavailableReason
 {
-    if (wq_route_is_bad_query()) {
-        return @"bad_query 在这台设备上没拿到访问权限。请确认系统版本（26.0–26.6.1）和签名方式后再试。";
+    switch (wq_route_state()) {
+        case WQRouteStateUnset:
+            return @"还没选签名方式：在主页上方选一下你装这个应用时用的签名方式，通道才能打开。";
+        case WQRouteStateUnsupported:
+            return @"系统不支持：免费 ID 签名只支持 iOS 26.0–26.6.1，你现在的系统用不了这条路线。";
+        case WQRouteStateBad:
+            return @"bad_query 在这台设备上没拿到访问权限。请确认系统版本（26.0–26.6.1）和签名方式后再试。";
+        case WQRouteStateWorse: {
+            NSString *reason = wq_app_group_error();
+            return reason.length ? reason : @"文件通道不可用。";
+        }
     }
-    NSString *reason = wq_app_group_error();
-    return reason.length ? reason : @"文件通道不可用。";
+    return @"文件通道不可用。";
 }
 
 - (NSString *)messageFor:(NSString *)error fallback:(NSString *)fallback

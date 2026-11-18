@@ -58,19 +58,24 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)answerFullScan:(BOOL)yes;
 - (void)stopFullScan;
 
-/// Whether the signature gave a usable App Group. When NO, every other call
-/// fails and `unavailableReason` says why, in Chinese.
+/// Whether the chosen signature method has a working route. When NO, every
+/// other call fails and `unavailableReason` says why, in Chinese.
 @property (nonatomic, readonly) BOOL available;
 @property (nonatomic, readonly, copy, nullable) NSString *groupID;
 @property (nonatomic, readonly, copy) NSString *unavailableReason;
 
-/// "bad_query" on iOS 26.0-26.6.1, "worse_query" on newer builds.
+/// "bad_query" or "worse_query"; a Chinese label when there is no route
+/// (nothing picked yet, or the version cannot run the free-ID route).
 @property (nonatomic, readonly, copy) NSString *routeName;
 /// Chinese one-liner with the detected system version.
 @property (nonatomic, readonly, copy) NSString *routeDetail;
 /// App Group description for the UI; says so when the route needs none.
 @property (nonatomic, readonly, copy) NSString *groupText;
 @property (nonatomic, readonly) BOOL usesBadQuery;
+
+/// Forgets the cached route so the next query follows the signature method
+/// stored in UserDefaults. Call it right after the home screen writes it.
+- (void)resetRoute;
 
 /// Every app data container (the container manager's class 2).
 - (NSArray<WQAppContainer *> *)appContainers;
