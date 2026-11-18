@@ -90,23 +90,78 @@ struct BackupManager {
         if let existing, existing.isSymlink {
             throw ChannelFailure("目标是符号链接，拒绝覆盖")
         }
-        let wasImmutable = existing != nil && channel.isImmutable(target)
-        if wasImmutable {
-            try channel.setImmutable(target, false)
+        if let existing, existing.isDirectory {
+            throw ChannelFailure("目标是文件夹，拒绝按文件恢复")
         }
+
+        // Preserve the current target before overwriting it. If the write or
+        // post-write verification fails, put these exact bytes back.
+        let rollbackDirectory = store.backupRoot.appendingPathComponent(
+            ".restore-" + UUID().uuidString, isDirectory: true)
+        var rollbackFile: URL?
+        var previousMD5: String?
+        if let existing {
+            do {
+                try FileManager.default.createDirectory(at: rollbackDirectory,
+                                                        withIntermediateDirectories: true)
+                try Self.validateBackupDirectory(rollbackDirectory, root: store.backupRoot)
+                let snapshot = rollbackDirectory.appendingPathComponent("before-restore")
+                try channel.copyToLocal(path: target, destination: snapshot.path)
+                try Self.validateLocalBackup(snapshot, expectedSize: existing.size)
+                let sourceDigest = try channel.md5(target)
+                let copiedDigest = try Self.md5(of: snapshot)
+                guard sourceDigest.caseInsensitiveCompare(copiedDigest) == .orderedSame else {
+                    throw ChannelFailure("恢复前快照校验失败，目标未改动")
+                }
+                rollbackFile = snapshot
+                previousMD5 = sourceDigest
+            } catch {
+                try? FileManager.default.removeItem(at: rollbackDirectory)
+                if let failure = error as? ChannelFailure { throw failure }
+                throw ChannelFailure("无法保护当前文件，取消恢复：\\(error.localizedDescription)")
+            }
+        }
+
+        let wasImmutable = existing != nil && channel.isImmutable(target)
         do {
+            if wasImmutable {
+                try channel.setImmutable(target, false)
+            }
             try channel.restore(path: target, from: local.path)
             let restored = try channel.md5(target)
             guard restored.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                throw ChannelFailure("写回后校验不一致：现在是 \(restored.prefix(8))…，应为 \(record.md5.prefix(8))…")
+                throw ChannelFailure("写回后校验不一致：现在是 \\(restored.prefix(8))…，应为 \\(record.md5.prefix(8))…")
             }
+            try? FileManager.default.removeItem(at: rollbackDirectory)
             return restored
         } catch {
+            var rollbackResult = "未能确认原文件恢复状态"
+            if let rollbackFile, let previousMD5 {
+                do {
+                    try channel.restore(path: target, from: rollbackFile.path)
+                    let digest = try channel.md5(target)
+                    guard digest.caseInsensitiveCompare(previousMD5) == .orderedSame else {
+                        throw ChannelFailure("回滚后的 MD5 不一致")
+                    }
+                    rollbackResult = "已恢复原文件"
+                } catch {
+                    rollbackResult = "自动回滚失败：\\(error.localizedDescription)"
+                }
+            } else if existing == nil {
+                do {
+                    if channel.item(at: target) != nil {
+                        try channel.delete(target)
+                    }
+                    rollbackResult = "已清理本次创建的残留文件"
+                } catch {
+                    rollbackResult = "清理残留文件失败：\\(error.localizedDescription)"
+                }
+            }
             if wasImmutable {
                 try? channel.setImmutable(target, true)
             }
-            if let failure = error as? ChannelFailure { throw failure }
-            throw ChannelFailure("恢复失败：\(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: rollbackDirectory)
+            throw ChannelFailure("恢复失败：\\(error.localizedDescription)；\\(rollbackResult)")
         }
     }
 
