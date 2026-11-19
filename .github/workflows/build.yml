@@ -8,9 +8,10 @@ on:
         required: true
         type: string
       build_number:
-        description: "本次正式版内部构建号（正整数，例如 105）"
+        description: "内部构建号：新版本用 1；只有替换同一个版本时才往上加（2、3…）"
         required: true
         type: string
+        default: "1"
       delete_previous_releases:
         description: "发布前删除旧正式版 Release 及其 Tag（默认关闭）"
         required: true
