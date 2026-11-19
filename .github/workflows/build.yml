@@ -101,6 +101,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_VERSION: ${{ steps.version.outputs.version }}
+          NEXT_BUILD: ${{ steps.version.outputs.build }}
           REPLACE_PREVIOUS: ${{ inputs.replace_previous_prerelease }}
         run: |
           set -euo pipefail
@@ -116,6 +117,7 @@ jobs:
 
           cat > /tmp/notes.md <<NOTES
           Nightly
+          构建号：$NEXT_BUILD
 
           本次为 prerelease 分支的 Nightly 滚动测试构建。
           - 版本号由本次工作流运行时手动指定。
