@@ -228,6 +228,11 @@ final class AppState: ObservableObject {
         return "\(version) (\(build))"
     }
 
+    /// 本机这份的构建号（检测更新时跟远端比同版本谁更新）。
+    var appBuildNumber: Int {
+        Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 1
+    }
+
     var systemText: String {
         "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)"
     }
@@ -2549,17 +2554,18 @@ final class AppState: ObservableObject {
             defer { completion() }
             guard let info else { return }
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
-            guard Self.isVersion(info.version, newerThan: current) else { return }
+            guard Self.isUpdateAvailable(info, currentVersion: current, currentBuild: self.appBuildNumber) else { return }
             let day = DateFormatter()
             day.dateFormat = "yyyy-MM-dd"
-            let stamp = "\(info.version)@\(day.string(from: Date()))"
+            let stamp = "\(info.version)-\(info.build ?? 0)@\(day.string(from: Date()))"
             guard UserDefaults.standard.string(forKey: "app.updateReminded") != stamp else { return }
             UserDefaults.standard.set(stamp, forKey: "app.updateReminded")
             self.availableVersion = info.version
             self.availableDownloadURL = info.downloadURL
-            self.updateStatus = "有新版本 \(info.version)"
+            self.updateStatus = "有新版本 \(Self.remoteVersionText(info, currentVersion: current))"
             self.presentUpdateAlert(.app)
-            self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
+            let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
+            self.log("检测更新：正式版 \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
@@ -2576,16 +2582,18 @@ final class AppState: ObservableObject {
                 return
             }
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
-            if Self.isVersion(info.version, newerThan: current) {
-                self.updateStatus = "有新版本 \(info.version)"
+            if Self.isUpdateAvailable(info, currentVersion: current, currentBuild: self.appBuildNumber) {
+                let remoteText = Self.remoteVersionText(info, currentVersion: current)
+                self.updateStatus = "有新版本 \(remoteText)"
                 self.availableVersion = info.version
                 self.availableDownloadURL = info.downloadURL
-                self.alertText = "正式版有新版本：\(info.version)。点「下载新版」就能下载，下载完分享出去签名。"
+                self.alertText = "正式版有新版本：\(remoteText)。点「下载新版」就能下载，下载完分享出去签名。"
             } else {
                 self.updateStatus = "已是最新"
-                self.alertText = "已经是最新版本（\(current)）。"
+                self.alertText = "已经是最新版本（\(self.appVersionText)）。"
             }
-            self.log("检测更新：正式版 \(info.version)，当前 \(current)", .info)
+            let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
+            self.log("检测更新：正式版 \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
@@ -2608,6 +2616,26 @@ final class AppState: ObservableObject {
                 self.alertText = "下载失败：\(message)"
             }
         })
+    }
+
+    /// 有没有新版：版本号更高算新版；版本号一样时，远端带了构建号
+    /// 且比本机大，也算新版（同版本换包能被检测到）。远端没带构建号
+    /// （老发行版）就退回只比版本号，不会误报。
+    private static func isUpdateAvailable(_ info: GitHubUpdate.VersionInfo,
+                                          currentVersion: String,
+                                          currentBuild: Int) -> Bool {
+        if isVersion(info.version, newerThan: currentVersion) { return true }
+        guard info.version == currentVersion, let remoteBuild = info.build else { return false }
+        return remoteBuild > currentBuild
+    }
+
+    /// 展示用的远端版本字样：同版本新构建写成「0.1.6（构建 2）」，
+    /// 免得用户看不出跟手里那份有什么区别。
+    private static func remoteVersionText(_ info: GitHubUpdate.VersionInfo, currentVersion: String) -> String {
+        if info.version == currentVersion, let build = info.build {
+            return "\(info.version)（构建 \(build)）"
+        }
+        return info.version
     }
 
     private static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
