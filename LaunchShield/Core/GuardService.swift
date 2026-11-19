@@ -115,7 +115,6 @@ final class GuardService: NSObject, ObservableObject {
     /// 源视图固定尺寸，永远不跟着画中画高度变（GPT 方案的核心之一）：
     /// 它是系统计算进出动画的锚点，锚点一动，动画的恢复定位就乱。
     private let pipSourceSize = CGSize(width: 300, height: 169)
-    private var captureSession: AVCaptureSession?
     private var timer: DispatchSourceTimer?
     private var tickCount = 0
     private var stopping = false
@@ -169,11 +168,9 @@ final class GuardService: NSObject, ObservableObject {
         pipHidden = false
         defaults.removeObject(forKey: Keys.interruption)
         prepareAudioSession()
-        startCapture()
         wantsPiPActive = true
         guard preparePiPIfNeeded() else {
             wantsPiPActive = false
-            stopCapture()
             cleanupPiPResources()
             return "画中画没能启动：请确认系统设置里允许画中画，再试一次"
         }
@@ -209,7 +206,6 @@ final class GuardService: NSObject, ObservableObject {
         } else {
             cleanupPiPResources()
         }
-        stopCapture()
         silentPlayer?.stop()
         silentPlayer = nil
         if isRunning {
@@ -482,45 +478,17 @@ final class GuardService: NSObject, ObservableObject {
     private func prepareAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
+            // 视频通话式画中画的启动要靠 playAndRecord 这一档，但模式必须用
+            // 普通模式，也不许开麦克风采集：videoChat 模式＋麦克风一开，
+            // 系统就按「通话中」抢走全机声音路线，别家 App 的声音被赶去
+            // 听筒、底部扬声器没声（2026-11-19 用户日志实证，关守护即恢复）。
+            // 同理不带 allowBluetooth，免得蓝牙耳机被拉去走通话音质。
             try session.setCategory(.playAndRecord,
-                                    mode: .videoChat,
-                                    options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth])
+                                    mode: .default,
+                                    options: [.mixWithOthers, .defaultToSpeaker])
             try session.setActive(true)
         } catch {
             log?("设置音频会话失败：\(error.localizedDescription)", .warning)
-        }
-        if #available(iOS 17.0, *) {
-            AVAudioApplication.requestRecordPermission { [weak self] granted in
-                guard !granted else { return }
-                DispatchQueue.main.async {
-                    self?.log?("麦克风权限没开，画中画保活可能启动不了；本应用不录音、不上传声音", .notice)
-                }
-            }
-        } else {
-            session.requestRecordPermission { _ in }
-        }
-    }
-
-    private func startCapture() {
-        let session = AVCaptureSession()
-        session.beginConfiguration()
-        if let device = AVCaptureDevice.default(for: .audio),
-           let input = try? AVCaptureDeviceInput(device: device),
-           session.canAddInput(input) {
-            session.addInput(input)
-        }
-        session.commitConfiguration()
-        captureSession = session
-        DispatchQueue.global(qos: .userInitiated).async {
-            session.startRunning()
-        }
-    }
-
-    private func stopCapture() {
-        guard let session = captureSession else { return }
-        captureSession = nil
-        DispatchQueue.global(qos: .utility).async {
-            session.stopRunning()
         }
     }
 
@@ -638,7 +606,6 @@ extension GuardService: AVPictureInPictureControllerDelegate {
             }
             self.timer?.cancel()
             self.timer = nil
-            self.stopCapture()
         }
     }
 
@@ -654,7 +621,6 @@ extension GuardService: AVPictureInPictureControllerDelegate {
             self.defaults.set(false, forKey: Keys.active)
             self.timer?.cancel()
             self.timer = nil
-            self.stopCapture()
             self.log?("画中画启动失败：\(error.localizedDescription)", .warning)
         }
     }
