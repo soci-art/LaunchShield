@@ -1,14 +1,21 @@
 name: Build unsigned IPA
 
 on:
-  # Auto-publish (Grace, 2026-11-19): pushing a version tag (e.g.
-  # v0.1.7) builds that version and publishes its Nightly pre-release,
-  # replacing older Nightlies. Ordinary branch pushes never trigger
-  # this workflow. A manual dispatch only builds - it never publishes.
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
+    inputs:
+      version:
+        description: "本次 Nightly App 版本号（例如 3.3.5）"
+        required: true
+        type: string
+      build_number:
+        description: "本次 Nightly 内部构建号（正整数，例如 105）"
+        required: true
+        type: string
+      replace_previous_prerelease:
+        description: "发布前删除旧 Nightly 及其 Tag（默认开启）"
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -24,8 +31,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Select latest Xcode 26
         run: |
@@ -36,24 +41,23 @@ jobs:
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
 
-      - name: Resolve version from the tag
+      - name: Validate manual version
         id: version
         env:
-          RUN_NUMBER: ${{ github.run_number }}
+          VERSION_INPUT: ${{ inputs.version }}
+          BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            NEXT_VERSION="${GITHUB_REF_NAME#v}"
-          else
-            git fetch --tags --force >/dev/null 2>&1 || true
-            LATEST="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || echo v0.0.0)"
-            NEXT_VERSION="${LATEST#v}"
-          fi
+          NEXT_VERSION="$VERSION_INPUT"
           if [[ ! "$NEXT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version format: $NEXT_VERSION (tags must look like v1.2.3)"
+            echo "::error::版本号格式无效，请使用 x.y.z，例如 3.3.5"
             exit 1
           fi
-          NEXT_BUILD="$RUN_NUMBER"
+          NEXT_BUILD="$BUILD_NUMBER_INPUT"
+          if [[ ! "$NEXT_BUILD" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::构建号格式无效，请填写正整数，例如 105"
+            exit 1
+          fi
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$NEXT_BUILD" >> "$GITHUB_OUTPUT"
           echo "IPA_NAME=LaunchShield-$NEXT_VERSION-unsigned.ipa" >> "$GITHUB_ENV"
@@ -92,46 +96,67 @@ jobs:
           unzip -l "$IPA_NAME" | head -20
           ls -la "$IPA_NAME"
 
-      - name: Publish Nightly (replace previous prereleases)
-        if: github.event_name == 'push'
+      - name: Publish Nightly (optionally replace previous prereleases)
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_VERSION: ${{ steps.version.outputs.version }}
+          REPLACE_PREVIOUS: ${{ inputs.replace_previous_prerelease }}
         run: |
           set -euo pipefail
           TAG="v$NEXT_VERSION"
 
-          # If this version already has a release: a formal release is
-          # never touched; a pre-release is deleted (tag kept) and
-          # recreated below.
+          # 防止误删同名正式版：只有目标版本不存在 Release 或属于 prerelease 时才允许替换。
           if TARGET_RELEASE_TYPE="$(gh release view "$TAG" --json isPrerelease --jq '.isPrerelease' 2>/dev/null)"; then
             if [ "$TARGET_RELEASE_TYPE" != "true" ]; then
-              echo "::error::Tag $TAG belongs to a formal release; refusing to replace it."
+              echo "::error::Tag $TAG 对应的是正式版 Release，已停止替换以保护正式版。"
               exit 1
             fi
-            echo "Deleting existing Nightly release $TAG (tag kept)"
-            gh release delete "$TAG" --yes
           fi
 
           cat > /tmp/notes.md <<NOTES
           Nightly
 
-          Rolling test build from the prerelease branch, published
-          automatically from version tag $TAG.
-          - Build number is assigned automatically by the workflow.
-          - Older Nightly releases are removed; only the newest stays.
-          - Formal releases are never deleted.
+          本次为 prerelease 分支的 Nightly 滚动测试构建。
+          - 版本号由本次工作流运行时手动指定。
+          - App 版本号和内部构建号均由本次工作流运行时手动指定。
+          - 是否删除旧 Nightly 由本次运行的选项决定。
+          - 正式版不会被删除。
+
+          安装与兼容：
+          - 本 IPA 未签名，需要使用适合自身设备的签名方式签名后安装。
+          - 具体可用通道取决于 iOS 版本、签名方式及签名中包含的 App Group 权限；请以应用内检测结果为准。
           NOTES
 
-          # Remove every other old Nightly release and its tag, so only
-          # this one remains.
-          gh release list --limit 100 --json tagName,isPrerelease \
-            --jq '.[] | select(.isPrerelease == true) | .tagName' |
-          while IFS= read -r OLD_TAG; do
-            [ -n "$OLD_TAG" ] || continue
-            echo "Deleting previous prerelease: $OLD_TAG"
-            gh release delete "$OLD_TAG" --yes --cleanup-tag
-          done
+          # 仅当本次明确选择替换时，才删除旧 Nightly；正式版始终保留。
+          if [ "$REPLACE_PREVIOUS" = "true" ]; then
+            # 先删除所有旧 Nightly Release 和对应 Tag，再创建本次版本。
+            gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease == true) | .tagName' |
+            while IFS= read -r OLD_TAG; do
+              [ -n "$OLD_TAG" ] || continue
+              echo "Deleting previous prerelease: $OLD_TAG"
+              gh release delete "$OLD_TAG" --yes --cleanup-tag
+            done
+
+            # 目标 Tag 可能只残留在 Git 仓库中、却没有对应 Release；也必须清理。
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "Deleting leftover target tag: $TAG"
+              git push origin ":refs/tags/$TAG"
+            fi
+          else
+            # 不替换时绝不删除旧 Release/Tag；目标 Tag 冲突则明确停止。
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::版本 $NEXT_VERSION 对应的 Tag 已存在；如需复用该版本，请勾选“发布前删除旧 Nightly 及其 Tag”。"
+              exit 1
+            fi
+            echo "Keeping all previous prereleases."
+          fi
+
+          # 删除完成后再检查一次，避免残留 Tag 导致 gh release create 失败。
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::目标 Tag $TAG 清理后仍然存在，已停止发布以避免覆盖错误版本。"
+            exit 1
+          fi
 
           gh release create "$TAG" "$IPA_NAME" \
             --prerelease \
