@@ -162,6 +162,15 @@ enum DatabaseFile {
 /// 表情包，不是广告素材。命中就一律绕开——不标疑似、不自动判定、
 /// 不进文件工具的默认列表。宁可漏抓广告，也不能误伤用户自己的东西。
 enum PersonalMedia {
+    /// 聊天媒体的典型目录名：短视频、自定义表情、表情包、聊天图、接收的文件等。
+    /// 深扫走访按这份名单整棵剪枝——目录里的每个文件都会命中同名
+    /// 路径段，剪枝只影响速度，不改变判定结果。
+    static let personalDirectoryNames: Set<String> = ["shortvideo", "customface", "emoji", "emojis",
+                                                      "sticker", "stickers", "messageimg",
+                                                      "messageimgdecode", "filerecv", "ptt"]
+    /// 路径里带这个子串的目录同理整棵剪枝。
+    static let personalDirectorySubstrings = ["wechatprivate"]
+
     static func isPersonal(bundleID: String, relativePath: String) -> Bool {
         let lower = relativePath.lowercased()
         let segments = lower.split(separator: "/").map(String.init)
@@ -172,11 +181,7 @@ enum PersonalMedia {
             if account.count >= 5, account.allSatisfy({ $0.isNumber }) { return true }
             if account.count >= 24, account.allSatisfy({ $0.isHexDigit }) { return true }
         }
-        // 聊天媒体的典型目录名：短视频、自定义表情、表情包、聊天图、接收的文件等。
-        let personalSegments: Set<String> = ["shortvideo", "customface", "emoji", "emojis",
-                                             "sticker", "stickers", "messageimg",
-                                             "messageimgdecode", "filerecv", "ptt"]
-        if segments.contains(where: { personalSegments.contains($0) }) { return true }
+        if segments.contains(where: { personalDirectoryNames.contains($0) }) { return true }
         if lower.contains("wechatprivate") { return true }
         return false
     }

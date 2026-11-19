@@ -86,6 +86,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSArray<WQAppContainer *> *)groupContainers;
 
 - (WQOp *)listDirectory:(NSString *)path;
+/// Deep-scan bulk walk (see wq_walk_files): one pass over a whole subtree,
+/// files only, unsorted. progress may be nil.
+- (WQOp *)walkFiles:(NSString *)path
+              limit:(NSInteger)limit
+      skipDirNames:(nullable NSSet<NSString *> *)skipDirNames
+skipDirSubstrings:(nullable NSArray<NSString *> *)skipDirSubstrings
+   skipAccountDirs:(BOOL)skipAccountDirs
+           progress:(nullable void (^)(NSInteger visited))progress;
 - (WQOp *)statPath:(NSString *)path;
 - (WQOp *)readFile:(NSString *)path maxBytes:(NSUInteger)maxBytes;
 

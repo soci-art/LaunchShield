@@ -792,11 +792,20 @@ final class AppState: ObservableObject {
                 // 深扫：名单之外再按关键词和全屏尺寸翻一遍，命中进「疑似广告」组。
                 if deep {
                     let knownPaths = Set(found.map { $0.path })
+                    // 深扫走访在底层成批推进，进度按累计条数回填，
+                    // 不再逐个文件回调。
+                    var deepOffset = filesVisited
+                    let onDeepVisit = { (count: Int) in
+                        filesVisited = deepOffset + count
+                        reportScanProgress()
+                    }
                     var extra = self.deepScanTargets(container: info.path, ownerBundleID: info.bundleID,
-                                                     ownerName: info.name, onVisit: onVisit)
+                                                     ownerName: info.name, onVisitedCount: onDeepVisit)
+                    deepOffset = filesVisited
                     for group in groups {
                         extra.append(contentsOf: self.deepScanTargets(container: group.path, ownerBundleID: info.bundleID,
-                                                                      ownerName: info.name, onVisit: onVisit))
+                                                                      ownerName: info.name, onVisitedCount: onDeepVisit))
+                        deepOffset = filesVisited
                     }
                     let fresh = extra.filter { !knownPaths.contains($0.path) }
                     if !fresh.isEmpty {
@@ -1572,9 +1581,21 @@ final class AppState: ObservableObject {
     /// 图片尺寸正好是手机全屏那几档。结果都进「疑似广告」组，清之前在
     /// 清单里过目。系统启动图目录（SplashBoard）是系统自己的画面，排除。
     /// 这些散文件清零时只冻文件本身：文件夹冻结只认规则目录，不会连累公共目录。
+    /// 深扫（提速版）：整个子树在底层一遍走完，不再逐目录跨层列举和
+    /// 排序；个人内容目录整棵剪枝——目录里每个文件本来也会被个人
+    /// 内容判定绕开，剪枝只省时间、不改结果，逐文件判定仍保留兜底。
+    /// 关键词拼成一个正则一次匹配；图片尺寸检查只读文件头 32 KB
+    /// （尺寸信息都在开头一段）。走访上限 8000 条、结果上限 300 个、
+    /// 尺寸检查上限 50 张，都和原来一样。
     private func deepScanTargets(container: String, ownerBundleID: String, ownerName: String,
-                                 onVisit: (() -> Void)? = nil) -> [TargetFile] {
+                                 onVisitedCount: (@escaping (Int) -> Void)? = nil) -> [TargetFile] {
         let keywords = Set(RulesStore.keywords.map { $0.lowercased() } + ["appopen", "openad", "splashad"])
+        let keywordRegex: NSRegularExpression? = {
+            let parts = keywords.filter { !$0.isEmpty }
+                .map { NSRegularExpression.escapedPattern(for: $0) }
+            guard !parts.isEmpty else { return nil }
+            return try? NSRegularExpression(pattern: parts.joined(separator: "|"))
+        }()
         let fullscreen: Set<String> = ["1080x1920", "1920x1080", "1125x2436", "2436x1125", "1242x2688", "2688x1242",
                                        "1170x2532", "2532x1170", "1179x2556", "2556x1179", "1290x2796", "2796x1290",
                                        "1206x2622", "2622x1206", "1320x2868", "2868x1320", "750x1334", "1334x750",
@@ -1589,7 +1610,8 @@ final class AppState: ObservableObject {
             // 个人内容（聊天图、短视频、表情包）不算疑似广告，深扫直接绕开。
             if PersonalMedia.isPersonal(bundleID: ownerBundleID, relativePath: relative) { return }
             let lower = relative.lowercased()
-            if keywords.contains(where: { lower.contains($0) }) {
+            if let keywordRegex,
+               keywordRegex.firstMatch(in: lower, range: NSRange(location: 0, length: lower.utf16.count)) != nil {
                 results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",
                                           note: "深扫：路径带广告关键词", size: item.size, isSmallConfig: item.size < 65536,
                                           bundleID: ownerBundleID, appName: ownerName))
@@ -1604,7 +1626,7 @@ final class AppState: ObservableObject {
             }
             if imageExts.contains(ext), item.size >= 30_000, dimsChecked < 50 {
                 dimsChecked += 1
-                if let data = try? channel.read(item.path, maxBytes: 128 * 1024),
+                if let data = try? channel.read(item.path, maxBytes: 32 * 1024),
                    let source = CGImageSourceCreateWithData(data as CFData, nil),
                    let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
                    let w = props[kCGImagePropertyPixelWidth as String] as? Int,
@@ -1616,18 +1638,25 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        func walk(dir: String) {
-            guard visited < 8000, results.count < 300 else { return }
-            guard let items = try? channel.children(of: dir) else { return }
-            for item in items {
-                visited += 1
-                onVisit?()
-                if item.isDirectory { walk(dir: item.path) } else { consider(item: item) }
+        for root in ["Library", "tmp", "Documents"] {
+            guard visited < 8000, results.count < 300 else { break }
+            let base = visited
+            let files = (try? channel.walkFiles(
+                at: container + "/" + root,
+                limit: 8000 - base,
+                skipDirNames: PersonalMedia.personalDirectoryNames,
+                skipDirSubstrings: PersonalMedia.personalDirectorySubstrings,
+                skipAccountDirs: root == "Documents",
+                onVisit: { count in
+                    visited = base + count
+                    onVisitedCount?(visited)
+                })) ?? []
+            for item in files {
+                if results.count >= 300 { break }
+                consider(item: item)
             }
         }
-        for root in ["Library", "tmp", "Documents"] {
-            walk(dir: container + "/" + root)
-        }
+        onVisitedCount?(visited)
         return results
     }
 

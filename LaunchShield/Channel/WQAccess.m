@@ -1115,6 +1115,119 @@ NSArray<NSDictionary<NSString *, id> *> *wq_list_detailed(NSString *dir, NSStrin
     return items;
 }
 
+// MARK: - Deep-scan bulk walk
+
+typedef struct {
+    NSInteger visited;
+    NSInteger maxVisited;
+    BOOL stopped;
+    NSSet<NSString *> *skipNames;
+    NSArray<NSString *> *skipSubstrings;
+    BOOL skipAccountDirs;
+    WQWalkProgress progress;
+    NSInteger lastProgress;
+    NSMutableArray<NSDictionary<NSString *, id> *> *files;
+} WQWalkState;
+
+static BOOL wq_name_is_account_dir(NSString *name)
+{
+    NSUInteger len = name.length;
+    if (len >= 5) {
+        BOOL allDigits = YES;
+        for (NSUInteger i = 0; i < len; i++) {
+            unichar c = [name characterAtIndex:i];
+            if (c < '0' || c > '9') { allDigits = NO; break; }
+        }
+        if (allDigits) return YES;
+    }
+    if (len >= 24) {
+        BOOL allHex = YES;
+        for (NSUInteger i = 0; i < len; i++) {
+            unichar c = [name characterAtIndex:i];
+            BOOL hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex) { allHex = NO; break; }
+        }
+        if (allHex) return YES;
+    }
+    return NO;
+}
+
+static void wq_walk_level(NSString *dir, int depth, WQWalkState *state)
+{
+    if (state->stopped || depth > 64) return;
+    int fd = wq_open_directory_flags(dir, O_RDONLY);
+    if (fd < 0) return; // unreadable folder: skip it, like the old walk did
+    DIR *listing = fdopendir(fd);
+    if (!listing) { close(fd); return; }
+    int dfd = dirfd(listing);
+    struct dirent *entry;
+    while ((entry = readdir(listing)) != NULL) {
+        if (state->stopped) break;
+        const char *name = entry->d_name;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        if (++state->visited > state->maxVisited) { state->stopped = YES; break; }
+        if (state->progress && state->visited - state->lastProgress >= 256) {
+            state->lastProgress = state->visited;
+            state->progress(state->visited);
+        }
+        struct stat st;
+        if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        if (S_ISLNK(st.st_mode)) continue;
+        NSString *entryName = [NSString stringWithUTF8String:name];
+        if (!entryName.length) continue;
+        NSString *child = [dir stringByAppendingPathComponent:entryName];
+        if (S_ISDIR(st.st_mode)) {
+            NSString *lower = entryName.lowercaseString;
+            if ([state->skipNames containsObject:lower]) continue;
+            BOOL substringHit = NO;
+            for (NSString *needle in state->skipSubstrings) {
+                if ([lower containsString:needle]) { substringHit = YES; break; }
+            }
+            if (substringHit) continue;
+            if (depth == 0 && state->skipAccountDirs && wq_name_is_account_dir(entryName)) continue;
+            wq_walk_level(child, depth + 1, state);
+        } else if (S_ISREG(st.st_mode)) {
+            [state->files addObject:@{
+                @"path": child,
+                @"size": @((unsigned long long)st.st_size),
+                @"modified": @((double)st.st_mtimespec.tv_sec + (double)st.st_mtimespec.tv_nsec / 1e9),
+            }];
+        }
+    }
+    closedir(listing);
+}
+
+NSArray<NSDictionary<NSString *, id> *> *wq_walk_files(NSString *root,
+                                                       NSInteger maxVisited,
+                                                       NSSet<NSString *> *skipDirNames,
+                                                       NSArray<NSString *> *skipDirSubstrings,
+                                                       BOOL skipFirstLevelAccountDirs,
+                                                       WQWalkProgress progress,
+                                                       NSString **errorText)
+{
+    if (!WQAbsolutePathGrammar(WQCanonicalVarPath(root))) {
+        if (errorText) *errorText = WQLocalized(@"Invalid folder path");
+        return nil;
+    }
+    int probe = wq_open_directory_flags(root, O_RDONLY);
+    if (probe < 0) {
+        if (errorText) *errorText = wq_errno(errno);
+        return nil;
+    }
+    close(probe);
+    WQWalkState state;
+    memset(&state, 0, sizeof(state));
+    state.maxVisited = maxVisited > 0 ? maxVisited : NSIntegerMax;
+    state.skipNames = skipDirNames;
+    state.skipSubstrings = skipDirSubstrings;
+    state.skipAccountDirs = skipFirstLevelAccountDirs;
+    state.progress = progress;
+    state.files = [NSMutableArray array];
+    wq_walk_level(root, 0, &state);
+    if (progress) progress(state.visited);
+    return state.files;
+}
+
 static int wq_open(NSString *path, int flags, mode_t mode)
 {
     if (flags & O_TRUNC) { errno = EINVAL; return -1; }
