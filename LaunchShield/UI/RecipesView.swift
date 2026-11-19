@@ -251,7 +251,7 @@ struct RecipesView: View {
     private func card(_ recipe: Recipe) -> some View {
         let stateValue = RecipeState(rawValue: recipe.lastState) ?? .unknown
         let backup = state.backups.last {
-            $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
+            $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
         }
         return HStack(alignment: .top, spacing: 10) {
             if selecting {
@@ -287,6 +287,9 @@ struct RecipesView: View {
                 }
                 if recipe.placeholder {
                     StatusBadge(text: "文件夹占位", tint: .purple)
+                }
+                if recipe.groupID != nil {
+                    StatusBadge(text: "共享组", tint: .orange)
                 }
                 if let checked = recipe.lastCheckedAt {
                     Text("上次检查 \(Format.date(checked))")
@@ -349,7 +352,7 @@ struct RecipesView: View {
     /// 选中条目里能找到备份的，取每个文件的那份备份（批量恢复用）。
     private var selectedBackupRecords: [BackupRecord] {
         selectedRecipes.compactMap { recipe in
-            state.backups.last { $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath }
+            state.backups.last { $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID }
         }
     }
 

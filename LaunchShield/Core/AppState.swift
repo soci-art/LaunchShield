@@ -576,6 +576,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 一个文件生根在哪个容器：路径去掉相对路径剩下的根，跟应用自己的
+    /// 容器对上就是应用文件（groupID 为 nil）；跟某个共享组容器对上，
+    /// 返回那个组的标识；两个都对不上说明定位不到（isKnown 为 false），
+    /// 这种文件备份照做，但不登记配方——登记了守护也找不回来。
+    func locateFile(path: String, relativePath: String, ownerID: String) -> (groupID: String?, isKnown: Bool) {
+        let root = String(path.dropLast(relativePath.count + 1))
+        if channel.containerPath(for: ownerID) == root { return (nil, true) }
+        if let group = channel.groupContainers().first(where: { $0.path == root }) {
+            return (group.bundleID, true)
+        }
+        return (nil, false)
+    }
+
     /// Names of apps the latest scan found ad material in (for the find-ad guide).
     var appsWithAds: [String] {
         let fromRecognition = lastRecognition
@@ -849,11 +862,17 @@ final class AppState: ObservableObject {
                     } else {
                         let ownerID = targetFile.bundleID.isEmpty ? BaiduNetdisk.bundleID : targetFile.bundleID
                         let ownerName = targetFile.appName.isEmpty ? BaiduNetdisk.displayName : targetFile.appName
+                        // 这个文件生根在哪个容器：应用自己的，或某个共享组。
+                        // 备份和配方都记准这个根，之后定位才不会找错地方。
+                        let located = self.locateFile(path: targetFile.path,
+                                                      relativePath: targetFile.relativePath,
+                                                      ownerID: ownerID)
                         let record = try self.backupManager.backup(path: targetFile.path,
                                                                    relativePath: targetFile.relativePath,
                                                                    bundleID: ownerID,
                                                                    appName: ownerName,
                                                                    source: targetFile.group,
+                                                                   groupID: located.groupID,
                                                                    channel: self.channel)
                         try self.store.registerBackup(record)
                         newBackups.append(record)
@@ -862,10 +881,9 @@ final class AppState: ObservableObject {
                         self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
                         // 清零过的都登记进守护名单，不再挑组：以前只有「软件自营」
                         // 才登记，优量汇、穿山甲这些清完不进名单、守护巡不到。
-                        // 只登记文件本体在该应用自己容器里的：共享组里的文件路径
-                        // 是按组容器算的，配方按应用容器定位会找错地方，暂不登记。
-                        let root = String(targetFile.path.dropLast(targetFile.relativePath.count + 1))
-                        if self.channel.containerPath(for: ownerID) == root {
+                        // 共享组里的文件把组标识一并记进配方，巡逻时按组容器
+                        // 定位；根对不上任何已知容器的才不登记（定位不到）。
+                        if located.isKnown {
                             newRecipes.append(Recipe(id: UUID(),
                                                      bundleID: ownerID,
                                                      appName: ownerName,
@@ -874,7 +892,8 @@ final class AppState: ObservableObject {
                                                      frozen: false,
                                                      placeholder: false,
                                                      lastCheckedAt: Date(),
-                                                     lastState: RecipeState.normal.rawValue))
+                                                     lastState: RecipeState.normal.rawValue,
+                                                     groupID: located.groupID))
                         }
                     }
                     // 清零后顺手把每个文件都冻上，广告就写不回这些文件了。
@@ -929,7 +948,7 @@ final class AppState: ObservableObject {
                 self.busyText = ""
                 for recipe in newRecipes {
                     let exists = self.store.file.recipes.contains {
-                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
+                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
@@ -1027,7 +1046,7 @@ final class AppState: ObservableObject {
                     continue
                 }
                 do {
-                    guard let root = self.channel.containerPath(for: record.bundleID) else {
+                    guard let root = self.channel.rootPath(bundleID: record.bundleID, groupID: record.groupID) else {
                         throw ChannelFailure("找不到 \(record.appName) 的数据容器")
                     }
                     _ = try self.backupManager.restore(record, container: root, channel: self.channel)
@@ -1064,7 +1083,7 @@ final class AppState: ObservableObject {
             alertText = "这是数据库文件，正被应用占用着，还原不了，已跳过。"
             return
         }
-        guard let root = channel.containerPath(for: record.bundleID) else {
+        guard let root = channel.rootPath(bundleID: record.bundleID, groupID: record.groupID) else {
             alertText = "找不到 \(record.appName) 的数据容器。"
             return
         }
@@ -1306,11 +1325,15 @@ final class AppState: ObservableObject {
                         throw ChannelFailure("文件在第二次快照后发生变化，已取消清零；请重新扫描")
                     }
                     if wasImmutable { try self.channel.setImmutable(full, false) }
+                    let located = self.locateFile(path: full,
+                                                  relativePath: candidate.relativePath,
+                                                  ownerID: appBundleID)
                     let record = try self.backupManager.backup(path: full,
                                                                relativePath: candidate.relativePath,
                                                                bundleID: appBundleID,
                                                                appName: appName,
                                                                source: "前后对比确认",
+                                                               groupID: located.groupID,
                                                                channel: self.channel)
                     try self.store.registerBackup(record)
                     newBackups.append(record)
@@ -1321,15 +1344,18 @@ final class AppState: ObservableObject {
                     try self.channel.truncate(full)
                     done += 1
                     self.log("已清零确认的素材：\(appName) \(candidate.relativePath)", .success)
-                    newRecipes.append(Recipe(id: UUID(),
-                                             bundleID: appBundleID,
-                                             appName: appName,
-                                             relativePath: candidate.relativePath,
-                                             createdAt: Date(),
-                                             frozen: false,
-                                             placeholder: false,
-                                             lastCheckedAt: Date(),
-                                             lastState: RecipeState.normal.rawValue))
+                    if located.isKnown {
+                        newRecipes.append(Recipe(id: UUID(),
+                                                 bundleID: appBundleID,
+                                                 appName: appName,
+                                                 relativePath: candidate.relativePath,
+                                                 createdAt: Date(),
+                                                 frozen: false,
+                                                 placeholder: false,
+                                                 lastCheckedAt: Date(),
+                                                 lastState: RecipeState.normal.rawValue,
+                                                 groupID: located.groupID))
+                    }
                 } catch {
                     if wasImmutable {
                         do {
@@ -1349,7 +1375,7 @@ final class AppState: ObservableObject {
                 self.busyText = ""
                 for recipe in newRecipes {
                     let exists = self.store.file.recipes.contains {
-                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
+                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
@@ -1597,7 +1623,7 @@ final class AppState: ObservableObject {
             var other = 0
             for index in updated.indices where !excludedIDs.contains(updated[index].bundleID.lowercased()) {
                 updated[index].lastCheckedAt = Date()
-                guard let container = self.channel.containerPath(for: updated[index].bundleID) else {
+                guard let container = self.channel.rootPath(bundleID: updated[index].bundleID, groupID: updated[index].groupID) else {
                     updated[index].lastState = RecipeState.missing.rawValue
                     other += 1
                     continue
@@ -1631,7 +1657,7 @@ final class AppState: ObservableObject {
             return
         }
         guard requireChannel() else { return }
-        guard let root = channel.containerPath(for: recipe.bundleID) else {
+        guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else {
             alertText = "找不到 \(recipe.appName) 的数据容器。"
             return
         }
@@ -1658,6 +1684,7 @@ final class AppState: ObservableObject {
                                                                bundleID: recipe.bundleID,
                                                                appName: recipe.appName,
                                                                source: "复发后重新清零",
+                                                               groupID: recipe.groupID,
                                                                channel: self.channel)
                     try self.store.registerBackup(record)
                 }
@@ -1685,7 +1712,7 @@ final class AppState: ObservableObject {
             return
         }
         guard requireChannel() else { return }
-        guard let root = channel.containerPath(for: recipe.bundleID) else { return }
+        guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { return }
         work.async {
             do {
                 let full = RecipeEngine.fullPath(recipe, container: root)
@@ -1714,7 +1741,7 @@ final class AppState: ObservableObject {
             return
         }
         guard requireChannel() else { return }
-        guard let root = channel.containerPath(for: recipe.bundleID) else { return }
+        guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { return }
         isBusy = true
         busyText = enabled ? "正在做同名文件夹占位…" : "正在取消占位…"
         work.async {
@@ -1731,6 +1758,7 @@ final class AppState: ObservableObject {
                                                                        bundleID: recipe.bundleID,
                                                                        appName: recipe.appName,
                                                                        source: "占位前备份",
+                                                                       groupID: recipe.groupID,
                                                                        channel: self.channel)
                             try self.store.registerBackup(record)
                         }
@@ -1746,8 +1774,9 @@ final class AppState: ObservableObject {
                         try self.channel.delete(full)
                     }
                     if let record = self.backupManager.originalBackup(bundleID: recipe.bundleID,
-                                                                      relativePath: recipe.relativePath) {
-                        guard let targetRoot = self.channel.containerPath(for: record.bundleID) else {
+                                                                      relativePath: recipe.relativePath,
+                                                                      groupID: recipe.groupID) {
+                        guard let targetRoot = self.channel.rootPath(bundleID: record.bundleID, groupID: record.groupID) else {
                             throw ChannelFailure("找不到目标应用的数据容器")
                         }
                         _ = try self.backupManager.restore(record, container: targetRoot, channel: self.channel)
@@ -1789,7 +1818,7 @@ final class AppState: ObservableObject {
             self.store.save()
             self.log("已从守护列表移除：\(recipe.relativePath)", .notice)
         }
-        guard recipe.frozen || recipe.placeholder, let root = channel.containerPath(for: recipe.bundleID) else {
+        guard recipe.frozen || recipe.placeholder, let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else {
             finish()
             return
         }
@@ -1834,7 +1863,7 @@ final class AppState: ObservableObject {
         busyText = "正在移除 \(targets.count) 个守护条目…"
         work.async {
             for recipe in needWork {
-                guard let root = self.channel.containerPath(for: recipe.bundleID) else { continue }
+                guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
                 let full = RecipeEngine.fullPath(recipe, container: root)
                 if recipe.frozen {
                     try? self.channel.setImmutable(full, false)
@@ -1871,7 +1900,7 @@ final class AppState: ObservableObject {
             var done = 0
             var newBackups: [BackupRecord] = []
             for recipe in targets {
-                guard let root = self.channel.containerPath(for: recipe.bundleID) else { continue }
+                guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
                 let full = RecipeEngine.fullPath(recipe, container: root)
                 guard let item = self.channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
                 if DatabaseFile.matches(relativePath: recipe.relativePath) { continue }
@@ -1882,6 +1911,7 @@ final class AppState: ObservableObject {
                                                                 bundleID: recipe.bundleID,
                                                                 appName: recipe.appName,
                                                                 source: "复发重冻",
+                                                                groupID: recipe.groupID,
                                                                 channel: self.channel)
                     try self.store.registerBackup(record)
                     newBackups.append(record)
@@ -2129,7 +2159,7 @@ final class AppState: ObservableObject {
 
         var truncated = 0
         for recipe in list where !recipe.placeholder {
-            guard let root = channel.containerPath(for: recipe.bundleID) else { continue }
+            guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
             let full = RecipeEngine.fullPath(recipe, container: root)
             guard let item = channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
             if DatabaseFile.matches(relativePath: recipe.relativePath) { continue }
@@ -2196,7 +2226,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 for recipe in recipesToAdd {
                     let exists = self.store.file.recipes.contains {
-                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath
+                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
@@ -2217,6 +2247,7 @@ final class AppState: ObservableObject {
         if DatabaseFile.matches(relativePath: file.relativePath) { return false }
         let ownerID = file.bundleID.isEmpty ? BaiduNetdisk.bundleID : file.bundleID
         let ownerName = file.appName.isEmpty ? BaiduNetdisk.displayName : file.appName
+        let located = locateFile(path: file.path, relativePath: file.relativePath, ownerID: ownerID)
         do {
             if channel.isImmutable(file.path) {
                 try channel.setImmutable(file.path, false)
@@ -2226,20 +2257,24 @@ final class AppState: ObservableObject {
                                                   bundleID: ownerID,
                                                   appName: ownerName,
                                                   source: source,
+                                                  groupID: located.groupID,
                                                   channel: channel)
             try store.registerBackup(record)
             newBackups.append(record)
             try channel.truncate(file.path)
             try channel.setImmutable(file.path, true)
-            newRecipes.append(Recipe(id: UUID(),
-                                     bundleID: ownerID,
-                                     appName: ownerName,
-                                     relativePath: file.relativePath,
-                                     createdAt: Date(),
-                                     frozen: true,
-                                     placeholder: false,
-                                     lastCheckedAt: Date(),
-                                     lastState: RecipeState.normal.rawValue))
+            if located.isKnown {
+                newRecipes.append(Recipe(id: UUID(),
+                                         bundleID: ownerID,
+                                         appName: ownerName,
+                                         relativePath: file.relativePath,
+                                         createdAt: Date(),
+                                         frozen: true,
+                                         placeholder: false,
+                                         lastCheckedAt: Date(),
+                                         lastState: RecipeState.normal.rawValue,
+                                         groupID: located.groupID))
+            }
             return true
         } catch {
             log("自动清文件失败：\(file.relativePath)：\(error.localizedDescription)", .warning)
@@ -2652,10 +2687,10 @@ final class AppState: ObservableObject {
     private func compareRecipeDirectories(_ list: [Recipe]) {
         var current = Set<String>()
         for recipe in list {
-            guard let root = channel.containerPath(for: recipe.bundleID) else { continue }
+            guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
             let directory = (RecipeEngine.fullPath(recipe, container: root) as NSString).deletingLastPathComponent
             guard let items = try? channel.children(of: directory) else { continue }
-            let known = Set(list.filter { $0.bundleID == recipe.bundleID }
+            let known = Set(list.filter { $0.bundleID == recipe.bundleID && $0.groupID == recipe.groupID }
                 .map { ($0.relativePath as NSString).lastPathComponent })
             for item in items where !item.isDirectory && !known.contains(item.name) {
                 current.insert(item.path)

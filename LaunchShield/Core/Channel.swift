@@ -52,6 +52,16 @@ final class Channel {
         raw.container(forBundleID: bundleID)?.path
     }
 
+    /// 配方和备份记录定位用：带组标识的是共享组里的文件，去组容器里找根；
+    /// 没有组标识的是应用自己容器里的文件。组容器不在应用容器登记里，
+    /// 只能从组容器列表里按组标识对。
+    func rootPath(bundleID: String, groupID: String?) -> String? {
+        if let groupID {
+            return groupContainers().first { $0.bundleID == groupID }?.path
+        }
+        return containerPath(for: bundleID)
+    }
+
     func children(of path: String) throws -> [FileItem] {
         let op = raw.listDirectory(path)
         guard op.ok, let items = op.value as? [WQFileItem] else {
