@@ -1,14 +1,21 @@
 name: Build and publish official IPA
 
 on:
-  # Auto-publish (Grace, 2026-11-19): pushing a version tag (e.g.
-  # v0.1.7) builds that version and publishes its formal release.
-  # Ordinary branch pushes never trigger this workflow. A manual
-  # dispatch only builds - it never publishes.
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
+    inputs:
+      version:
+        description: "本次正式版 App 版本号（例如 3.3.5）"
+        required: true
+        type: string
+      build_number:
+        description: "本次正式版内部构建号（正整数，例如 105）"
+        required: true
+        type: string
+      delete_previous_releases:
+        description: "发布前删除旧正式版 Release 及其 Tag（默认关闭）"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -36,28 +43,6 @@ jobs:
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
 
-      - name: Resolve version from the tag
-        id: meta
-        shell: bash
-        env:
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            git fetch --tags --force >/dev/null 2>&1 || true
-            LATEST="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || echo v0.0.0)"
-            VERSION="${LATEST#v}"
-          fi
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version format: $VERSION (tags must look like v1.2.3)"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "build=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "Version $VERSION (build $RUN_NUMBER), tag v$VERSION"
-
       - name: Build app (unsigned)
         run: |
           xcodebuild build \
@@ -68,12 +53,12 @@ jobs:
             -derivedDataPath build/DD \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
-      - name: Set version and package IPA
+      - name: Set manual version and package IPA
         id: version
         shell: bash
         env:
-          VERSION_INPUT: ${{ steps.meta.outputs.version }}
-          BUILD_NUMBER_INPUT: ${{ steps.meta.outputs.build }}
+          VERSION_INPUT: ${{ inputs.version }}
+          BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
         run: |
           set -euo pipefail
           APP_PATH="$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
@@ -92,7 +77,11 @@ jobs:
           fi
           TAG="v$NEXT_VERSION"
 
-          # The version tag is the trigger: it already exists by design.
+          # Never overwrite an existing tag or release.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::版本 $NEXT_VERSION 对应的 Tag 已存在，请填写新的版本号。"
+            exit 1
+          fi
 
           # Keep the app's bundle version aligned with the new release.
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEXT_VERSION" "$APP_PATH/Info.plist"
@@ -115,36 +104,37 @@ jobs:
           unzip -l "$IPA_NAME" | head -20
           ls -la "$IPA_NAME"
 
-      - name: Publish official release
-        if: github.event_name == 'push'
+      - name: Publish official release (keep all previous releases and IPAs)
         env:
           GH_TOKEN: ${{ github.token }}
+          DELETE_PREVIOUS: ${{ inputs.delete_previous_releases }}
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
-          BUILD="${{ steps.version.outputs.build }}"
-
-          # Protect a same-named pre-release: never touch a Nightly.
-          if EXISTING_TYPE="$(gh release view "$TAG" --json isPrerelease --jq '.isPrerelease' 2>/dev/null)"; then
-            if [ "$EXISTING_TYPE" != "false" ]; then
-              echo "::error::$TAG is a pre-release, not a formal release; refusing to touch it."
-              exit 1
-            fi
-            echo "Release $TAG already exists - replacing its IPA in place, keeping its notes."
-            gh release upload "$TAG" "${{ env.IPA_NAME }}" --clobber
-            exit 0
-          fi
 
           cat > /tmp/notes.md << NOTES
-          LaunchShield $VERSION formal release
+          LaunchShield $VERSION 正式版
 
-          Published automatically from version tag $TAG (main branch).
-          IPA: ${{ env.IPA_NAME }}
-          Build: $BUILD (numbered automatically by the workflow)
+          本次发布由 main 分支手动构建。
+          IPA：${{ env.IPA_NAME }}
 
-          No historical Release, tag or IPA is deleted or overwritten.
+          App 版本号和内部构建号均由本次工作流运行时手动指定。
+          不删除、不覆盖任何历史 Release、tag 或 IPA 附件。
           NOTES
+
+          # Only remove previous official releases when explicitly selected.
+          if [ "$DELETE_PREVIOUS" = "true" ]; then
+            gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease == false) | .tagName' |
+            while IFS= read -r OLD_TAG; do
+              [ -n "$OLD_TAG" ] || continue
+              echo "Deleting previous official release: $OLD_TAG"
+              gh release delete "$OLD_TAG" --yes --cleanup-tag
+            done
+          else
+            echo "Keeping all previous official releases."
+          fi
 
           gh release create "$TAG" "${{ env.IPA_NAME }}" \
             --title "LaunchShield $VERSION" \
