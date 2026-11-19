@@ -1588,7 +1588,7 @@ final class AppState: ObservableObject {
     /// （尺寸信息都在开头一段）。走访上限 8000 条、结果上限 300 个、
     /// 尺寸检查上限 50 张，都和原来一样。
     private func deepScanTargets(container: String, ownerBundleID: String, ownerName: String,
-                                 onVisitedCount: (@escaping (Int) -> Void)? = nil) -> [TargetFile] {
+                                 onVisitedCount: ((Int) -> Void)? = nil) -> [TargetFile] {
         let keywords = Set(RulesStore.keywords.map { $0.lowercased() } + ["appopen", "openad", "splashad"])
         let keywordRegex: NSRegularExpression? = {
             let parts = keywords.filter { !$0.isEmpty }

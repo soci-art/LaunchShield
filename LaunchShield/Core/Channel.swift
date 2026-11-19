@@ -81,7 +81,7 @@ final class Channel {
                    skipDirNames: Set<String> = [],
                    skipDirSubstrings: [String] = [],
                    skipAccountDirs: Bool = false,
-                   onVisit: (@escaping (Int) -> Void)? = nil) throws -> [FileItem] {
+                   onVisit: ((Int) -> Void)? = nil) throws -> [FileItem] {
         let op = raw.walkFiles(path, limit: limit,
                                skipDirNames: skipDirNames,
                                skipDirSubstrings: skipDirSubstrings,
