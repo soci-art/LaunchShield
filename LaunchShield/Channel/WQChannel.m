@@ -471,6 +471,36 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     return [WQOp ok:[items copy]];
 }
 
+- (WQOp *)walkFiles:(NSString *)path
+              limit:(NSInteger)limit
+      skipDirNames:(NSSet<NSString *> *)skipDirNames
+skipDirSubstrings:(NSArray<NSString *> *)skipDirSubstrings
+   skipAccountDirs:(BOOL)skipAccountDirs
+           progress:(void (^)(NSInteger))progress
+{
+    NSString *error = nil;
+    NSArray<NSDictionary<NSString *, id> *> *rows =
+        wq_walk_files(path, limit, skipDirNames, skipDirSubstrings,
+                      skipAccountDirs, progress, &error);
+    if (!rows) return [WQOp fail:[self messageFor:error fallback:@"打不开这个文件夹"]];
+    NSMutableArray<WQFileItem *> *items = [NSMutableArray arrayWithCapacity:rows.count];
+    for (NSDictionary<NSString *, id> *row in rows) {
+        NSString *filePath = row[@"path"];
+        if (!filePath.length) continue;
+        WQFileItem *item = [WQFileItem new];
+        item.name = filePath.lastPathComponent;
+        item.path = filePath;
+        item.isDirectory = NO;
+        item.isSymlink = NO;
+        item.size = [row[@"size"] unsignedLongLongValue];
+        item.modified = [row[@"modified"] doubleValue];
+        item.isImmutable = NO;
+        item.posixMode = 0;
+        [items addObject:item];
+    }
+    return [WQOp ok:[items copy]];
+}
+
 - (WQOp *)statPath:(NSString *)path
 {
     struct stat st;

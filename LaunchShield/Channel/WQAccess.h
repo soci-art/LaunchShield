@@ -70,6 +70,26 @@ NSArray<NSString *> *_Nullable wq_list(NSString *dir, NSString *_Nullable *_Null
 NSArray<NSDictionary<NSString *, id> *> *_Nullable wq_list_detailed(NSString *dir,
                                                                   NSString *_Nullable *_Nullable errorText);
 
+/// Deep-scan bulk walk: recurse a whole subtree in one pass (no symlink
+/// following) and return every file as a row with keys path, size,
+/// modified. Directories whose lowercase name is in skipDirNames, or
+/// contains one of skipDirSubstrings, are pruned whole; when
+/// skipFirstLevelAccountDirs is set, first-level directories named like
+/// chat-app account folders (all digits, >= 5 chars, or a hex string
+/// >= 24 chars) are pruned whole too — the caller guarantees every file
+/// under a pruned directory would be classified the same as the
+/// directory itself, so pruning changes speed, not results.
+/// maxVisited bounds the total entries seen (files + directories);
+/// progress (may be NULL) reports the running visited count.
+typedef void (^WQWalkProgress)(NSInteger visited);
+NSArray<NSDictionary<NSString *, id> *> *_Nullable wq_walk_files(NSString *root,
+                                                                  NSInteger maxVisited,
+                                                                  NSSet<NSString *> *_Nullable skipDirNames,
+                                                                  NSArray<NSString *> *_Nullable skipDirSubstrings,
+                                                                  BOOL skipFirstLevelAccountDirs,
+                                                                  WQWalkProgress _Nullable progress,
+                                                                  NSString *_Nullable *_Nullable errorText);
+
 // Reads a whole file (up to maxBytes; 0 = no limit).
 NSData *_Nullable wq_read(NSString *path, NSUInteger maxBytes, NSString *_Nullable *_Nullable errorText);
 
