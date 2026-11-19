@@ -122,7 +122,8 @@ enum BaiduNetdisk {
     /// 扫一个应用的容器：软件自营只对百度网盘推导（传 splash），
     /// 第三方 SDK 分组对任何应用都一样适用（传该应用的归属信息即可）。
     static func targets(container: String, channel: Channel, splash: SplashResolution?,
-                        ownerBundleID: String = bundleID, ownerName: String = displayName) -> [TargetFile] {
+                        ownerBundleID: String = bundleID, ownerName: String = displayName,
+                        onVisit: (() -> Void)? = nil) -> [TargetFile] {
         var result: [TargetFile] = []
         var seen = Set<String>()
 
@@ -148,7 +149,7 @@ enum BaiduNetdisk {
         for group in thirdPartyCacheGroups {
             for directory in group.directories {
                 let root = container + "/" + directory
-                for item in files(below: root, channel: channel, depth: 0, limit: 4000) {
+                for item in files(below: root, channel: channel, depth: 0, limit: 4000, onVisit: onVisit) {
                     append(item, group: group.group, note: item.size < 4096 ? "清单小文件" : "")
                 }
             }
@@ -156,14 +157,16 @@ enum BaiduNetdisk {
         return result
     }
 
-    private static func files(below directory: String, channel: Channel, depth: Int, limit: Int) -> [FileItem] {
+    private static func files(below directory: String, channel: Channel, depth: Int, limit: Int,
+                              onVisit: (() -> Void)? = nil) -> [FileItem] {
         guard depth < 6 else { return [] }
         guard let items = try? channel.children(of: directory) else { return [] }
         var result: [FileItem] = []
         for item in items {
+            onVisit?()
             if item.isSymlink { continue }
             if item.isDirectory {
-                result.append(contentsOf: files(below: item.path, channel: channel, depth: depth + 1, limit: limit))
+                result.append(contentsOf: files(below: item.path, channel: channel, depth: depth + 1, limit: limit, onVisit: onVisit))
             } else {
                 result.append(item)
             }

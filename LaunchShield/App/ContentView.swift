@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showAppPicker = false
     @State private var showWhitelist = false
     @State private var showTutorial = false
+    @State private var showAnnouncement = false
     @State private var showFindAd = false
     @State private var showRecipes = false
     @State private var showBackups = false
@@ -25,6 +26,7 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
+                        announcementEntry
                         signCard
                         fullScanCards
                         tutorialEntry
@@ -45,13 +47,17 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 }
                 if state.isBusy {
-                    BusyOverlay(text: state.busyText.isEmpty ? "正在处理…" : state.busyText)
+                    if let progress = state.workProgress {
+                        WorkProgressOverlay(progress: progress)
+                    } else {
+                        BusyOverlay(text: state.busyText.isEmpty ? "正在处理…" : state.busyText)
+                    }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .appAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showFindAd || showRecipes || showBackups || showLogs))
-        .updateAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showFindAd || showRecipes || showBackups || showLogs))
+        .appAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showAnnouncement || showFindAd || showRecipes || showBackups || showLogs))
+        .updateAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showAnnouncement || showFindAd || showRecipes || showBackups || showLogs))
         .onChange(of: scenePhase) { _, phase in
             // 回到前台时补查一次更新提醒（节流在 AppState 里）：
             // 发版时应用正开着的情况，靠这次补查才不会漏弹。
@@ -65,6 +71,15 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showTutorial) {
             TutorialView()
+        }
+        .sheet(isPresented: $showAnnouncement, onDismiss: { state.markAnnouncementSeen() }) {
+            AnnouncementView().environmentObject(state)
+        }
+        .onChange(of: state.announcementPopupReady) { _, ready in
+            if ready {
+                state.announcementPopupReady = false
+                showAnnouncement = true
+            }
         }
         .sheet(isPresented: $showFindAd) {
             FindAdView().environmentObject(state)
@@ -174,6 +189,45 @@ struct ContentView: View {
         state.noteSignGateBlocked()
         state.alertText = "暂时无法自动识别签名方式，文件通道功能已暂停。请重新安装应用；如果仍无法识别，请导出运行日志排查。"
         return false
+    }
+
+    // MARK: - Announcement entry
+
+    /// 更新公告入口（清单第 20 条）：主页最上方、签名方式卡上面，
+    /// 跟「使用教程」一行同款式；未读带红点，点开看公告卡。
+    private var announcementEntry: some View {
+        Button {
+            showAnnouncement = true
+        } label: {
+            HStack(spacing: 10) {
+                Text("📣")
+                    .font(.system(size: 16))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("更新公告")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                    Text(state.announcement?.title ?? "暂无新公告")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if state.announcementUnread {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Color.accentCyan.opacity(0.09),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Tutorial entry
@@ -1102,6 +1156,61 @@ private struct AppWhitelistView: View {
         .appAlert(state)
         .onAppear {
             if state.containers.isEmpty { state.refreshContainers() }
+        }
+    }
+}
+
+/// 公告卡（清单第 20 条）：标题＋版本日期＋正文＋「知道了」。
+/// 没有公告时进来就是一句「暂无新公告」。
+struct AnnouncementView: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        SheetPage("更新公告") {
+            VStack(alignment: .leading, spacing: 14) {
+                if let announcement = state.announcement {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(announcement.title)
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(Color.primaryText)
+                        Text(announcement.date.isEmpty
+                             ? "版本 \(announcement.version)"
+                             : "版本 \(announcement.version) · \(announcement.date)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.secondaryText)
+                        if !announcement.body.isEmpty {
+                            Text(announcement.body)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Color.primaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .panel(radius: 18)
+                } else {
+                    Text("暂无新公告")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.secondaryText)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .panel(radius: 18)
+                }
+                Button {
+                    dismiss()
+                } label: {
+                    Text("知道了")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 0)
+            }
+            .padding(18)
         }
     }
 }

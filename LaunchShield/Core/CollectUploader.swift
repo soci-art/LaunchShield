@@ -39,6 +39,8 @@ enum GitHubUpdate {
         let build: Int?
         let notes: String
         let downloadURL: URL
+        /// 发行版发布日期（yyyy-MM-dd），公告卡上显示用；取不到时为空。
+        let publishedAt: String
     }
 
     private static let mirrors = ["https://gh.86419753.xyz/", "https://gh-proxy.com/", ""]
@@ -85,10 +87,18 @@ enum GitHubUpdate {
               let download = asset["browser_download_url"] as? String,
               let url = URL(string: download) else { return nil }
         let body = object["body"] as? String ?? ""
+        var published = ""
+        if let raw = object["published_at"] as? String,
+           let date = ISO8601DateFormatter().date(from: raw) {
+            let day = DateFormatter()
+            day.dateFormat = "yyyy-MM-dd"
+            published = day.string(from: date)
+        }
         return VersionInfo(version: version,
                            build: parseBuild(from: body),
                            notes: body,
-                           downloadURL: url)
+                           downloadURL: url,
+                           publishedAt: published)
     }
 
     /// 发行说明里工作流写死的一行「构建号：N」：同版本换包靠它认新旧。
@@ -133,6 +143,49 @@ enum GitHubUpdate {
         }
         activeDownloader = downloader
         downloader.start(url: url)
+    }
+}
+
+/// 更新公告（清单第 20 条）：跟着正式版发行版走，写在发行说明里
+/// 【公告】…【/公告】一段中，第一行是标题、其余是正文。App 检测更新
+/// 时顺带取回，有新公告弹一次，主页入口常驻、未读带红点。
+struct Announcement: Equatable {
+    let title: String
+    let body: String
+    let version: String
+    let date: String
+
+    /// 同一条公告的身份标记：版本+标题+正文的稳定哈希（FNV-1a，
+    /// 不用 String.hashValue——它每次启动都不一样，存不住）。
+    var stamp: String { "\(version)#\(Self.stableHash(title + "\n" + body))" }
+
+    static func stableHash(_ text: String) -> String {
+        var hash: UInt64 = 1469598103934665603
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return String(hash, radix: 16)
+    }
+
+    static func parse(notes: String, version: String, date: String) -> Announcement? {
+        let lines = notes.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "【公告】" }) else {
+            return nil
+        }
+        var collected: [String] = []
+        for line in lines[(start + 1)...] {
+            if line.trimmingCharacters(in: .whitespaces) == "【/公告】" { break }
+            collected.append(line)
+        }
+        let content = collected
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let title = content.first else { return nil }
+        return Announcement(title: title,
+                            body: content.dropFirst().joined(separator: "\n"),
+                            version: version,
+                            date: date)
     }
 }
 
