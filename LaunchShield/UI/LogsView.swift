@@ -29,13 +29,8 @@ struct LogsView: View {
                         showClear = true
                     }
                 }
-                VStack(spacing: 6) {
-                    actionButton("上传诊断文件", symbol: "doc.badge.gearshape") {
-                        showStoreUpload = true
-                    }
-                    Text("iOS 26 上读不到应用列表时，把系统数据库传给开发者帮忙修。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                actionButton("上传诊断文件", symbol: "doc.badge.gearshape") {
+                    showStoreUpload = true
                 }
                 LogTable(logs: state.logs)
             }
