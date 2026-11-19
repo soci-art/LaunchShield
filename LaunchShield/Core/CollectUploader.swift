@@ -34,6 +34,8 @@ enum CollectUploader {
 enum GitHubUpdate {
     struct VersionInfo {
         let version: String
+        /// 发行说明里工作流写明的构建号；老发行版没写就是 nil。
+        let build: Int?
         let notes: String
         let downloadURL: URL
     }
@@ -81,9 +83,18 @@ enum GitHubUpdate {
               }),
               let download = asset["browser_download_url"] as? String,
               let url = URL(string: download) else { return nil }
+        let body = object["body"] as? String ?? ""
         return VersionInfo(version: version,
-                           notes: object["body"] as? String ?? "",
+                           build: parseBuild(from: body),
+                           notes: body,
                            downloadURL: url)
+    }
+
+    /// 发行说明里工作流写死的一行「构建号：N」：同版本换包靠它认新旧。
+    /// 老发行版没这行就返回 nil，检测退回只比版本号，不会误报。
+    private static func parseBuild(from body: String) -> Int? {
+        guard let range = body.range(of: #"构建号[:：]\s*[0-9]+"#, options: .regularExpression) else { return nil }
+        return Int(body[range].filter { $0.isNumber })
     }
 
     private static var activeDownloader: IPADownloader?
