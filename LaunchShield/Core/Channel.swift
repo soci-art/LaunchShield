@@ -24,6 +24,10 @@ final class Channel {
     var routeDetail: String { raw.routeDetail }
     var groupText: String { raw.groupText }
 
+    /// 系统应用数据库（.csstore）文件本身的路径；找不到时为 nil。
+    /// 只给日志页的「上传诊断文件」用：文件读得到，但 iOS 26 的版式还没啃通。
+    func lsStorePath() -> String? { wq_ls_store_path() }
+
     /// 全盘扫描：把界面的答复（开始/先不）递给底层等着的那条线；停止同理。
     func answerFullScan(_ yes: Bool) { raw.answerFullScan(yes) }
     func stopFullScan() { raw.stopFullScan() }
