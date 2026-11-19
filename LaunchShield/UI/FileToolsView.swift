@@ -13,6 +13,18 @@ struct FileToolsView: View {
     @State private var selectedPaths: Set<String> = []
     @State private var mediaOnly = true
 
+    /// 进度文字：有总数先报第几个应用，再接实际数过的文件数。
+    private func progressText(_ progress: WorkProgress) -> String {
+        var parts: [String] = []
+        if let total = progress.total, total > 0 {
+            parts.append("第 \(progress.done) / \(total) 个应用")
+        }
+        if let detail = progress.detail {
+            parts.append(detail)
+        }
+        return parts.isEmpty ? progress.fractionText : parts.joined(separator: " · ")
+    }
+
     private var currentList: [FoundFile] {
         mode == 0 ? state.bigFiles : state.fileSearchResults
     }
@@ -100,9 +112,26 @@ struct FileToolsView: View {
                 }
 
                 if state.fileToolsBusy {
-                    Text("正在找，稍等…")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.secondaryText)
+                    // 真进度（清单第 22 条）：条按走完的容器数走，
+                    // 文字是实际数过的文件数，不估不编。
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(state.fileProgress?.label ?? "正在找，稍等…")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        if let progress = state.fileProgress, let total = progress.total, total > 0 {
+                            ProgressView(value: Double(min(progress.done, total)), total: Double(total))
+                                .tint(Color.accentCyan)
+                        } else {
+                            ProgressView()
+                                .tint(Color.accentCyan)
+                        }
+                        if let progress = state.fileProgress {
+                            Text(progressText(progress))
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.secondaryText)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } else if currentList.isEmpty {
                     Text(mode == 0 ? "还没有榜单，点上面的按钮列一遍。" : "还没有搜索结果，输入关键词点「搜」。")
                         .font(.system(size: 12))

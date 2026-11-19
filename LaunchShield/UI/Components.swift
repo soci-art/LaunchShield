@@ -179,6 +179,40 @@ struct BusyOverlay: View {
     }
 }
 
+/// 带真进度的等待卡（清单第 22 条）：有总数画条＋已完成/总数，
+/// 没总数只报已处理数，数字都是实际数出来的，不估不编。
+struct WorkProgressOverlay: View {
+    let progress: WorkProgress
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Text(progress.label)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+            if let total = progress.total, total > 0 {
+                ProgressView(value: Double(min(progress.done, total)), total: Double(total))
+                    .tint(.white)
+            } else {
+                ProgressView()
+                    .tint(.white)
+            }
+            Text(progress.fractionText)
+                .font(.system(size: 12))
+                .foregroundStyle(.white)
+            if let detail = progress.detail {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: 280)
+        .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
 struct InfoLine: View {
     let label: String
     let value: String

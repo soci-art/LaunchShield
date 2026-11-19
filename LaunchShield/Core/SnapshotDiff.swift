@@ -8,7 +8,8 @@ enum SnapshotDiff {
                      root: String,
                      channel: Channel,
                      limit: Int = 60000,
-                     directoryLimit: Int = 120000) throws -> ContainerSnapshot {
+                     directoryLimit: Int = 120000,
+                     onProgress: ((Int) -> Void)? = nil) throws -> ContainerSnapshot {
         let safeFileLimit = max(1, limit)
         let safeDirectoryLimit = max(1, directoryLimit)
         var entries: [String: ContainerSnapshot.Entry] = [:]
@@ -49,6 +50,7 @@ enum SnapshotDiff {
                     }
                     entries[relative] = ContainerSnapshot.Entry(size: item.size,
                                                                 modified: item.modified.timeIntervalSince1970)
+                    if entries.count % 200 == 0 { onProgress?(entries.count) }
                 }
             }
             if reachedLimit { break }

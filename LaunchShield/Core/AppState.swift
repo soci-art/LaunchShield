@@ -10,6 +10,34 @@ enum UpdateAlertKind {
     case rules
 }
 
+/// 一次后台活的真实进度（清单第 22 条）。done/total 都是实际数过
+/// 的工作量：total 拿不到时为 nil，界面只报已处理数、不画假条。
+struct WorkProgress {
+    var label: String
+    var done: Int
+    var total: Int?
+    var detail: String?
+    /// done/total 是个数还是字节数，只影响文字怎么显示。
+    var isBytes = false
+
+    static func countText(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private func valueText(_ value: Int) -> String {
+        isBytes ? Format.bytes(UInt64(max(0, value))) : Self.countText(value)
+    }
+
+    var fractionText: String {
+        if let total {
+            return "\(valueText(done)) / \(valueText(total))"
+        }
+        return "已处理 \(valueText(done))"
+    }
+}
+
 final class AppState: ObservableObject {
     /// LaunchShield 自己的 Bundle ID：永远排除在扫描/勾选/守护范围之外。
     /// 备份就存在自己的容器里，扫自己会把存着的别家广告图备份当素材
@@ -91,6 +119,11 @@ final class AppState: ObservableObject {
     @Published var availableVersion: String?
     /// 有新版时要弹的更新提醒（清单第 12 条的新弹窗：一句话＋取消／更新两个按钮）。
     @Published var updateAlert: UpdateAlertKind?
+    /// 更新公告（清单第 20 条）：跟着正式版发行版走，检测更新时顺带
+    /// 取回。未读带红点，新公告只自动弹一次，之后从主页入口看。
+    @Published var announcement: Announcement?
+    @Published var announcementUnread = false
+    @Published var announcementPopupReady = false
     /// GitHub 最新正式版安装包的直达地址：查到新版时记下，下载时按三级顺序用。
     var availableDownloadURL: URL?
     @Published var downloadProgress: Double?
@@ -101,6 +134,10 @@ final class AppState: ObservableObject {
     @Published var splash: SplashResolution?
     @Published var isBusy = false
     @Published var busyText = ""
+    /// 真进度（清单第 22 条）：数字全部来自实际计数——有总数按
+    /// 已完成/总数走条，暂时不知道总数就只报已处理数，不编百分比。
+    @Published var workProgress: WorkProgress?
+    @Published var fileProgress: WorkProgress?
     @Published var alertText: String? {
         didSet {
             // 更新提醒排在别的弹窗后面时先候着：当前弹窗一关，候着的
@@ -602,8 +639,37 @@ final class AppState: ObservableObject {
         return seen
     }
 
+    /// 系统应用的第二道判断（清单第 21 条）：底层只按 com.apple. 前缀
+    /// 标 isSystem，标识对不上就漏。应用层再自己复核一遍：前缀照查，
+    /// 再加一份内置的系统应用名单，任一命中就算系统应用，一键勾选
+    /// 不碰它。名单是第二道保险，宁可多列，不靠它做别的判断。
+    static func isSystemApp(_ container: ContainerInfo) -> Bool {
+        if container.isSystem { return true }
+        let id = container.bundleID.lowercased()
+        if id.hasPrefix("com.apple.") { return true }
+        return systemAppIDs.contains(id)
+    }
+
+    private static let systemAppIDs: Set<String> = [
+        "com.apple.appstore", "com.apple.mobilesafari", "com.apple.mobilephone",
+        "com.apple.mobilesms", "com.apple.preferences", "com.apple.camera",
+        "com.apple.mobileslideshow", "com.apple.music", "com.apple.videos",
+        "com.apple.tv", "com.apple.podcasts", "com.apple.ibooks",
+        "com.apple.health", "com.apple.fitness", "com.apple.bridge",
+        "com.apple.documentsapp", "com.apple.shortcuts", "com.apple.weather",
+        "com.apple.news", "com.apple.stocks", "com.apple.calculator",
+        "com.apple.compass", "com.apple.voicememos", "com.apple.reminders",
+        "com.apple.notes", "com.apple.calendar", "com.apple.mobilemail",
+        "com.apple.maps", "com.apple.wallet",
+        "com.apple.findmy", "com.apple.translate", "com.apple.magnifier",
+        "com.apple.measure", "com.apple.clips", "com.apple.garageband",
+        "com.apple.imovie", "com.apple.keynotes", "com.apple.pages",
+        "com.apple.numbers", "com.apple.store.jolly", "com.apple.testflight",
+        "com.apple.facetime", "com.apple.home",
+    ]
+
     var allUserAppsChecked: Bool {
-        let userApps = containers.filter { !$0.isSystem && !$0.isGame && !isWhitelisted($0.bundleID) }
+        let userApps = containers.filter { !Self.isSystemApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
         return !userApps.isEmpty && userApps.allSatisfy { checkedIDs.contains($0.bundleID) }
     }
 
@@ -626,8 +692,8 @@ final class AppState: ObservableObject {
             alertText = "已取消一键勾选，现在按单个目标应用处理。"
             return
         }
-        let userApps = containers.filter { !$0.isSystem && !$0.isGame && !isWhitelisted($0.bundleID) }
-        let games = containers.filter { !$0.isSystem && $0.isGame }
+        let userApps = containers.filter { !Self.isSystemApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
+        let games = containers.filter { !Self.isSystemApp($0) && $0.isGame }
         guard !userApps.isEmpty else {
             alertText = "当前没有可勾选的应用（可能都已加入排除白名单）。"
             return
@@ -675,22 +741,49 @@ final class AppState: ObservableObject {
         busyText = deep
             ? (scanSet.count == 1 ? "正在深扫\(scanSet[0].name)…" : "正在深扫 \(scanSet.count) 个应用…")
             : (scanSet.count == 1 ? "正在扫描\(scanSet[0].name)的素材…" : "正在扫描 \(scanSet.count) 个应用的素材…")
+        workProgress = WorkProgress(label: busyText, done: 0,
+                                    total: scanSet.count > 1 ? scanSet.count : nil,
+                                    detail: nil)
         work.async {
             var allTargets: [TargetFile] = []
             var baiduSplash: SplashResolution?
             var recognition: [AppRecognition] = []
             var skippedFrozen = 0
+            // 真进度（清单第 22 条）：条按扫完的应用数走，文件数是
+            // 走访时逐个实际数出来的，只报不编。
+            var appsDone = 0
+            var filesVisited = 0
+            var currentName = ""
+            let reportScanProgress = {
+                DispatchQueue.main.async {
+                    self.workProgress = WorkProgress(
+                        label: scanSet.count > 1
+                            ? "正在\(deep ? "深扫" : "扫描")（第 \(min(appsDone + 1, scanSet.count)) / \(scanSet.count) 个应用）"
+                            : self.busyText,
+                        done: appsDone,
+                        total: scanSet.count > 1 ? scanSet.count : nil,
+                        detail: "当前：\(currentName) · 已看 \(WorkProgress.countText(filesVisited)) 个文件 · 已找到 \(allTargets.count) 个素材")
+                }
+            }
+            let onVisit = {
+                filesVisited += 1
+                if filesVisited % 100 == 0 { reportScanProgress() }
+            }
             for info in scanSet {
+                currentName = info.name
+                reportScanProgress()
                 let isBaidu = info.bundleID == BaiduNetdisk.bundleID
                 let splash = isBaidu ? BaiduNetdisk.resolveSplash(container: info.path, channel: self.channel) : nil
                 if isBaidu { baiduSplash = splash }
                 var found = BaiduNetdisk.targets(container: info.path, channel: self.channel, splash: splash,
-                                                 ownerBundleID: info.bundleID, ownerName: info.name)
+                                                 ownerBundleID: info.bundleID, ownerName: info.name,
+                                                 onVisit: onVisit)
                 // 关联的共享组容器一并扫，素材算在所属应用名下。
                 let groups = info.isGroup ? [] : self.associatedGroups(for: info.bundleID)
                 for group in groups {
                     let groupFound = BaiduNetdisk.targets(container: group.path, channel: self.channel, splash: nil,
-                                                          ownerBundleID: info.bundleID, ownerName: info.name)
+                                                          ownerBundleID: info.bundleID, ownerName: info.name,
+                                                          onVisit: onVisit)
                     if !groupFound.isEmpty {
                         self.log("\(info.name) 的共享组容器（\(group.bundleID)）：找到 \(groupFound.count) 个素材", .notice)
                     }
@@ -700,10 +793,10 @@ final class AppState: ObservableObject {
                 if deep {
                     let knownPaths = Set(found.map { $0.path })
                     var extra = self.deepScanTargets(container: info.path, ownerBundleID: info.bundleID,
-                                                     ownerName: info.name)
+                                                     ownerName: info.name, onVisit: onVisit)
                     for group in groups {
                         extra.append(contentsOf: self.deepScanTargets(container: group.path, ownerBundleID: info.bundleID,
-                                                                      ownerName: info.name))
+                                                                      ownerName: info.name, onVisit: onVisit))
                     }
                     let fresh = extra.filter { !knownPaths.contains($0.path) }
                     if !fresh.isEmpty {
@@ -725,10 +818,13 @@ final class AppState: ObservableObject {
                                                   name: info.name,
                                                   groups: Dictionary(grouping: found, by: { $0.group }).mapValues { $0.count },
                                                   unknownDirs: self.unknownDirectories(container: info.path)))
+                appsDone += 1
+                reportScanProgress()
             }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 self.splash = baiduSplash
                 self.scanTargets = allTargets
                 self.lastRecognition = recognition
@@ -1021,6 +1117,7 @@ final class AppState: ObservableObject {
         }
         isBusy = true
         busyText = "正在还原 \(records.count) 个文件…"
+        workProgress = WorkProgress(label: "正在还原备份", done: 0, total: records.count, detail: nil)
         log("开始还原：\(records.count) 个备份，逐个写回并核对 MD5", .notice)
 
         work.async {
@@ -1038,10 +1135,17 @@ final class AppState: ObservableObject {
                     }
                 }
             }
+            var processed = 0
             for record in records {
+                let fileName = (record.relativePath as NSString).lastPathComponent
+                DispatchQueue.main.async {
+                    self.workProgress = WorkProgress(label: "正在还原备份", done: processed,
+                                                     total: records.count, detail: "当前：\(fileName)")
+                }
                 // 数据库文件同清零：写回必然失败、还会弄坏界面，跳过。
                 if DatabaseFile.matches(relativePath: record.relativePath) {
                     skippedDB += 1
+                    processed += 1
                     self.log("跳过数据库文件的还原：\(record.relativePath)", .info)
                     continue
                 }
@@ -1056,10 +1160,12 @@ final class AppState: ObservableObject {
                     failures.append("\(record.relativePath)：\(error.localizedDescription)")
                     self.log("跳过这个文件（还原不了）：\(record.relativePath)：\(error.localizedDescription)", .warning)
                 }
+                processed += 1
             }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 let dbNote = skippedDB > 0
                     ? "另有 \(skippedDB) 个数据库文件已跳过（被应用占用着，还原不了）。"
                     : ""
@@ -1089,20 +1195,49 @@ final class AppState: ObservableObject {
         }
         isBusy = true
         busyText = "正在还原…"
+        // 单独还原的真进度（清单第 22 条）：底层是一次整段写回，没有
+        // 中间回报，就盯着目标文件在磁盘上的实际大小看——写回是先
+        // 清空再顺序写，大小从 0 长到原件大小，数是真的，不编。
+        let targetPath = root + "/" + record.relativePath
+        let totalBytes = Int(clamping: record.originalSize)
+        let fileName = (record.relativePath as NSString).lastPathComponent
+        workProgress = WorkProgress(label: "正在还原 \(fileName)",
+                                    done: Int(clamping: channel.item(at: targetPath)?.size ?? 0),
+                                    total: totalBytes > 0 ? totalBytes : nil,
+                                    detail: nil,
+                                    isBytes: true)
+        let poller = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        poller.schedule(deadline: .now() + 0.2, repeating: 0.2)
+        poller.setEventHandler { [weak self] in
+            guard let self, let item = self.channel.item(at: targetPath) else { return }
+            DispatchQueue.main.async {
+                guard self.isBusy, self.workProgress != nil else { return }
+                self.workProgress = WorkProgress(label: "正在还原 \(fileName)",
+                                                 done: Int(clamping: item.size),
+                                                 total: totalBytes > 0 ? totalBytes : nil,
+                                                 detail: nil,
+                                                 isBytes: true)
+            }
+        }
+        poller.resume()
         work.async {
             do {
                 _ = try self.backupManager.restore(record, container: root, channel: self.channel)
+                poller.cancel()
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
+                    self.workProgress = nil
                     self.log("已还原并核对 MD5：\(record.relativePath)", .success)
                     self.checkRecipes(silent: true)
                     self.alertText = "已还原：\(record.relativePath)，MD5 一致。"
                 }
             } catch {
+                poller.cancel()
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
+                    self.workProgress = nil
                     self.log("还原失败：\(error.localizedDescription)", .warning)
                     self.alertText = "还原失败：\(error.localizedDescription)"
                 }
@@ -1187,27 +1322,52 @@ final class AppState: ObservableObject {
         let multi = scope.count > 1
         isBusy = true
         busyText = before ? "正在拍第一次快照…" : "正在拍第二次快照…"
+        let snapshotLabel = before ? "正在拍第一次快照" : "正在拍第二次快照"
+        workProgress = WorkProgress(label: snapshotLabel, done: 0,
+                                    total: multi ? scope.count : nil, detail: nil)
         work.async {
             var snaps: [String: ContainerSnapshot] = [:]
             var failedNames: [String] = []
+            var containersDone = 0
             for container in scope {
                 // 共享组容器不在应用容器登记里，直接用它自己的路径。
                 let resolvedRoot = container.isGroup ? container.path : self.channel.containerPath(for: container.bundleID)
                 guard let root = resolvedRoot else {
                     failedNames.append(container.name)
+                    containersDone += 1
                     continue
                 }
                 do {
-                    snaps[container.bundleID] = try SnapshotDiff.take(bundleID: container.bundleID,
-                                                                       root: root,
-                                                                       channel: self.channel)
+                    snaps[container.bundleID] = try SnapshotDiff.take(
+                        bundleID: container.bundleID,
+                        root: root,
+                        channel: self.channel,
+                        onProgress: { files in
+                            DispatchQueue.main.async {
+                                self.workProgress = WorkProgress(
+                                    label: snapshotLabel,
+                                    done: containersDone,
+                                    total: multi ? scope.count : nil,
+                                    detail: "当前：\(container.name) · 已扫 \(WorkProgress.countText(files)) 个文件")
+                            }
+                        })
                 } catch {
                     failedNames.append(container.name)
+                }
+                containersDone += 1
+                let doneNow = containersDone
+                DispatchQueue.main.async {
+                    self.workProgress = WorkProgress(
+                        label: snapshotLabel,
+                        done: doneNow,
+                        total: multi ? scope.count : nil,
+                        detail: nil)
                 }
             }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 let totalFiles = snaps.values.reduce(0) { $0 + $1.fileCount }
                 if before {
                     self.beforeSnapshots = snaps
@@ -1412,7 +1572,8 @@ final class AppState: ObservableObject {
     /// 图片尺寸正好是手机全屏那几档。结果都进「疑似广告」组，清之前在
     /// 清单里过目。系统启动图目录（SplashBoard）是系统自己的画面，排除。
     /// 这些散文件清零时只冻文件本身：文件夹冻结只认规则目录，不会连累公共目录。
-    private func deepScanTargets(container: String, ownerBundleID: String, ownerName: String) -> [TargetFile] {
+    private func deepScanTargets(container: String, ownerBundleID: String, ownerName: String,
+                                 onVisit: (() -> Void)? = nil) -> [TargetFile] {
         let keywords = Set(RulesStore.keywords.map { $0.lowercased() } + ["appopen", "openad", "splashad"])
         let fullscreen: Set<String> = ["1080x1920", "1920x1080", "1125x2436", "2436x1125", "1242x2688", "2688x1242",
                                        "1170x2532", "2532x1170", "1179x2556", "2556x1179", "1290x2796", "2796x1290",
@@ -1460,6 +1621,7 @@ final class AppState: ObservableObject {
             guard let items = try? channel.children(of: dir) else { return }
             for item in items {
                 visited += 1
+                onVisit?()
                 if item.isDirectory { walk(dir: item.path) } else { consider(item: item) }
             }
         }
@@ -1520,30 +1682,40 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func walkFoundFiles(scope: [ContainerInfo], keyword: String) -> [FoundFile] {
+    private func walkFoundFiles(scope: [ContainerInfo], keyword: String,
+                                onVisit: ((Int) -> Void)? = nil,
+                                onFound: ((FoundFile) -> Void)? = nil,
+                                onContainerDone: ((Int) -> Void)? = nil) -> [FoundFile] {
         var results: [FoundFile] = []
         let needle = keyword.lowercased()
+        var visitedTotal = 0
         // 走访上限按容器分别算：一键勾选几十个应用时，每个容器都有自己的
         // 6000 条预算，不会排前面的先耗光、后面的扫不到。
-        for container in scope {
+        for (index, container) in scope.enumerated() {
             var visited = 0
             func walk(dir: String) {
                 guard visited < 6000 else { return }
                 guard let items = try? channel.children(of: dir) else { return }
                 for item in items {
                     visited += 1
+                    visitedTotal += 1
+                    if visitedTotal % 100 == 0 { onVisit?(visitedTotal) }
                     if item.isDirectory {
                         walk(dir: item.path)
                     } else if needle.isEmpty || item.name.lowercased().contains(needle) {
                         let relative = String(item.path.dropFirst(container.path.count + 1))
-                        results.append(FoundFile(path: item.path, containerPath: container.path,
-                                                 relativePath: relative, size: item.size,
-                                                 bundleID: container.bundleID, appName: container.name))
+                        let found = FoundFile(path: item.path, containerPath: container.path,
+                                              relativePath: relative, size: item.size,
+                                              bundleID: container.bundleID, appName: container.name)
+                        results.append(found)
+                        onFound?(found)
                         if !needle.isEmpty && results.count >= 500 { return }
                     }
                 }
             }
             walk(dir: container.path)
+            onVisit?(visitedTotal)
+            onContainerDone?(index + 1)
             if !needle.isEmpty && results.count >= 500 { break }
         }
         return results
@@ -1556,11 +1728,38 @@ final class AppState: ObservableObject {
             return
         }
         fileToolsBusy = true
+        fileProgress = WorkProgress(label: "正在找大文件", done: 0,
+                                    total: scope.count > 1 ? scope.count : nil, detail: nil)
         work.async {
-            let all = self.walkFoundFiles(scope: scope, keyword: "")
+            var largest: FoundFile?
+            var lastVisited = 0
+            var containersDone = 0
+            let report = {
+                DispatchQueue.main.async {
+                    self.fileProgress = WorkProgress(
+                        label: "正在找大文件",
+                        done: containersDone,
+                        total: scope.count > 1 ? scope.count : nil,
+                        detail: "已看 \(WorkProgress.countText(lastVisited)) 个文件"
+                            + (largest.map { " · 目前最大：\($0.fileName)（\($0.sizeText)）" } ?? ""))
+                }
+            }
+            let all = self.walkFoundFiles(scope: scope, keyword: "",
+                onVisit: { visited in
+                    lastVisited = visited
+                    report()
+                },
+                onFound: { file in
+                    if largest == nil || file.size > largest!.size { largest = file }
+                },
+                onContainerDone: { done in
+                    containersDone = done
+                    report()
+                })
             let top = Array(all.sorted { $0.size > $1.size }.prefix(100))
             DispatchQueue.main.async {
                 self.fileToolsBusy = false
+                self.fileProgress = nil
                 self.bigFiles = top
                 self.log("大文件榜：范围内共 \(all.count) 个文件，列出最大的 \(top.count) 个", .info)
             }
@@ -1576,10 +1775,34 @@ final class AppState: ObservableObject {
             return
         }
         fileToolsBusy = true
+        fileProgress = WorkProgress(label: "正在搜文件", done: 0,
+                                    total: scope.count > 1 ? scope.count : nil, detail: nil)
         work.async {
-            let found = self.walkFoundFiles(scope: scope, keyword: kw)
+            var lastVisited = 0
+            var containersDone = 0
+            var foundCount = 0
+            let report = {
+                DispatchQueue.main.async {
+                    self.fileProgress = WorkProgress(
+                        label: "正在搜文件",
+                        done: containersDone,
+                        total: scope.count > 1 ? scope.count : nil,
+                        detail: "已看 \(WorkProgress.countText(lastVisited)) 个文件 · 已找到 \(foundCount) 个")
+                }
+            }
+            let found = self.walkFoundFiles(scope: scope, keyword: kw,
+                onVisit: { visited in
+                    lastVisited = visited
+                    report()
+                },
+                onFound: { _ in foundCount += 1 },
+                onContainerDone: { done in
+                    containersDone = done
+                    report()
+                })
             DispatchQueue.main.async {
                 self.fileToolsBusy = false
+                self.fileProgress = nil
                 self.fileSearchResults = found
                 self.log("按文件名搜「\(kw)」：找到 \(found.count) 个", .info)
             }
@@ -2623,11 +2846,36 @@ final class AppState: ObservableObject {
 
     /// 启动时悄悄查一次正式版：有新版才提醒（同一个版本一天最多提醒
     /// 一次），没有就什么都不说——像 Drift 那样，不用用户自己去点。
+    /// 公告跟着正式版发行版走：每次拿到最新正式版信息都顺手解析一遍。
+    /// 没看过的算未读；同一条公告只自动弹一次（弹没弹单独记，看没看
+    /// 在用户点「知道了」时才记）。
+    private func processAnnouncement(_ info: GitHubUpdate.VersionInfo) {
+        let parsed = Announcement.parse(notes: info.notes, version: info.version, date: info.publishedAt)
+        announcement = parsed
+        guard let parsed else {
+            announcementUnread = false
+            return
+        }
+        announcementUnread = UserDefaults.standard.string(forKey: "ls.announcementSeen") != parsed.stamp
+        if announcementUnread,
+           UserDefaults.standard.string(forKey: "ls.announcementPopped") != parsed.stamp {
+            UserDefaults.standard.set(parsed.stamp, forKey: "ls.announcementPopped")
+            announcementPopupReady = true
+        }
+    }
+
+    func markAnnouncementSeen() {
+        guard let current = announcement else { return }
+        UserDefaults.standard.set(current.stamp, forKey: "ls.announcementSeen")
+        announcementUnread = false
+    }
+
     private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {
         GitHubUpdate.fetchLatest { [weak self] info, _ in
             guard let self else { completion(); return }
             defer { completion() }
             guard let info else { return }
+            self.processAnnouncement(info)
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
             guard Self.isUpdateAvailable(info, currentVersion: current, currentBuild: self.appBuildNumber) else { return }
             let day = DateFormatter()
@@ -2656,6 +2904,7 @@ final class AppState: ObservableObject {
                 self.alertText = "检测更新失败：\(message)"
                 return
             }
+            self.processAnnouncement(info)
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
             if Self.isUpdateAvailable(info, currentVersion: current, currentBuild: self.appBuildNumber) {
                 let remoteText = Self.remoteVersionText(info, currentVersion: current)
