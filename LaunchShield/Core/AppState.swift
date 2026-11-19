@@ -330,6 +330,8 @@ final class AppState: ObservableObject {
         // 清空其内容但保留目录本身，避免影响后续写入。
         if let children = try? fm.contentsOfDirectory(at: caches, includingPropertiesForKeys: nil) {
             for child in children {
+                // 全盘扫描记录不清：清掉又要重扫，代价太大（Grace 定）。
+                if child.lastPathComponent == "wq-container-scan.plist" { continue }
                 removeItem(child, label: "应用缓存")
             }
         }
