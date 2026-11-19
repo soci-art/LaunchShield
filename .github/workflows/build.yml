@@ -105,12 +105,6 @@ jobs:
           set -euo pipefail
           TAG="v$NEXT_VERSION"
 
-          # Check tag collision before any cleanup, so an old release is never deleted on conflict.
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "::error::版本 $NEXT_VERSION 对应的 Tag 已存在，请填写新的版本号。"
-            exit 1
-          fi
-
           cat > /tmp/notes.md <<NOTES
           Nightly
 
@@ -127,6 +121,7 @@ jobs:
 
           # 仅当本次明确选择替换时，才删除旧 Nightly；正式版始终保留。
           if [ "$REPLACE_PREVIOUS" = "true" ]; then
+            # 先删除所有旧 Nightly Release 和对应 Tag，再创建本次版本。
             gh release list --limit 100 --json tagName,isPrerelease \
               --jq '.[] | select(.isPrerelease == true) | .tagName' |
             while IFS= read -r OLD_TAG; do
@@ -134,8 +129,25 @@ jobs:
               echo "Deleting previous prerelease: $OLD_TAG"
               gh release delete "$OLD_TAG" --yes --cleanup-tag
             done
+
+            # 目标 Tag 可能只残留在 Git 仓库中、却没有对应 Release；也必须清理。
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "Deleting leftover target tag: $TAG"
+              git push origin ":refs/tags/$TAG"
+            fi
           else
+            # 不替换时绝不删除旧 Release/Tag；目标 Tag 冲突则明确停止。
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::版本 $NEXT_VERSION 对应的 Tag 已存在；如需复用该版本，请勾选“发布前删除旧 Nightly 及其 Tag”。"
+              exit 1
+            fi
             echo "Keeping all previous prereleases."
+          fi
+
+          # 删除完成后再检查一次，避免残留 Tag 导致 gh release create 失败。
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::目标 Tag $TAG 清理后仍然存在，已停止发布以避免覆盖错误版本。"
+            exit 1
           fi
 
           gh release create "$TAG" "$IPA_NAME" \
