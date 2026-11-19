@@ -116,6 +116,7 @@ jobs:
 
           cat > /tmp/notes.md << NOTES
           LaunchShield $VERSION 正式版
+          构建号：${{ steps.version.outputs.build }}
 
           本次发布由 main 分支手动构建。
           IPA：${{ env.IPA_NAME }}
