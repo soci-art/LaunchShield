@@ -6,13 +6,14 @@ enum CollectUploader {
     static let base = URL(string: "https://ls-collect.86419753.xyz")!
 
     static func upload(kind: String, contentType: String, body: Data,
+                       timeout: TimeInterval = 30,
                        completion: @escaping (Bool, String) -> Void) {
         var request = URLRequest(url: base.appendingPathComponent("upload"))
         request.httpMethod = "POST"
         request.setValue(kind, forHTTPHeaderField: "X-Kind")
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
         URLSession.shared.dataTask(with: request) { _, response, error in
             DispatchQueue.main.async {
                 if let error {

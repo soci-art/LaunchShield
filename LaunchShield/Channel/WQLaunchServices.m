@@ -151,6 +151,11 @@ static NSString *wq_find_ls_store(BOOL *searched)
     return bestPath;
 }
 
+NSString *wq_ls_store_path(void)
+{
+    return wq_find_ls_store(NULL);
+}
+
 // Record layouts by release. Offsets are from the record body (after the
 // 8-byte header). iOS 26 records are 0x14 bytes shorter, with the container
 // path and the fields after it 4 bytes earlier than on 27.0.

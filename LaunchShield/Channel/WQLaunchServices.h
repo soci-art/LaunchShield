@@ -27,6 +27,10 @@ void wq_display_names_reset_miss(void);
 // read from storeHint (remembered when it parses) or the remembered location.
 // Never scans. Nil when there's no usable database.
 NSArray<NSString *> *_Nullable wq_ls_container_paths(NSString *_Nullable storeHint);
+// Full path of the database file itself, when it can be located. Only for
+// the user-volunteered diagnostic upload (the file is read as raw bytes,
+// not parsed — parsing is what fails on iOS 26).
+NSString *_Nullable wq_ls_store_path(void);
 // The .app bundle of an installed app, from the same database (for icons
 // where iOS won't hand them out). Nil if unknown.
 NSString *_Nullable wq_bundle_path_for_id(NSString *bundleID);

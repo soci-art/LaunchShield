@@ -2365,6 +2365,46 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 日志页「上传诊断文件」：把系统应用数据库（.csstore）原件传到收集箱，
+    /// 只为啃 iOS 26 的库版式（清单第 8 条）。文件读得到、但版式读不懂，
+    /// 所以传的是原件字节。用户在确认弹窗里自愿点了才传；文件含这台
+    /// 手机装了哪些应用，不含账号和应用里的内容，收集箱只存 7 天。
+    func uploadDiagnosticStore() {
+        work.async {
+            guard let path = self.channel.lsStorePath() else {
+                DispatchQueue.main.async {
+                    self.alertText = "没找到系统数据库文件，这个系统版本可能取不到。"
+                }
+                return
+            }
+            do {
+                let data = try self.channel.read(path)
+                guard !data.isEmpty else {
+                    DispatchQueue.main.async {
+                        self.alertText = "系统数据库文件是空的，没法上传。"
+                    }
+                    return
+                }
+                guard data.count <= 24 * 1024 * 1024 else {
+                    DispatchQueue.main.async {
+                        self.alertText = "系统数据库文件太大了，这次先不传。"
+                    }
+                    return
+                }
+                self.log("上传诊断文件：\((path as NSString).lastPathComponent)，\(data.count) 字节", .notice)
+                CollectUploader.upload(kind: "csstore", contentType: "application/octet-stream", body: data, timeout: 300) { [weak self] ok, message in
+                    guard let self = self else { return }
+                    self.log(ok ? "诊断文件已上传" : "诊断文件上传失败：\(message)", ok ? .success : .warning)
+                    self.alertText = ok ? "诊断文件已上传，谢谢帮忙。" : "诊断文件上传失败：\(message)"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.alertText = "读不到系统数据库文件：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     /// 深度采集（上传时现采）：目录树、图片/视频文件清单（带尺寸/时长）、
     /// 小配置文件的键名结构。有了文件级数据才能定位每个应用的广告文件在哪。
     private func collectDeepData(info: ContainerInfo) -> DeepAppData {

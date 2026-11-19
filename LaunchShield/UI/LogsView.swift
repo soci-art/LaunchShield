@@ -12,6 +12,7 @@ struct LogsView: View {
     @State private var shareItem: ShareItem?
     @State private var showClear = false
     @State private var showExportOptions = false
+    @State private var showStoreUpload = false
 
     var body: some View {
         SheetPage("运行日志") {
@@ -27,6 +28,14 @@ struct LogsView: View {
                     actionButton("清空", symbol: "trash") {
                         showClear = true
                     }
+                }
+                VStack(spacing: 6) {
+                    actionButton("上传诊断文件", symbol: "doc.badge.gearshape") {
+                        showStoreUpload = true
+                    }
+                    Text("iOS 26 上读不到应用列表时，把系统数据库传给开发者帮忙修。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
                 LogTable(logs: state.logs)
             }
@@ -44,6 +53,14 @@ struct LogsView: View {
                 state.uploadLog()
             }
             Button("取消", role: .cancel) { }
+        }
+        .confirmationDialog("上传诊断文件？", isPresented: $showStoreUpload, titleVisibility: .visible) {
+            Button("上传") {
+                state.uploadDiagnosticStore()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("会把这台手机的系统应用数据库文件传给开发者，只用来修 iOS 26 读不到应用列表的问题。文件里有这台手机装了哪些应用，不含账号密码和应用里的内容。服务器只存几天就自动删。")
         }
         .confirmationDialog("清空日志？", isPresented: $showClear, titleVisibility: .visible) {
             Button("清空", role: .destructive) {
