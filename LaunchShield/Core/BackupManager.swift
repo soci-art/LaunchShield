@@ -11,6 +11,7 @@ struct BackupManager {
                 bundleID: String,
                 appName: String,
                 source: String,
+                groupID: String? = nil,
                 channel: Channel) throws -> BackupRecord {
         guard Self.isSafeRelativePath(relativePath) else {
             throw ChannelFailure("文件相对路径不安全，已取消备份")
@@ -41,6 +42,7 @@ struct BackupManager {
             }
             return BackupRecord(id: id,
                                 bundleID: bundleID,
+                                groupID: groupID,
                                 appName: appName,
                                 relativePath: relativePath,
                                 localFileName: fileName,
@@ -177,9 +179,9 @@ struct BackupManager {
 
     /// The first backup of a path is the original material (later ones may
     /// hold a re-downloaded ad), so restores use the oldest record.
-    func originalBackup(bundleID: String, relativePath: String) -> BackupRecord? {
+    func originalBackup(bundleID: String, relativePath: String, groupID: String? = nil) -> BackupRecord? {
         store.file.backups
-            .filter { $0.bundleID == bundleID && $0.relativePath == relativePath }
+            .filter { $0.bundleID == bundleID && $0.relativePath == relativePath && $0.groupID == groupID }
             .sorted { $0.createdAt < $1.createdAt }
             .first
     }
@@ -188,7 +190,7 @@ struct BackupManager {
         var seen = Set<String>()
         var result: [BackupRecord] = []
         for record in store.file.backups.sorted(by: { $0.createdAt < $1.createdAt }) {
-            let key = record.bundleID + "\n" + record.relativePath
+            let key = record.bundleID + "\n" + (record.groupID ?? "") + "\n" + record.relativePath
             if seen.contains(key) { continue }
             seen.insert(key)
             result.append(record)

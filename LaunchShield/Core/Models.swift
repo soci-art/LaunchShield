@@ -333,6 +333,8 @@ enum LaunchImageHint {
 struct BackupRecord: Codable, Identifiable, Hashable {
     let id: UUID
     let bundleID: String
+    /// 文件在共享组容器里时这里是组标识；应用自己容器里是 nil。
+    let groupID: String?
     let appName: String
     let relativePath: String
     let localFileName: String
@@ -355,6 +357,8 @@ struct Recipe: Codable, Identifiable, Hashable {
     var placeholder: Bool
     var lastCheckedAt: Date?
     var lastState: String
+    /// 文件在共享组容器里时这里是组标识；应用自己容器里是 nil。
+    var groupID: String? = nil
 }
 
 enum RecipeState: String {
