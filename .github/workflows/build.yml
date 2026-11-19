@@ -8,9 +8,10 @@ on:
         required: true
         type: string
       build_number:
-        description: "本次 Nightly 内部构建号（正整数，例如 105）"
+        description: "内部构建号：新版本用 1；只有替换同一个版本时才往上加（2、3…）"
         required: true
         type: string
+        default: "1"
       replace_previous_prerelease:
         description: "发布前删除旧 Nightly 及其 Tag（默认开启）"
         required: true
