@@ -276,7 +276,7 @@ private enum LaunchHackMediaAnalyzer {
 }
 
 private enum LaunchHackAssessment {
-    private static func assess(relativePath: String) -> (score: Int, evidence: [String]) {
+    static func assess(relativePath: String) -> (score: Int, evidence: [String]) {
         let path = relativePath.lowercased()
         let components = path.split(separator: "/").map(String.init)
         let ext = (path as NSString).pathExtension
@@ -928,20 +928,30 @@ struct LaunchHackView: View {
         return model.apps.filter { $0.bundleID == state.target.bundleID }
     }
 
+    @ViewBuilder
+    private var scanSections: some View {
+        introduction
+        scanPanel
+        if !model.candidates.isEmpty {
+            sourceIntelPanel
+        }
+    }
+
+    @ViewBuilder
+    private var resultSections: some View {
+        tracePanel
+        if !model.candidates.isEmpty {
+            candidatePanel
+        }
+        draftPanel
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    introduction
-                    scanPanel
-                    if !model.candidates.isEmpty {
-                        sourceIntelPanel
-                    }
-                    tracePanel
-                    if !model.candidates.isEmpty {
-                        candidatePanel
-                    }
-                    draftPanel
+                    scanSections
+                    resultSections
                 }
                 .padding(16)
                 .frame(maxWidth: 720)
@@ -959,7 +969,6 @@ struct LaunchHackView: View {
         .onAppear(perform: loadApps)
         .onChange(of: state.containers) { _, containers in
             model.setApps(containers)
-            initializeSelectionIfNeeded()
         }
         .confirmationDialog("将精准定位的广告资源同步到 LaunchShield？",
                             isPresented: Binding(
