@@ -21,20 +21,17 @@ NSString *wq_log_text(void);
 // the install is treated as free Apple ID signing (including SideStore / LiveContainer).
 NSString *wq_detect_sign_method(void);
 
-// Picks the app group the signer actually gave us. Nil when there is none.
-// LaunchShield: candidates come from the embedded provisioning profile's
-// application-groups list first (in the order the profile lists them), then
-// from the signature's entitlements; each is opened in turn and the first one
-// that really opens wins. Nothing is hard-coded, and a signer that gave no
-// usable group produces wq_app_group_error() instead of a silent fallback.
+// Picks a group actually exposed to this process. SecTask is authoritative;
+// when it returns no application-groups value, the signed Mach-O entitlements
+// are inspected as Erosion-CN does. The embedded profile is diagnostic only.
+// Each candidate is checked by opening its container and Library directory.
 NSString *_Nullable wq_app_group(void);
 // Chinese explanation for the user when wq_app_group() is nil; nil otherwise.
 NSString *_Nullable wq_app_group_error(void);
-// A group that was borrowed from the host app that installed us (SideStore,
-// LiveContainer): same candidates as wq_app_group(), minus every group the
-// app's own embedded profile names, first one that really opens. Nil when
-// there is no such group. The free-ID route uses this; wq_app_group() stays
-// as it is for the certificate route and the worse_query availability check.
+// Legacy diagnostic helper for identifying a host-provided group. Route
+// selection does not depend on this distinction: any usable group exposed to
+// the current process can be used by worse_query, including Personal Team
+// signatures where SideStore supplies the group entitlement.
 NSString *_Nullable wq_borrowed_group(void);
 
 // Asks for a sandbox extension covering path (once per path). Returns YES
