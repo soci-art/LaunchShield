@@ -2,18 +2,13 @@
 //  WQRoute.m
 //  LaunchShield
 //
-//  GPL-3.0-or-later. The route follows the signing mode detected from the
-//  embedded provisioning profile, together with the available host entitlements:
-//    cert + usable App Group  -> worse_query candidate
-//    cert + no usable group   -> unavailable (explicit App ID + App Groups required)
-//    free + a borrowed group  -> worse_query, any version
-//    free, no borrowed group, 26.0-26.6.1 -> bad_query
-//    free, no borrowed group, anything else -> unsupported
-//    nothing picked           -> no route
+//  GPL-3.0-or-later. Route selection is capability-based:
+//    supported OS/build + a usable process App Group -> worse_query
+//    supported OS/build + no usable group + iOS 26.0-26.6.1 -> bad_query
+//    otherwise -> unavailable
 //
-// The free branch ignores the group the app's own profile names: a
-// certificate install that picked "free ID" must not look like a ready
-// channel. Only a group borrowed from the installing host counts.
+//  The signing-method label is diagnostic only. It must never override the
+//  effective application-groups entitlement returned by SecTask.
 //
 
 #import "WQRoute.h"
@@ -35,8 +30,39 @@ static NSString *wq_route_version_text(void)
             (long)v.majorVersion, (long)v.minorVersion, (long)v.patchVersion];
 }
 
-// bad_query was verified on 26.0-26.6.1; Apple validated the part-domain
-// traversal after that.
+static NSString *wq_route_build_text(void)
+{
+    size_t size = 0;
+    if (sysctlbyname("kern.osversion", NULL, &size, NULL, 0) != 0 || size == 0)
+        return @"";
+    char *buffer = calloc(size, sizeof(char));
+    if (!buffer) return @"";
+    NSString *build = @"";
+    if (sysctlbyname("kern.osversion", buffer, &size, NULL, 0) == 0)
+        build = [NSString stringWithUTF8String:buffer] ?: @"";
+    free(buffer);
+    return [build stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+}
+
+// Upstream WQFiles support window: iOS 26.0-26.7.2 and iOS 27.0 through
+// 27.3 beta 1. Apple fixed worse_query in 27.3 beta 2 (24C5049d).
+// Unknown/newer builds fail closed instead of assuming compatibility.
+static BOOL wq_route_version_supports_worse_query(void)
+{
+    NSOperatingSystemVersion v = wq_route_version();
+    if (v.majorVersion == 26) {
+        return v.minorVersion < 7 || (v.minorVersion == 7 && v.patchVersion <= 2);
+    }
+    if (v.majorVersion == 27) {
+        if (v.minorVersion < 3) return YES;
+        if (v.minorVersion == 3 && v.patchVersion == 0)
+            return [wq_route_build_text() isEqualToString:@"24C5037i"];
+    }
+    return NO;
+}
+
+// bad_query was verified on iOS 26.0-26.6.1; Apple validated the
+// part-domain traversal after that range.
 static BOOL wq_route_version_supports_bad_query(void)
 {
     NSOperatingSystemVersion v = wq_route_version();
@@ -51,20 +77,18 @@ NSString *wq_route_sign_method(void)
 
 static WQRouteState wq_route_compute(void)
 {
-    NSString *method = wq_route_sign_method();
-    if (!method) return WQRouteStateUnset;
-    // LiveContainer is identified by its dedicated keychain-access-group
-    // namespace. It still needs the host-borrowed App Group for worse_query.
-    if ([method isEqualToString:@"livecontainer"])
-        return wq_borrowed_group() != nil ? WQRouteStateWorse : WQRouteStateMissingAppGroup;
-    // Certificate signing can use worse_query only when its own signature
-    // actually provides a usable App Group. Do not advertise a route that
-    // cannot even stage the token query.
-    if ([method isEqualToString:@"cert"])
-        return wq_app_group() != nil ? WQRouteStateWorse : WQRouteStateMissingAppGroup;
-    // Free ID installs may also be hosted by SideStore and borrow its group.
-    if (wq_borrowed_group() != nil) return WQRouteStateWorse;
-    return wq_route_version_supports_bad_query() ? WQRouteStateBad : WQRouteStateUnsupported;
+    if (!wq_route_version_supports_worse_query())
+        return WQRouteStateUnsupported;
+
+    // The actual process entitlement is decisive. Personal Team / free Apple
+    // ID signing is not rejected by name: if SecTask exposes a usable group,
+    // worse_query can use it just like any other signing method.
+    if (wq_app_group() != nil)
+        return WQRouteStateWorse;
+
+    // Only the older verified segment has the no-App-Group fallback.
+    return wq_route_version_supports_bad_query()
+        ? WQRouteStateBad : WQRouteStateMissingAppGroup;
 }
 
 static NSString *wq_route_state_label(WQRouteState state)
@@ -84,8 +108,11 @@ WQRouteState wq_route_state(void)
     if (gResolved) return gState;
     gState = wq_route_compute();
     gResolved = YES;
-    wq_log(@"route: borrowedGroup=%@", wq_borrowed_group() ?: @"none");
-    wq_log(@"route: signMethod=%@ state=%@", wq_route_sign_method() ?: @"none",
+    wq_log(@"route: effectiveAppGroup=%@",
+           wq_app_group() ?: @"none");
+    wq_log(@"route: signMethod=%@ iOS=%@ build=%@ state=%@",
+           wq_route_sign_method() ?: @"none",
+           wq_route_version_text(), wq_route_build_text(),
            wq_route_state_label(gState));
     return gState;
 }
@@ -117,17 +144,19 @@ NSString *wq_route_name(void)
 NSString *wq_route_detail(void)
 {
     NSString *version = wq_route_version_text();
+    NSString *build = wq_route_build_text();
     switch (wq_route_state()) {
         case WQRouteStateBad:
             return [NSString stringWithFormat:@"bad_query（iOS %@，不需要共享组）", version];
         case WQRouteStateWorse:
-            return [NSString stringWithFormat:@"worse_query（iOS %@，需要共享组）", version];
+            return [NSString stringWithFormat:@"worse_query（iOS %@，已检测到进程可用的共享组）", version];
         case WQRouteStateMissingAppGroup:
-            return wq_app_group_error() ?: @"缺少 App Groups entitlement；请使用启用 App Groups 的显式 App ID 重新签名。";
+            return wq_app_group_error() ?: @"当前进程没有可用的 App Group；请检查实际签名 entitlements。";
         case WQRouteStateUnsupported:
-            return [NSString stringWithFormat:@"系统不支持（iOS %@，免费 ID 签名只支持 iOS 26.0–26.6.1）", version];
+            return [NSString stringWithFormat:@"系统版本或构建号不在已验证范围内（iOS %@%@）。当前仅支持 iOS 26.0–26.7.2、iOS 27.0–27.3 beta 1（24C5037i）；Apple 已在 27.3 beta 2 修复 worse_query。", version,
+                    build.length ? [NSString stringWithFormat:@"，构建 %@", build] : @""];
         case WQRouteStateUnset:
-            return @"无法自动识别当前签名方式";
+            return @"无法自动识别当前访问通道";
     }
-    return @"还没选签名方式";
+    return @"还没选访问通道";
 }
