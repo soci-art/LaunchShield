@@ -23,13 +23,15 @@ LaunchShield 是一个 iOS 去开屏广告工具：找出其他应用缓存的�
 
 ## 签名要求（重要）
 
-通道能力依赖 **App Group**，且没有写死任何组名：
+worse_query 通道依赖 **当前进程实际获得的 App Group 权限**，不按免费 ID、证书或签名工具名称直接判定：
 
-1. 先用带 App Group 的证书和描述文件签名；
-2. 应用启动时读自身 `embedded.mobileprovision` 的 `application-groups` 列表，再读签名 entitlements，按顺序逐个尝试打开，用第一个真正能用的；
-3. 一个都打不开时，界面会明确提示「这个签名没有给可用的共享组，这个功能用不了」，不会静默失败，也不会回落到其他存储路径。
+1. 启动时通过 `SecTaskCopyValueForEntitlement` 读取当前进程有效的 `application-groups`；
+2. 对每个组逐个验证容器 URL、Library 目录的创建与打开能力，只使用真正可用的组；
+3. `embedded.mobileprovision` 只作为诊断信息，不作为运行时授权来源；重签后以进程实际 entitlement 为准；
+4. iOS 26.0–26.6.1 在没有可用组时可回退到已验证的 `bad_query`；其他受支持系统需要可用 App Group；
+5. iOS 26.0–26.7.2、iOS 27.0–27.3 beta 1（构建 24C5037i）在当前支持范围内；iOS 27.3 beta 2（24C5049d）及之后的修复版本不再支持 worse_query。实际结果还要通过运行时容器授权验证。
 
-只有证书签名能用，免费 ID 签名没有 App Group，用不了。
+免费 Apple ID / Personal Team 签名如果确实向当前进程授予了可用 App Group，也可以使用 worse_query；如果没有，界面会显示具体原因，不会静默失败或回落到其他存储路径。
 
 ## 构建
 
