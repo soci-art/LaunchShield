@@ -9,7 +9,7 @@ struct ContentView: View {
     @State private var showWhitelist = false
     @State private var showTutorial = false
     @State private var showAnnouncement = false
-    @State private var showFindAd = false
+    @State private var showLaunchHack = false
     @State private var showRecipes = false
     @State private var showBackups = false
     @State private var showLogs = false
@@ -53,8 +53,8 @@ struct ContentView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .appAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showAnnouncement || showFindAd || showRecipes || showBackups || showLogs))
-        .updateAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showAnnouncement || showFindAd || showRecipes || showBackups || showLogs))
+        .appAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showAnnouncement || showLaunchHack || showRecipes || showBackups || showLogs))
+        .updateAlert(state, active: !(showAppPicker || showWhitelist || showTutorial || showAnnouncement || showLaunchHack || showRecipes || showBackups || showLogs))
         .onChange(of: scenePhase) { _, phase in
             // 回到前台时补查一次更新提醒（节流在 AppState 里）：
             // 发版时应用正开着的情况，靠这次补查才不会漏弹。
@@ -78,8 +78,8 @@ struct ContentView: View {
                 showAnnouncement = true
             }
         }
-        .sheet(isPresented: $showFindAd) {
-            FindAdView().environmentObject(state)
+        .sheet(isPresented: $showLaunchHack) {
+            LaunchHackView().environmentObject(state)
         }
         .sheet(isPresented: $showRecipes) {
             RecipesView().environmentObject(state)
@@ -436,7 +436,7 @@ struct ContentView: View {
                 smallButton(state.allUserAppsChecked ? "取消勾选" : "一键勾选", symbol: "checklist") {
                     if requireSign() { state.toggleCheckAllUserApps() }
                 }
-                smallButton("找广告", symbol: "magnifyingglass") { if requireSign() { showFindAd = true } }
+                smallButton("LaunchHack", symbol: "viewfinder") { if requireSign() { showLaunchHack = true } }
             }
             HStack(spacing: 10) {
                 Image(systemName: "hand.raised.slash")
