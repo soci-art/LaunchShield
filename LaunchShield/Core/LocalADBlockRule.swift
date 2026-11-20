@@ -514,6 +514,13 @@ enum LocalADBlockRule {
         for (item, group, note) in erosionCandidates(container: container, channel: channel, ownerBundleID: ownerBundleID) {
             append(item, group: group, note: note)
         }
+
+        // LaunchHack 用户确认的单文件规则，按宿主 App 与精确相对路径匹配。
+        for rule in RulesStore.localCandidates(for: ownerBundleID) {
+            let fullPath = container + "/" + rule.relativePath
+            guard let item = channel.item(at: fullPath), !item.isDirectory, !item.isSymlink else { continue }
+            append(item, group: "LaunchHack 本地规则", note: "用户确认的本地识别规则")
+        }
         return result
     }
 
