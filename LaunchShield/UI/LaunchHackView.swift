@@ -317,6 +317,158 @@ private enum LaunchHackAssessment {
     }
 }
 
+private enum LaunchHackTraceStage: String, Codable, CaseIterable, Identifiable {
+    case baseline
+    case afterFreeze
+    case afterRestart
+    case adReappeared
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .baseline: return "基线"
+        case .afterFreeze: return "冻结后"
+        case .afterRestart: return "重启后"
+        case .adReappeared: return "复显后"
+        }
+    }
+}
+
+private struct LaunchHackTraceEntry: Codable {
+    let size: UInt64
+    let modifiedAt: Date
+    let md5: String?
+    let isImmutable: Bool
+}
+
+private struct LaunchHackTraceContainer: Codable, Identifiable {
+    let bundleID: String?
+    let groupID: String?
+    let appName: String
+    let rootPath: String
+    let truncated: Bool
+    let entries: [String: LaunchHackTraceEntry]
+
+    var id: String { bundleID ?? "group:\\(groupID ?? "unknown")" }
+}
+
+private struct LaunchHackTraceCheckpoint: Codable, Identifiable {
+    let stage: LaunchHackTraceStage
+    let createdAt: Date
+    let containers: [LaunchHackTraceContainer]
+    let hashedFiles: Int
+    let failedContainers: [String]
+
+    var id: String { stage.rawValue }
+}
+
+private struct LaunchHackTraceChange: Identifiable {
+    let containerName: String
+    let relativePath: String
+    let status: String
+    let detail: String
+
+    var id: String { containerName + "|" + relativePath + "|" + status }
+}
+
+private enum LaunchHackTraceStore {
+    private static var fileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let directory = base.appendingPathComponent("LaunchShield/LaunchHack", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("trace-checkpoints.json")
+    }
+
+    static func load() -> [LaunchHackTraceCheckpoint] {
+        guard let data = try? Data(contentsOf: fileURL),
+              let records = try? JSONDecoder().decode([LaunchHackTraceCheckpoint].self, from: data) else {
+            return []
+        }
+        return records
+    }
+
+    static func save(_ records: [LaunchHackTraceCheckpoint]) {
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        try? data.write(to: fileURL, options: .atomic)
+    }
+}
+
+private enum LaunchHackTraceDiff {
+    static func compare(baseline: LaunchHackTraceCheckpoint,
+                        checkpoint: LaunchHackTraceCheckpoint) -> (changes: [LaunchHackTraceChange], incomplete: [String]) {
+        let beforeByID = Dictionary(uniqueKeysWithValues: baseline.containers.map { ($0.id, $0) })
+        let afterByID = Dictionary(uniqueKeysWithValues: checkpoint.containers.map { ($0.id, $0) })
+        var changes: [LaunchHackTraceChange] = []
+        var incomplete: [String] = []
+
+        for after in checkpoint.containers {
+            guard let before = beforeByID[after.id] else {
+                incomplete.append(after.appName + "（缺少基线）")
+                continue
+            }
+            guard !before.truncated, !after.truncated else {
+                incomplete.append(after.appName + "（扫描不完整，跳过对比）")
+                continue
+            }
+
+            for path in Set(before.entries.keys).union(after.entries.keys).sorted() {
+                let old = before.entries[path]
+                let new = after.entries[path]
+                guard let old else {
+                    changes.append(LaunchHackTraceChange(containerName: after.appName,
+                                                         relativePath: path,
+                                                         status: "新增",
+                                                         detail: "基线中不存在"))
+                    continue
+                }
+                guard let new else {
+                    changes.append(LaunchHackTraceChange(containerName: after.appName,
+                                                         relativePath: path,
+                                                         status: "删除",
+                                                         detail: "当前检查点中不存在"))
+                    continue
+                }
+
+                var details: [String] = []
+                var statuses: [String] = []
+                if let oldHash = old.md5, let newHash = new.md5, oldHash != newHash {
+                    statuses.append("内容替换")
+                    details.append("MD5 已变化")
+                } else if old.size != new.size || old.modifiedAt != new.modifiedAt {
+                    statuses.append("文件变化")
+                    details.append(old.md5 == nil || new.md5 == nil
+                                   ? "大小或修改时间变化；未完成哈希确认"
+                                   : "大小或修改时间变化")
+                }
+                if old.isImmutable != new.isImmutable {
+                    statuses.append("冻结状态变化")
+                    details.append(new.isImmutable ? "当前已冻结" : "当前未冻结")
+                }
+                if !statuses.isEmpty {
+                    changes.append(LaunchHackTraceChange(containerName: after.appName,
+                                                         relativePath: path,
+                                                         status: statuses.joined(separator: " · "),
+                                                         detail: details.joined(separator: "；")))
+                }
+            }
+        }
+
+        let matchedIDs = Set(afterByID.keys)
+        for before in baseline.containers where !matchedIDs.contains(before.id) {
+            incomplete.append(before.appName + "（检查点缺失）")
+        }
+
+        changes.sort {
+            if $0.status.contains("新增") != $1.status.contains("新增") {
+                return $0.status.contains("新增")
+            }
+            return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+        }
+        return (Array(changes.prefix(500)), incomplete)
+    }
+}
+
 @MainActor
 private final class LaunchHackModel: ObservableObject {
     @Published var apps: [ContainerInfo] = []
@@ -327,6 +479,9 @@ private final class LaunchHackModel: ObservableObject {
     @Published var totalContainers = 0
     @Published var visitedFiles = 0
     @Published var scanMessage = "扫描只读取 WQ 当前可访问的容器，不会修改目标 App 文件。"
+    @Published var traceCheckpoints: [LaunchHackTraceCheckpoint] = LaunchHackTraceStore.load()
+    @Published var isTracking = false
+    @Published var trackingMessage = "尚未建立追踪基线。"
 
     func setApps(_ containers: [ContainerInfo]) {
         apps = containers
@@ -345,6 +500,128 @@ private final class LaunchHackModel: ObservableObject {
     func removeDraft(_ draft: LaunchHackRuleDraft) {
         drafts.removeAll { $0.id == draft.id }
         LaunchHackDraftStore.save(drafts)
+    }
+
+    func checkpoint(for stage: LaunchHackTraceStage) -> LaunchHackTraceCheckpoint? {
+        traceCheckpoints.first { $0.stage == stage }
+    }
+
+    func traceChanges(for stage: LaunchHackTraceStage) -> (changes: [LaunchHackTraceChange], incomplete: [String])? {
+        guard let baseline = checkpoint(for: .baseline),
+              let checkpoint = checkpoint(for: stage), stage != .baseline else { return nil }
+        return LaunchHackTraceDiff.compare(baseline: baseline, checkpoint: checkpoint)
+    }
+
+    func captureCheckpoint(stage: LaunchHackTraceStage,
+                           targets: [LaunchHackScanTarget],
+                           channel: Channel) {
+        guard !isTracking else { return }
+        guard channel.isAvailable else {
+            trackingMessage = channel.unavailableReason
+            return
+        }
+        guard !targets.isEmpty else {
+            trackingMessage = "没有可记录的容器，请先选择至少一个 App。"
+            return
+        }
+        if stage != .baseline && checkpoint(for: .baseline) == nil {
+            trackingMessage = "请先建立基线，再记录后续阶段。"
+            return
+        }
+
+        isTracking = true
+        trackingMessage = "正在记录「\\(stage.title)」检查点…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            var containers: [LaunchHackTraceContainer] = []
+            var failed: [String] = []
+            var totalVisited = 0
+            var hashedFiles = 0
+            var hashedBytes: UInt64 = 0
+            let totalFileBudget = 60000
+
+            for target in targets {
+                let remaining = totalFileBudget - totalVisited
+                guard remaining > 0 else {
+                    failed.append(target.appName + "（达到本次 60,000 文件上限）")
+                    continue
+                }
+                let perContainerLimit = min(12000, remaining)
+                do {
+                    let files = try channel.walkFiles(
+                        at: target.rootPath,
+                        limit: perContainerLimit,
+                        skipDirNames: [".Trash", "Recently Deleted"],
+                        skipDirSubstrings: [],
+                        skipAccountDirs: false
+                    )
+                    totalVisited += files.count
+                    var entries: [String: LaunchHackTraceEntry] = [:]
+                    for file in files where !file.isDirectory && !file.isSymlink {
+                        let relative = file.path.hasPrefix(target.rootPath + "/")
+                            ? String(file.path.dropFirst(target.rootPath.count + 1))
+                            : file.name
+                        var digest: String?
+                        let ext = (relative as NSString).pathExtension.lowercased()
+                        let relevant = FileKind.of(relative) == .image
+                            || FileKind.of(relative) == .video
+                            || ["plist", "json", "xml"].contains(ext)
+                            || ["splash", "ad", "advert", "campaign", "launch"].contains(where: { relative.lowercased().contains($0) })
+                        if relevant, file.size > 0, file.size <= 16 * 1024 * 1024,
+                           hashedFiles < 250, hashedBytes + file.size <= 128 * 1024 * 1024 {
+                            digest = try? channel.md5(file.path)
+                            if digest != nil {
+                                hashedFiles += 1
+                                hashedBytes += file.size
+                            }
+                        }
+                        entries[relative] = LaunchHackTraceEntry(
+                            size: file.size,
+                            modifiedAt: file.modified,
+                            md5: digest,
+                            isImmutable: channel.isImmutable(file.path)
+                        )
+                    }
+                    containers.append(LaunchHackTraceContainer(
+                        bundleID: target.bundleID,
+                        groupID: target.groupID,
+                        appName: target.appName,
+                        rootPath: target.rootPath,
+                        truncated: files.count >= perContainerLimit,
+                        entries: entries
+                    ))
+                } catch {
+                    failed.append(target.appName + "（" + error.localizedDescription + "）")
+                }
+            }
+
+            let checkpoint = LaunchHackTraceCheckpoint(
+                stage: stage,
+                createdAt: Date(),
+                containers: containers,
+                hashedFiles: hashedFiles,
+                failedContainers: failed
+            )
+            DispatchQueue.main.async {
+                if stage == .baseline {
+                    self.traceCheckpoints = [checkpoint]
+                } else {
+                    self.traceCheckpoints.removeAll { $0.stage == stage }
+                    self.traceCheckpoints.append(checkpoint)
+                    self.traceCheckpoints.sort { $0.createdAt < $1.createdAt }
+                }
+                LaunchHackTraceStore.save(self.traceCheckpoints)
+                self.isTracking = false
+                let count = containers.reduce(0) { $0 + $1.entries.count }
+                let incomplete = containers.filter { $0.truncated }.count
+                self.trackingMessage = "「\\(stage.title)」已记录：\\(containers.count) 个容器、\\(count) 个文件、\\(hashedFiles) 个 MD5；\\(incomplete) 个容器达到扫描上限，\\(failed.count) 个容器未能读取。"
+            }
+        }
+    }
+
+    func clearTrace() {
+        traceCheckpoints = []
+        LaunchHackTraceStore.save(traceCheckpoints)
+        trackingMessage = "追踪记录已清空。"
     }
 
     func scan(targets: [LaunchHackScanTarget], channel: Channel) {
@@ -529,6 +806,7 @@ struct LaunchHackView: View {
     @State private var selectedBundleIDs: Set<String> = []
     @State private var selectionInitialized = false
     @State private var showAppSelection = false
+    @State private var selectedTraceStage: LaunchHackTraceStage = .afterFreeze
 
     private var selectedApps: [ContainerInfo] {
         model.apps.filter { selectedBundleIDs.contains($0.bundleID) && !state.isWhitelisted($0.bundleID) }
@@ -540,6 +818,7 @@ struct LaunchHackView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     introduction
                     scanPanel
+                    tracePanel
                     if !model.candidates.isEmpty {
                         candidatePanel
                     }
@@ -648,6 +927,149 @@ struct LaunchHackView: View {
         }
         .padding(16)
         .panel()
+    }
+
+    private var tracePanel: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                Text("广告复显追踪")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                if model.checkpoint(for: .baseline) != nil {
+                    Button("清空记录") { model.clearTrace() }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.red)
+                }
+            }
+            Text("按阶段手动记录容器快照。每个阶段与基线比较新增、删除、内容变化及冻结状态变化；不会自动操作目标 App。")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                model.captureCheckpoint(stage: .baseline, targets: trackingTargets, channel: state.channel)
+            } label: {
+                Label(model.checkpoint(for: .baseline) == nil ? "建立基线" : "重新建立基线（清除旧阶段）",
+                      systemImage: "flag.checkered")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.accentCyan)
+            .disabled(model.isTracking || !state.channel.isAvailable)
+
+            HStack(spacing: 7) {
+                ForEach([LaunchHackTraceStage.afterFreeze, .afterRestart, .adReappeared]) { stage in
+                    Button(stage.title) {
+                        model.captureCheckpoint(stage: stage, targets: trackingTargets, channel: state.channel)
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(model.checkpoint(for: stage) == nil ? Color.accentCyan : Color.primaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(Color.primaryText.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                    .disabled(model.isTracking || model.checkpoint(for: .baseline) == nil || !state.channel.isAvailable)
+                }
+            }
+
+            if model.isTracking {
+                ProgressView()
+            }
+            Text(model.trackingMessage)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if model.checkpoint(for: .baseline) != nil {
+                Picker("对比阶段", selection: $selectedTraceStage) {
+                    Text("冻结后").tag(LaunchHackTraceStage.afterFreeze)
+                    Text("重启后").tag(LaunchHackTraceStage.afterRestart)
+                    Text("复显后").tag(LaunchHackTraceStage.adReappeared)
+                }
+                .pickerStyle(.segmented)
+
+                if let result = model.traceChanges(for: selectedTraceStage) {
+                    let added = result.changes.filter { $0.status.contains("新增") }.count
+                    let deleted = result.changes.filter { $0.status.contains("删除") }.count
+                    let replaced = result.changes.filter { $0.status.contains("内容替换") }.count
+                    let frozen = result.changes.filter { $0.status.contains("冻结状态变化") }.count
+                    HStack(spacing: 8) {
+                        traceMetric("新增", added)
+                        traceMetric("删除", deleted)
+                        traceMetric("内容替换", replaced)
+                        traceMetric("冻结变化", frozen)
+                    }
+                    if !result.incomplete.isEmpty {
+                        Text("有 \\(result.incomplete.count) 个容器扫描不完整或缺少对应检查点，已跳过这些容器的差异判断。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.orange)
+                    }
+                    if result.changes.isEmpty {
+                        Text("该阶段没有检测到可比较的文件变化。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.secondaryText)
+                    } else {
+                        ForEach(result.changes.prefix(35)) { change in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(alignment: .top) {
+                                    Text(change.status)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(change.status.contains("新增") ? Color.accentCyan : Color.primaryText)
+                                    Spacer()
+                                    Text(change.containerName)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.secondaryText)
+                                }
+                                Text(change.relativePath)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(Color.secondaryText)
+                                    .textSelection(.enabled)
+                                Text(change.detail)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color.secondaryText)
+                            }
+                            .padding(.vertical, 5)
+                        }
+                        if result.changes.count > 35 {
+                            Text("仅显示前 35 项，共 \\(result.changes.count) 项变化。")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.secondaryText)
+                        }
+                    }
+                } else {
+                    Text("尚未记录「\\(selectedTraceStage.title)」阶段。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            }
+        }
+        .padding(16)
+        .panel()
+    }
+
+    private func traceMetric(_ title: String, _ value: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9))
+                .foregroundStyle(Color.secondaryText)
+            Text(String(value))
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.primaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var trackingTargets: [LaunchHackScanTarget] {
+        var targets = selectedApps.map {
+            LaunchHackScanTarget(bundleID: $0.bundleID, appName: $0.name,
+                                 rootPath: $0.path, groupID: nil)
+        }
+        targets.append(contentsOf: state.groupContainers.filter { !$0.path.isEmpty }.map {
+            LaunchHackScanTarget(bundleID: nil, appName: "共享容器 · \\($0.bundleID)",
+                                 rootPath: $0.path, groupID: $0.bundleID)
+        })
+        var seen = Set<String>()
+        return targets.filter { seen.insert($0.rootPath).inserted }
     }
 
     private var candidatePanel: some View {
