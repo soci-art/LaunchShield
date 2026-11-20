@@ -930,7 +930,7 @@ struct LaunchHackView: View {
                 .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 13))
             }
             .buttonStyle(.plain)
-            .disabled(model.isScanning || !state.channel.isAvailable)
+            .disabled(model.isScanning || model.isTracking || !state.channel.isAvailable)
 
             if model.isScanning {
                 ProgressView(value: Double(model.scannedContainers),
@@ -980,7 +980,7 @@ struct LaunchHackView: View {
             }
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(Color.accentCyan)
-            .disabled(model.isTracking || !state.channel.isAvailable)
+            .disabled(model.isTracking || model.isScanning || !state.channel.isAvailable)
 
             HStack(spacing: 7) {
                 ForEach([LaunchHackTraceStage.afterFreeze, .afterRestart, .adReappeared]) { stage in
@@ -992,7 +992,7 @@ struct LaunchHackView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 9)
                     .background(Color.primaryText.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
-                    .disabled(model.isTracking || model.checkpoint(for: .baseline) == nil || !state.channel.isAvailable)
+                    .disabled(model.isTracking || model.isScanning || model.checkpoint(for: .baseline) == nil || !state.channel.isAvailable)
                 }
             }
 
