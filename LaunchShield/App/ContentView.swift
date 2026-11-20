@@ -25,14 +25,14 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
-                        entryPair
-                        signCard
-                        fullScanCards
                         targetCard
+                        fullScanCards
                         summarySection
                         sourceSection
                         actionsSection
                         recipesSection
+                        entryPair
+                        signCard
                         logSection
                         updateSection
                         footer
@@ -401,7 +401,7 @@ struct ContentView: View {
                         Text("未选择应用")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
-                        Text("点「更换」选一个，或者一键勾选全部")
+                        Text("先选择一个应用，再开始检测广告资源")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.secondaryText)
                     }
@@ -432,19 +432,39 @@ struct ContentView: View {
                 }
             }
             Divider().overlay(Color.primaryText.opacity(0.07))
-            HStack(spacing: 10) {
-                smallButton(state.allUserAppsChecked ? "取消勾选" : "一键勾选", symbol: "checklist") {
-                    if requireSign() { state.toggleCheckAllUserApps() }
-                }
-                smallButton("LaunchHack", symbol: "viewfinder") {
-                    if requireSign() {
-                        if !state.targetChosen || state.targetPath == nil || state.isWhitelisted(state.target.bundleID) {
-                            state.alertText = "请先在「当前目标应用」中选择一个可访问、未加入白名单的 App，再进入 LaunchHack。"
-                        } else {
-                            showLaunchHack = true
-                        }
+            Button {
+                if requireSign() {
+                    if !state.targetChosen || state.targetPath == nil || state.isWhitelisted(state.target.bundleID) {
+                        state.alertText = "请先选择一个可访问、未加入白名单的 App。"
+                    } else {
+                        showLaunchHack = true
                     }
                 }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "viewfinder")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("开始广告检测")
+                        .font(.system(size: 16, weight: .semibold))
+                    Spacer()
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 52)
+                .background(LinearGradient(colors: [Color.cyan.opacity(0.92), Color.blue.opacity(0.84)],
+                                           startPoint: .leading,
+                                           endPoint: .trailing),
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            HStack {
+                smallButton(state.allUserAppsChecked ? "取消批量选择" : "批量选择应用", symbol: "checklist") {
+                    if requireSign() { state.toggleCheckAllUserApps() }
+                }
+                Spacer(minLength: 0)
             }
             HStack(spacing: 10) {
                 Image(systemName: "hand.raised.slash")
