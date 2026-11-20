@@ -169,17 +169,22 @@ struct Announcement: Equatable {
     }
 
     static func parse(notes: String, version: String, date: String) -> Announcement? {
-        let lines = notes.components(separatedBy: "\n")
-        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "【公告】" }) else {
+        // 发行说明经 GitHub 网页编辑保存后行尾是 CRLF：先把行尾归一，
+        // 不然切行后每行尾巴上拖着回车符，「【公告】」等值比较对不上，
+        // 公告永远解析不出来（2026-11-20 实证，0.1.7 的公告就没显示过）。
+        let normalized = notes.replacingOccurrences(of: "\r\n", with: "\n")
+                              .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "【公告】" }) else {
             return nil
         }
         var collected: [String] = []
         for line in lines[(start + 1)...] {
-            if line.trimmingCharacters(in: .whitespaces) == "【/公告】" { break }
+            if line.trimmingCharacters(in: .whitespacesAndNewlines) == "【/公告】" { break }
             collected.append(line)
         }
         let content = collected
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard let title = content.first else { return nil }
         return Announcement(title: title,
