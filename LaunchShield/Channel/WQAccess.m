@@ -19,6 +19,7 @@
 #import "WQLocalization.h"
 #import "WQRoute.h"
 #import <dlfcn.h>
+#import <CoreFoundation/CFByteOrder.h>
 #import <mach-o/loader.h>
 #include <stdint.h>
 #import <objc/message.h>
