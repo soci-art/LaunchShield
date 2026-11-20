@@ -883,6 +883,9 @@ struct LaunchHackView: View {
     @State private var selectedTraceStage: LaunchHackTraceStage = .afterFreeze
     @State private var pendingRuleCandidate: LaunchHackCandidate?
     @State private var showUploadConfirmation = false
+    @State private var isProfessionalMode = false
+    @State private var isUpdatingRules = false
+    @State private var ruleSyncMessage = ""
 
     /// 只把配置文件中实际读出的 URL 作为静态来源线索；不声称这是运行时网络请求。
     private var domainFindings: [LaunchHackDomainFinding] {
@@ -928,30 +931,33 @@ struct LaunchHackView: View {
         return model.apps.filter { $0.bundleID == state.target.bundleID }
     }
 
-    @ViewBuilder
-    private var scanSections: some View {
-        introduction
-        scanPanel
-        if !model.candidates.isEmpty {
-            sourceIntelPanel
-        }
-    }
-
-    @ViewBuilder
-    private var resultSections: some View {
-        tracePanel
-        if !model.candidates.isEmpty {
-            candidatePanel
-        }
-        draftPanel
-    }
-
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    scanSections
-                    resultSections
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    heroHeader
+                    targetApplicationCard
+                    scanActionCard
+                    resultOverviewCard
+                    workflowStatusCard
+                    rulesSyncCard
+                    if !model.candidates.isEmpty {
+                        DisclosureGroup {
+                            candidatePanel
+                        } label: {
+                            Label("查看识别项目与处理", systemImage: "list.bullet.rectangle")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.primaryText)
+                        }
+                        .padding(15)
+                        .panel()
+                    }
+                    professionalModeCard
+                    if isProfessionalMode {
+                        sourceIntelPanel
+                        tracePanel
+                        draftPanel
+                    }
                 }
                 .padding(16)
                 .frame(maxWidth: 720)
@@ -1004,84 +1010,243 @@ struct LaunchHackView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    private var introduction: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Image(systemName: "viewfinder")
-                    .font(.system(size: 22, weight: .semibold))
+    private var heroHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 25, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
-                Text("广告检测与资源分析")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(Color.primaryText)
+                    .frame(width: 48, height: 48)
+                    .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 15))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text("LaunchHack")
+                            .font(.system(size: 21, weight: .bold))
+                            .foregroundStyle(Color.primaryText)
+                        Text("LaunchShield 内部功能")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.accentCyan)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.accentCyan.opacity(0.12), in: Capsule())
+                    }
+                    Text("广告检测与治理")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.secondaryText)
+                }
             }
-            Text("仅针对 LaunchShield 主页当前选中的 App。通过 WQ 扫描该 App 容器及能够可靠关联的共享组，寻找开屏广告文件、缓存与配置线索。")
+            Text("从识别广告线索，到规则同步、本地治理和复发复查，在 LaunchShield 内完成整个流程。")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("只读检测 · 不执行冻结 · 不修改目标 App")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.accentCyan)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 3)
+    }
+
+    private var targetApplicationCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "app.fill")
+                .font(.system(size: 23))
+                .foregroundStyle(Color.accentCyan)
+                .frame(width: 48, height: 48)
+                .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("当前检测应用")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.secondaryText)
+                Text(selectedApps.first?.name ?? "尚未选择应用")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                    .lineLimit(1)
+                Text(selectedApps.isEmpty
+                     ? "请先返回 LaunchShield 主页选择一个可访问的应用"
+                     : "检测仅针对当前应用及可靠关联的共享容器")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(selectedApps.isEmpty ? Color.secondaryText : Color.green)
+        }
+        .padding(15)
         .panel()
     }
 
-    private var scanPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("扫描范围")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text(selectedApps.first?.name ?? "请先在主页选择一个 App")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.accentCyan)
-                    .lineLimit(1)
-            }
-
-            HStack {
-                Label(selectedApps.isEmpty ? "未选择目标 App" : "单个目标 App", systemImage: "app")
-                Spacer()
-                Label("\(selectedApps.first.map { state.associatedGroups(for: $0.bundleID).count } ?? 0) 个关联共享组", systemImage: "folder")
-            }
-            .font(.system(size: 12))
-            .foregroundStyle(Color.secondaryText)
-
-            Button {
-                beginScan()
-            } label: {
-                HStack(spacing: 8) {
+    private var scanActionCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: beginScan) {
+                HStack(spacing: 9) {
                     if model.isScanning {
                         ProgressView().tint(.white)
                     } else {
                         Image(systemName: "magnifyingglass")
                     }
-                    Text(model.isScanning ? "正在扫描…" : "扫描当前 App")
+                    Text(model.isScanning ? "正在检测…" : "开始广告检测")
+                        .font(.system(size: 16, weight: .semibold))
                 }
-                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 46)
-                .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 13))
+                .frame(height: 52)
+                .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 15))
             }
             .buttonStyle(.plain)
             .disabled(model.isScanning || model.isTracking || selectedApps.isEmpty || !state.channel.isAvailable)
 
             if model.isScanning {
-                ProgressView(value: Double(model.scannedContainers),
-                             total: Double(max(model.totalContainers, 1)))
-                Text("容器 \(model.scannedContainers)/\(model.totalContainers) · 已访问 \(model.visitedFiles) 个文件")
-                    .font(.system(size: 11, design: .monospaced))
+                ProgressView(value: Double(model.scannedContainers), total: Double(max(model.totalContainers, 1)))
+                Text("正在检查应用资源：已完成 \(model.scannedContainers)/\(model.totalContainers) 个位置，访问 \(model.visitedFiles) 个文件")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            } else {
+                Label("只读检测，不会自动删除、冻结或上传任何内容", systemImage: "lock.shield")
+                    .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             }
+            if !model.scanMessage.isEmpty {
+                Text(model.scanMessage)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(15)
+        .panel()
+    }
 
-            Text(model.scanMessage)
+    private var resultOverviewCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("检测结果")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                Text(model.isScanning ? "检测中" : (model.candidates.isEmpty ? "等待检测" : "已完成初步识别"))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(model.isScanning ? Color.accentCyan : Color.secondaryText)
+            }
+            HStack(spacing: 10) {
+                resultMetric("\(model.candidates.count)", "相关项目")
+                resultMetric("\(model.candidates.filter { $0.score >= 80 }.count)", "较强关联")
+                resultMetric("\(model.candidates.filter { $0.score < 80 }.count)", "待核验")
+            }
+            Text(model.candidates.isEmpty
+                 ? "完成检测后，识别到的图片、视频、配置和来源线索会集中显示在这里。"
+                 : "检测结果是广告相关候选，并不等同于全部已确认广告。请先核验，再决定是否处理。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(16)
+        .padding(15)
+        .panel()
+    }
+
+    private func resultMetric(_ value: String, _ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value)
+                .font(.system(size: 23, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.primaryText)
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(Color.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var workflowStatusCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("LaunchShield 治理闭环")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.primaryText)
+            workflowStep("广告识别", detail: model.candidates.isEmpty ? "等待检测结果" : "已发现 \(model.candidates.count) 项候选", done: !model.candidates.isEmpty)
+            workflowStep("识别数据上传", detail: model.uploadMessage.isEmpty ? "由你确认后上传" : model.uploadMessage, done: model.uploadMessage.contains("成功"))
+            workflowStep("云端规则同步", detail: RulesStore.currentVersion > 0 ? "当前规则版本 \(RulesStore.currentVersion)" : "尚未下载服务器规则", done: RulesStore.currentVersion > 0)
+            workflowStep("本地治理与复查", detail: "通过 LaunchShield 现有备份、Recipe 和复发追踪流程", done: false)
+        }
+        .padding(15)
+        .panel()
+    }
+
+    private func workflowStep(_ title: String, detail: String, done: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(done ? Color.green : Color.secondaryText)
+                .font(.system(size: 17))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var rulesSyncCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 24))
+                .foregroundStyle(Color.accentCyan)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("服务器规则")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Text(RulesStore.currentVersion > 0 ? "已安装第 \(RulesStore.currentVersion) 版规则" : "使用内置识别规则")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+                if !ruleSyncMessage.isEmpty {
+                    Text(ruleSyncMessage)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            }
+            Spacer(minLength: 4)
+            Button {
+                guard !isUpdatingRules else { return }
+                isUpdatingRules = true
+                RulesStore.update { _, message in
+                    isUpdatingRules = false
+                    ruleSyncMessage = message
+                }
+            } label: {
+                if isUpdatingRules {
+                    ProgressView()
+                } else {
+                    Text("同步规则")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+            .disabled(isUpdatingRules)
+        }
+        .padding(15)
+        .panel()
+    }
+
+    private var professionalModeCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Toggle(isOn: $isProfessionalMode) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("专业技术模式")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    Text("展开完整证据、域名关联、文件属性和复发差异分析")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            }
+            .tint(Color.accentCyan)
+            if isProfessionalMode {
+                Text("专业模式提供更多静态证据，不代表能够读取目标 App 的实时网络请求或暂停其内部 SDK。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(15)
         .panel()
     }
 
