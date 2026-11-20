@@ -484,6 +484,8 @@ private final class LaunchHackModel: ObservableObject {
     @Published var candidates: [LaunchHackCandidate] = []
     @Published var drafts: [LaunchHackRuleDraft] = LaunchHackDraftStore.load()
     @Published var isScanning = false
+    @Published var isUploading = false
+    @Published var uploadMessage = ""
     @Published var scannedContainers = 0
     @Published var totalContainers = 0
     @Published var visitedFiles = 0
@@ -510,6 +512,51 @@ private final class LaunchHackModel: ObservableObject {
         drafts.insert(LaunchHackRuleDraft(id: UUID(), candidate: candidate,
                                           createdAt: Date(), status: status), at: 0)
         LaunchHackDraftStore.save(drafts)
+    }
+
+    /// 用户主动上传识别结果；仅提交可审计元数据，不上传原始媒体或文件内容。
+    func uploadRecognitionData() {
+        guard !isUploading else { return }
+        guard !candidates.isEmpty else {
+            uploadMessage = "没有可上传的识别数据。"
+            return
+        }
+        let records: [[String: Any]] = candidates.map { candidate in
+            [
+                "bundleID": candidate.bundleID as Any? ?? NSNull(),
+                "groupID": candidate.groupID as Any? ?? NSNull(),
+                "appName": candidate.appName,
+                "relativePath": candidate.relativePath,
+                "size": candidate.size,
+                "modifiedAt": ISO8601DateFormatter().string(from: candidate.modifiedAt),
+                "md5": candidate.md5 as Any? ?? NSNull(),
+                "isFrozen": candidate.isFrozen,
+                "priorityScore": candidate.score,
+                "evidence": candidate.evidence,
+                "mediaDetails": candidate.mediaDetails as Any? ?? NSNull()
+            ]
+        }
+        let payload: [String: Any] = [
+            "schemaVersion": 1,
+            "uploadedAt": ISO8601DateFormatter().string(from: Date()),
+            "source": "LaunchHack",
+            "records": records
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            uploadMessage = "识别数据序列化失败，未上传。"
+            return
+        }
+        isUploading = true
+        uploadMessage = "正在上传识别元数据…"
+        CollectUploader.upload(kind: "launchhack-recognition",
+                               contentType: "application/json",
+                               body: data) { success, message in
+            self.isUploading = false
+            self.uploadMessage = success
+                ? "识别数据上传成功（\(self.candidates.count) 项）。"
+                : "识别数据上传失败：\(message)"
+        }
     }
 
     func removeDraft(_ draft: LaunchHackRuleDraft) {
@@ -825,6 +872,7 @@ struct LaunchHackView: View {
     @StateObject private var model = LaunchHackModel()
     @State private var selectedTraceStage: LaunchHackTraceStage = .afterFreeze
     @State private var pendingRuleCandidate: LaunchHackCandidate?
+    @State private var showUploadConfirmation = false
 
     /// LaunchHack 始终跟随主页当前选中的单个目标，不读取批量勾选范围。
     private var selectedApps: [ContainerInfo] {
@@ -883,6 +931,14 @@ struct LaunchHackView: View {
             Button("取消", role: .cancel) { pendingRuleCandidate = nil }
         } message: {
             Text("仅对已关联宿主 App 的图片/视频资源执行。LaunchShield 会先校验文件、备份原件，再清零并冻结；配置文件和未关联共享组不会直接执行。")
+        }
+        .confirmationDialog("上传本次识别数据？", isPresented: $showUploadConfirmation, titleVisibility: .visible) {
+            Button("仅上传识别元数据") {
+                model.uploadRecognitionData()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("只上传 App 标识、相对路径、文件 MD5、证据标签和脱敏后的 URL；不会上传图片、视频、文件内容或 URL 查询参数。")
         }
     }
 
@@ -1143,11 +1199,22 @@ struct LaunchHackView: View {
                 Text("\(model.candidates.count) 项")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
+                Button("上传识别数据") {
+                    showUploadConfirmation = true
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.accentCyan)
+                .disabled(model.candidates.isEmpty || model.isUploading)
             }
             Text("优先级只用于安排核验顺序，不代表广告已被确认。[内容已读取] 表示读取到的配置内容；[关联证据] 表示配置与本地资源存在文件名或 URL-MD5 对应；[路径推测] 仅依据路径特征。")
                 .font(.system(size: 10))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+            if !model.uploadMessage.isEmpty {
+                Text(model.uploadMessage)
+                    .font(.system(size: 11))
+                    .foregroundStyle(model.uploadMessage.contains("成功") ? Color.green : Color.secondaryText)
+            }
 
             ForEach(model.candidates) { candidate in
                 VStack(alignment: .leading, spacing: 7) {
