@@ -32,7 +32,7 @@ enum LocalADBlockRule {
     /// 广告商的专属文件夹本身（包括空文件夹和所有子文件夹），相对路径，深的在前。
     /// 清零后把这些文件夹也冻上，广告商就没法在里面新建文件备货。
     /// 只含上面各家的专属目录，绝不含公共目录（图片缓存、default、tmp 本身都不在内）。
-    static func freezeDirectories(container: String, channel: Channel) -> [String] {
+    static func freezeDirectories(container: String, channel: Channel, ownerBundleID: String = dynamicSplashBundleID) -> [String] {
         var result: [String] = []
         for group in thirdPartyCacheGroups {
             for directory in group.directories {
