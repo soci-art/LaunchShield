@@ -890,28 +890,29 @@ struct LaunchHackView: View {
         var findings: [String: LaunchHackDomainFinding] = [:]
 
         for candidate in model.candidates {
-            for evidence in candidate.evidence {
-                if let prefix = urlPrefixes.first(where: { evidence.hasPrefix($0) }) {
-                    let rawURL = String(evidence.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard let components = URLComponents(string: rawURL),
-                          let host = components.host?.lowercased(), !host.isEmpty else { continue }
-                    var finding = findings[host] ?? LaunchHackDomainFinding(
-                        host: host, urls: [], configPaths: [], resourcePaths: []
-                    )
-                    if !finding.urls.contains(rawURL) { finding.urls.append(rawURL) }
-                    finding.resourcePaths.insert(candidate.relativePath)
-                    findings[host] = finding
-                } else if evidence.hasPrefix("[关联配置] ") {
-                    let configPath = String(evidence.dropFirst("[关联配置] ".count))
-                    // 配置路径只作为候选资源的关联证据展示，不单独推断域名。
-                    for host in findings.keys {
-                        guard var finding = findings[host] else { continue }
-                        if !finding.configPaths.contains(configPath) {
-                            finding.configPaths.append(configPath)
-                            findings[host] = finding
-                        }
-                    }
+            // 先在单个候选的证据范围内收集 URL 与配置路径，避免把其他候选的配置错误归到同一域名。
+            let urls = candidate.evidence.compactMap { evidence -> String? in
+                guard let prefix = urlPrefixes.first(where: { evidence.hasPrefix($0) }) else { return nil }
+                return String(evidence.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let configPaths = candidate.evidence.compactMap { evidence -> String? in
+                let prefix = "[关联配置] "
+                guard evidence.hasPrefix(prefix) else { return nil }
+                return String(evidence.dropFirst(prefix.count))
+            }
+
+            for rawURL in urls {
+                guard let components = URLComponents(string: rawURL),
+                      let host = components.host?.lowercased(), !host.isEmpty else { continue }
+                var finding = findings[host] ?? LaunchHackDomainFinding(
+                    host: host, urls: [], configPaths: [], resourcePaths: []
+                )
+                if !finding.urls.contains(rawURL) { finding.urls.append(rawURL) }
+                for configPath in configPaths where !finding.configPaths.contains(configPath) {
+                    finding.configPaths.append(configPath)
                 }
+                finding.resourcePaths.insert(candidate.relativePath)
+                findings[host] = finding
             }
         }
 
