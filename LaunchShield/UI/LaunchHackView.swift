@@ -412,6 +412,10 @@ private enum LaunchHackTraceDiff {
                 incomplete.append(after.appName + "（缺少基线）")
                 continue
             }
+            guard before.rootPath == after.rootPath else {
+                incomplete.append(after.appName + "（容器路径已变化，跳过对比）")
+                continue
+            }
             guard !before.truncated, !after.truncated else {
                 incomplete.append(after.appName + "（扫描不完整，跳过对比）")
                 continue
@@ -960,6 +964,10 @@ struct LaunchHackView: View {
             }
             Text("按阶段手动记录容器快照。每个阶段与基线比较新增、删除、内容变化及冻结状态变化；不会自动操作目标 App。")
                 .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("MD5 每个检查点最多计算 250 个候选文件（单个不超过 16 MiB，累计不超过 128 MiB）；其余文件按路径、大小、修改时间和冻结状态比较，不能确认元数据完全相同的内容替换。")
+                .font(.system(size: 10))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
