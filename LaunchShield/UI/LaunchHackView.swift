@@ -349,7 +349,7 @@ private struct LaunchHackTraceContainer: Codable, Identifiable {
     let truncated: Bool
     let entries: [String: LaunchHackTraceEntry]
 
-    var id: String { bundleID ?? "group:\\(groupID ?? "unknown")" }
+    var id: String { (bundleID ?? groupID ?? "unknown") + (bundleID == nil ? ":group" : ":app") }
 }
 
 private struct LaunchHackTraceCheckpoint: Codable, Identifiable {
@@ -530,7 +530,7 @@ private final class LaunchHackModel: ObservableObject {
         }
 
         isTracking = true
-        trackingMessage = "正在记录「\\(stage.title)」检查点…"
+        trackingMessage = "正在记录「\(stage.title)」检查点…"
         DispatchQueue.global(qos: .userInitiated).async {
             var containers: [LaunchHackTraceContainer] = []
             var failed: [String] = []
@@ -613,7 +613,7 @@ private final class LaunchHackModel: ObservableObject {
                 self.isTracking = false
                 let count = containers.reduce(0) { $0 + $1.entries.count }
                 let incomplete = containers.filter { $0.truncated }.count
-                self.trackingMessage = "「\\(stage.title)」已记录：\\(containers.count) 个容器、\\(count) 个文件、\\(hashedFiles) 个 MD5；\\(incomplete) 个容器达到扫描上限，\\(failed.count) 个容器未能读取。"
+                self.trackingMessage = "「\(stage.title)」已记录：\(containers.count) 个容器、\(count) 个文件、\(hashedFiles) 个 MD5；\(incomplete) 个容器达到扫描上限，\(failed.count) 个容器未能读取。"
             }
         }
     }
@@ -1000,7 +1000,7 @@ struct LaunchHackView: View {
                         traceMetric("冻结变化", frozen)
                     }
                     if !result.incomplete.isEmpty {
-                        Text("有 \\(result.incomplete.count) 个容器扫描不完整或缺少对应检查点，已跳过这些容器的差异判断。")
+                        Text("有 \(result.incomplete.count) 个容器扫描不完整或缺少对应检查点，已跳过这些容器的差异判断。")
                             .font(.system(size: 10))
                             .foregroundStyle(Color.orange)
                     }
@@ -1031,13 +1031,13 @@ struct LaunchHackView: View {
                             .padding(.vertical, 5)
                         }
                         if result.changes.count > 35 {
-                            Text("仅显示前 35 项，共 \\(result.changes.count) 项变化。")
+                            Text("仅显示前 35 项，共 \(result.changes.count) 项变化。")
                                 .font(.system(size: 10))
                                 .foregroundStyle(Color.secondaryText)
                         }
                     }
                 } else {
-                    Text("尚未记录「\\(selectedTraceStage.title)」阶段。")
+                    Text("尚未记录「\(selectedTraceStage.title)」阶段。")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.secondaryText)
                 }
@@ -1065,7 +1065,7 @@ struct LaunchHackView: View {
                                  rootPath: $0.path, groupID: nil)
         }
         targets.append(contentsOf: state.groupContainers.filter { !$0.path.isEmpty }.map {
-            LaunchHackScanTarget(bundleID: nil, appName: "共享容器 · \\($0.bundleID)",
+            LaunchHackScanTarget(bundleID: nil, appName: "共享容器 · \($0.bundleID)",
                                  rootPath: $0.path, groupID: $0.bundleID)
         })
         var seen = Set<String>()
