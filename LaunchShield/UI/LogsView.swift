@@ -49,19 +49,22 @@ struct LogsView: View {
             }
             Button("取消", role: .cancel) { }
         }
-        .confirmationDialog("上传诊断文件？", isPresented: $showStoreUpload, titleVisibility: .visible) {
-            Button("上传") {
-                state.uploadDiagnosticStore()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("会把这台手机的系统应用数据库文件传给开发者，只用来修 iOS 26 读不到应用列表的问题。文件里有这台手机装了哪些应用，不含账号密码和应用里的内容。服务器只存几天就自动删。")
-        }
         .confirmationDialog("清空日志？", isPresented: $showClear, titleVisibility: .visible) {
             Button("清空", role: .destructive) {
                 state.logs.clear()
             }
             Button("取消", role: .cancel) { }
+        }
+        .overlay {
+            if showStoreUpload {
+                DiagnosticUploadConfirm(
+                    onUpload: {
+                        showStoreUpload = false
+                        state.uploadDiagnosticStore()
+                    },
+                    onCancel: { showStoreUpload = false }
+                )
+            }
         }
     }
 
@@ -142,6 +145,51 @@ struct LogTable: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .panel()
+        }
+    }
+}
+
+/// 上传诊断文件的确认（清单第 27 条）：不用系统 confirmationDialog——
+/// 它的说明段太啰嗦、标题还只能靠左。换成自家居中卡片：只问一句
+/// 「上传诊断文件？」，标题居中，下面上传、取消两个按钮。宽度按屏
+/// 幕自适应（左右留边、卡片封顶 340），大小屏手机都居中不变形。
+private struct DiagnosticUploadConfirm: View {
+    let onUpload: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+            VStack(spacing: 10) {
+                VStack(spacing: 22) {
+                    Text("上传诊断文件？")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(Color.primaryText)
+                        .multilineTextAlignment(.center)
+                    Button(action: onUpload) {
+                        Text("上传")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(Color.secondaryText.opacity(0.14), in: Capsule())
+                    }
+                }
+                .padding(22)
+                .frame(maxWidth: .infinity)
+                .panel(radius: 28)
+                Button(action: onCancel) {
+                    Text("取消")
+                        .font(.system(size: 17))
+                        .foregroundStyle(Color.primaryText)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .panel(radius: 26)
+                }
+            }
+            .frame(maxWidth: 340)
+            .padding(.horizontal, 36)
         }
     }
 }
