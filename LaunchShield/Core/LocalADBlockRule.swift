@@ -54,7 +54,7 @@ enum LocalADBlockRule {
 
     private static func collectSubdirectories(container: String, relative: String, channel: Channel, into: inout [String]) {
         guard let items = try? channel.children(of: container + "/" + relative) else { return }
-        for item in items where item.isDirectory {
+        for item in items where item.isDirectory && !item.isSymlink && !neverTouchOrDescend.contains(item.name.lowercased()) {
             let child = relative + "/" + item.name
             into.append(child)
             collectSubdirectories(container: container, relative: child, channel: channel, into: &into)
@@ -122,6 +122,22 @@ enum LocalADBlockRule {
         return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
     }
 
+
+    // Erosion-CN container safety exclusions.
+    private static let protectedBundleIDs: Set<String> = [
+        "com.jbdotparty.Erosion", "com.apple.PosterBoard", "com.apple.springboard",
+        "com.apple.Preferences", "com.apple.mobilephone"
+    ]
+    private static let ignoredAppGroupPrefixes: [String] = [
+        "group.com.apple.", "systemgroup.", "group.com.jbdotparty.",
+        "group.com.nssurge.", "group.com.liguangming.", "group.com.luo.",
+        "group.com.loon", "group.ws.stash."
+    ]
+
+    static func shouldIgnoreAppGroup(_ bundleID: String) -> Bool {
+        let lower = bundleID.lowercased()
+        return ignoredAppGroupPrefixes.contains { lower.hasPrefix($0) }
+    }
 
     // MARK: - Erosion-CN built-in local rule data
     // Curated per-app splash & ad cache candidate subpaths (only reported when verified present on disk)
@@ -361,7 +377,7 @@ enum LocalADBlockRule {
         guard tokens.contains("ad") || tokens.contains("ads") else { return nil }
         let modifiers: Set<String> = ["sdk", "splash", "launch", "cache", "banner", "interstitial", "mob"]
         guard tokens.contains(where: { modifiers.contains($0) }) else { return nil }
-        return ("广告缓存目录 (\\(name))", "Ad Cache (\\(name))")
+        return ("广告缓存目录 (\(name))", "Ad Cache (\(name))")
     }
 
     private static func splitBoundaryTokens(_ raw: String) -> [String] {
@@ -463,6 +479,7 @@ enum LocalADBlockRule {
     static func targets(container: String, channel: Channel, splash: SplashResolution?,
                         ownerBundleID: String = dynamicSplashBundleID, ownerName: String = dynamicSplashDisplayName,
                         onVisit: (() -> Void)? = nil) -> [TargetFile] {
+        guard !protectedBundleIDs.contains(ownerBundleID) else { return [] }
         var result: [TargetFile] = []
         var seen = Set<String>()
 

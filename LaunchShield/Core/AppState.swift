@@ -780,7 +780,7 @@ final class AppState: ObservableObject {
                                                  onVisit: onVisit)
                 // 关联的共享组容器一并扫，素材算在所属应用名下。
                 let groups = info.isGroup ? [] : self.associatedGroups(for: info.bundleID)
-                for group in groups {
+                for group in groups where !LocalADBlockRule.shouldIgnoreAppGroup(group.bundleID) {
                     let groupFound = LocalADBlockRule.targets(container: group.path, channel: self.channel, splash: nil,
                                                           ownerBundleID: info.bundleID, ownerName: info.name,
                                                           onVisit: onVisit)
