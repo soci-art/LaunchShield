@@ -19,7 +19,7 @@ enum RulesStore {
 
     // MARK: - 内置保底规则（与服务器 v1 种子一致）
 
-    // Erosion-CN rule data is embedded in LocalADBlockRule and scanned locally.
+    // Built-in local rule data is embedded in LocalADBlockRule and scanned locally.
     // No Baidu-only default rule list is maintained here.
     static let builtinGroups: [(group: String, directories: [String])] = []
 
