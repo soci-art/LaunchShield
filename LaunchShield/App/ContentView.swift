@@ -135,12 +135,21 @@ struct ContentView: View {
                     .foregroundStyle(.white)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("LaunchShield")
-                    .font(.system(size: 25, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.primaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .layoutPriority(1)
+                HStack(spacing: 8) {
+                    Text("LaunchShield")
+                        .font(.system(size: 25, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                        .layoutPriority(1)
+                    Text("预发行")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.12), in: Capsule())
+                        .fixedSize()
+                }
                 Text("去除应用的开屏广告")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.secondaryText)

@@ -47,7 +47,7 @@
 		A20000000000000000000104 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Channel.swift; sourceTree = "<group>"; };
 		A20000000000000000000105 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000106 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
-		A20000000000000000000107 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaiduNetdisk.swift; sourceTree = "<group>"; };
+		A20000000000000000000107 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalADBlockRule.swift; sourceTree = "<group>"; };
 		A20000000000000000000108 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotDiff.swift; sourceTree = "<group>"; };
 		A20000000000000000000109 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupManager.swift; sourceTree = "<group>"; };
 		A2000000000000000000010A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipeEngine.swift; sourceTree = "<group>"; };

@@ -2,12 +2,11 @@
 //  WQRoute.h
 //  LaunchShield
 //
-//  Picks the sandbox-grant backend from the signing mode detected in the
-//  app's embedded provisioning profile. bad_query (Taj C / forcequit,
-//  GPL-3.0-or-later) covers a free-ID signature without a borrowed App Group on
-//  iOS 26.0-26.6.1; everything else goes through worse_query in WQAccess.
-//  A free ID only counts a group borrowed from the installing host, never the
-//  one the app's own provisioning profile names.
+//  Picks the sandbox-grant backend from the current process's capabilities.
+//  Any usable App Group entitlement selects worse_query, regardless of whether
+//  it came from a paid certificate or a Personal Team / SideStore signature.
+//  On iOS 26.0-26.6.1 only, bad_query remains the fallback when no usable
+//  App Group is available. Actual target-container access is verified later.
 //
 
 #import <Foundation/Foundation.h>
@@ -18,14 +17,13 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, WQRouteState) {
     /// Signing mode could not be detected: the channel stays closed.
     WQRouteStateUnset = 0,
-    /// worse_query: a certificate, or a free ID installed by a host whose
-    /// group it borrowed.
+    /// worse_query: the process has any usable App Group entitlement.
     WQRouteStateWorse,
-    /// bad_query: free ID without a borrowed group, on iOS 26.0-26.6.1.
+    /// bad_query: no usable App Group, on iOS 26.0-26.6.1.
     WQRouteStateBad,
-    /// Certificate signing without a usable App Group entitlement.
+    /// No usable App Group entitlement where bad_query is not supported.
     WQRouteStateMissingAppGroup,
-    /// Free ID without a borrowed group on a version bad_query does not cover.
+    /// The system version is outside the available backend ranges.
     WQRouteStateUnsupported,
 };
 

@@ -19,6 +19,9 @@
 #import "WQLocalization.h"
 #import "WQRoute.h"
 #import <dlfcn.h>
+#import <CoreFoundation/CFByteOrder.h>
+#import <mach-o/loader.h>
+#include <stdint.h>
 #import <objc/message.h>
 #import <dirent.h>
 #import <errno.h>
@@ -141,10 +144,9 @@ static NSArray<NSString *> *wq_profile_groups(void)
     return result;
 }
 
-// Certificate-signed builds carry their own App Group in the embedded
-// provisioning profile. Free Apple ID installs (including SideStore and
-// LiveContainer) do not; a host-borrowed group is exposed only in the live
-// entitlements and is handled separately by wq_borrowed_group().
+// The process entitlement is the authority for runtime access. The embedded
+// profile is useful diagnostic context, but it may be absent or differ after
+// re-signing; never infer access from the signing method or profile alone.
 static NSArray<NSString *> *wq_entitlement_keychain_groups(void)
 {
     NSMutableArray<NSString *> *result = [NSMutableArray array];
@@ -202,27 +204,119 @@ NSString *wq_detect_sign_method(void)
     return method;
 }
 
+
+static uint32_t wq_read_be32(const uint8_t *bytes, size_t length, size_t offset)
+{
+    if (!bytes || offset > length || length - offset < 4) return 0;
+    uint32_t value = 0;
+    memcpy(&value, bytes + offset, sizeof(value));
+    return CFSwapInt32BigToHost(value);
+}
+
+// Erosion-CN-compatible fallback: inspect the executable's signed entitlements
+// only when the current process entitlement cannot be read from SecTask.
+static NSArray<NSString *> *wq_macho_app_groups(void)
+{
+    NSString *path = NSBundle.mainBundle.executablePath;
+    NSData *image = path.length ? [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil] : nil;
+    if (image.length < 32) return @[];
+    const uint8_t *bytes = image.bytes;
+    size_t length = image.length;
+
+    uint32_t magic = 0;
+    memcpy(&magic, bytes, sizeof(magic));
+    size_t headerSize = 0;
+    if (magic == MH_MAGIC_64) headerSize = sizeof(struct mach_header_64);
+    else if (magic == MH_MAGIC) headerSize = sizeof(struct mach_header);
+    else return @[];
+
+    if (length < headerSize) return @[];
+    uint32_t commandCount = 0, commandBytes = 0;
+    memcpy(&commandCount, bytes + 16, sizeof(commandCount));
+    memcpy(&commandBytes, bytes + 20, sizeof(commandBytes));
+    if (commandBytes > length - headerSize || commandCount > commandBytes / sizeof(struct load_command)) return @[];
+
+    size_t cursor = headerSize;
+    size_t commandEnd = headerSize + commandBytes;
+    size_t signatureOffset = 0, signatureLength = 0;
+    for (uint32_t i = 0; i < commandCount; i++) {
+        if (cursor > commandEnd || commandEnd - cursor < sizeof(struct load_command)) return @[];
+        struct load_command command;
+        memcpy(&command, bytes + cursor, sizeof(command));
+        if (command.cmdsize < sizeof(struct load_command) || command.cmdsize > commandEnd - cursor) return @[];
+        if (command.cmd == LC_CODE_SIGNATURE && command.cmdsize >= sizeof(struct linkedit_data_command)) {
+            struct linkedit_data_command signature;
+            memcpy(&signature, bytes + cursor, sizeof(signature));
+            signatureOffset = signature.dataoff;
+            signatureLength = signature.datasize;
+            break;
+        }
+        cursor += command.cmdsize;
+    }
+    if (!signatureLength || signatureOffset > length || signatureLength > length - signatureOffset) return @[];
+
+    const uint8_t *superBlob = bytes + signatureOffset;
+    if (wq_read_be32(superBlob, signatureLength, 0) != 0xfade0cc0) return @[];
+    uint32_t blobLength = wq_read_be32(superBlob, signatureLength, 4);
+    uint32_t blobCount = wq_read_be32(superBlob, signatureLength, 8);
+    if (blobLength > signatureLength || blobLength < 12 || blobCount > (blobLength - 12) / 8) return @[];
+
+    for (uint32_t i = 0; i < blobCount; i++) {
+        size_t indexOffset = 12 + (size_t)i * 8;
+        uint32_t entitlementOffset = wq_read_be32(superBlob, blobLength, indexOffset + 4);
+        if (entitlementOffset > blobLength || blobLength - entitlementOffset < 8) continue;
+        uint32_t entitlementMagic = wq_read_be32(superBlob, blobLength, entitlementOffset);
+        uint32_t entitlementLength = wq_read_be32(superBlob, blobLength, entitlementOffset + 4);
+        if (entitlementMagic != 0xfade7171 || entitlementLength < 8 ||
+            entitlementLength > blobLength - entitlementOffset) continue;
+
+        NSData *plistData = [NSData dataWithBytes:superBlob + entitlementOffset + 8
+                                           length:entitlementLength - 8];
+        id plist = [NSPropertyListSerialization propertyListWithData:plistData options:0 format:nil error:nil];
+        id groups = [plist isKindOfClass:NSDictionary.class]
+            ? ((NSDictionary *)plist)[@"com.apple.security.application-groups"] : nil;
+        if (![groups isKindOfClass:NSArray.class]) continue;
+        NSMutableArray<NSString *> *result = [NSMutableArray array];
+        for (id group in (NSArray *)groups) {
+            if ([group isKindOfClass:NSString.class] && [group hasPrefix:@"group."] &&
+                [group length] && ![result containsObject:group]) [result addObject:group];
+        }
+        return result;
+    }
+    return @[];
+}
+
 static NSArray<NSString *> *wq_entitlement_groups(void)
 {
     NSMutableArray<NSString *> *result = [NSMutableArray array];
     SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
-    if (!task) return result;
-    CFTypeRef value = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.security.application-groups"), NULL);
-    if (value) {
-        NSArray *groups = (__bridge_transfer NSArray *)value;
-        for (id group in groups) {
-            if ([group isKindOfClass:NSString.class] && [group length] && ![result containsObject:group]) {
-                [result addObject:group];
+    if (task) {
+        CFTypeRef value = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.security.application-groups"), NULL);
+        if (value) {
+            id groups = (__bridge_transfer id)value;
+            if ([groups isKindOfClass:NSArray.class]) {
+                for (id group in groups) {
+                    if ([group isKindOfClass:NSString.class] && [group hasPrefix:@"group."] &&
+                        [group length] && ![result containsObject:group]) [result addObject:group];
+                }
+            } else if ([groups isKindOfClass:NSString.class] && [groups hasPrefix:@"group."] &&
+                       [groups length]) {
+                [result addObject:groups];
             }
         }
+        CFRelease(task);
     }
-    CFRelease(task);
+    if (!result.count) {
+        [result addObjectsFromArray:wq_macho_app_groups()];
+        if (result.count) wq_log(@"App group discovery: SecTask empty; recovered %lu signed group(s) from Mach-O",
+                                 (unsigned long)result.count);
+    }
     return result;
 }
 
-// A group counts as usable only when its Library can really be created and
-// opened: a profile that names a group the certificate never provisioned
-// resolves to a container URL that cannot be opened, and must not be picked.
+// A group counts as usable only when it is present in the current process's
+// effective application-groups entitlement and its container Library can
+// really be created and opened.
 static BOOL wq_group_usable(NSString *group)
 {
     NSURL *root = [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:group];
@@ -258,14 +352,16 @@ NSString *wq_app_group(void)
     dispatch_once(&once, ^{
         NSArray<NSString *> *profile = wq_profile_groups();
         NSArray<NSString *> *entitled = wq_entitlement_groups();
-        NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-        for (NSString *candidate in profile) {
-            if (![candidates containsObject:candidate]) [candidates addObject:candidate];
-        }
-        for (NSString *candidate in entitled) {
-            if (![candidates containsObject:candidate]) [candidates addObject:candidate];
-        }
-        for (NSString *candidate in candidates) {
+        // The effective process entitlement is authoritative. If SecTask
+        // returned no value, wq_entitlement_groups() already tried the signed
+        // Mach-O fallback; profile entries remain diagnostic only.
+        NSMutableArray<NSString *> *ordered = [NSMutableArray array];
+        NSString *bundleGroup = [@"group." stringByAppendingString:NSBundle.mainBundle.bundleIdentifier ?: @""];
+        if (bundleGroup.length > 6 && [entitled containsObject:bundleGroup])
+            [ordered addObject:bundleGroup];
+        for (NSString *candidate in entitled)
+            if (![ordered containsObject:candidate]) [ordered addObject:candidate];
+        for (NSString *candidate in ordered) {
             if (!wq_group_usable(candidate)) continue;
             group = candidate;
             break;
@@ -276,7 +372,7 @@ NSString *wq_app_group(void)
                 wq_log(@"App-group cache recovery requires attention; preserved contents retained: %@ (%@)",
                        root.path, wq_errno(errno));
         } else {
-            wq_group_failure = @"这个签名没有给可用的共享组，这个功能用不了。请用带 App Group 的证书和描述文件重新签名后再试。";
+            wq_group_failure = @"当前进程没有可用的 App Group：系统实际授予的 application-groups 为空，或列出的组容器无法打开。请检查签名的有效 entitlements 和安装环境。";
         }
         wq_log(@"App group: %@ (profile: %@; entitled: %@)", group ?: @"NONE",
                profile.count ? [profile componentsJoinedByString:@", "] : @"none",
@@ -668,7 +764,7 @@ BOOL wq_probe_channel(NSString **errorText)
     // token and then list the real app-data root. No files are created or modified.
     NSString *root = @"/private/var/mobile/Containers/Data/Application";
     if (!wq_grant(root)) {
-        if (errorText) *errorText = @"系统未能签发访问令牌（通道授权 grant 失败；详见诊断日志）";
+        if (errorText) *errorText = @"系统未能签发访问令牌（worse_query grant 失败；详见诊断日志）";
         return NO;
     }
     NSString *listError = nil;
@@ -679,7 +775,7 @@ BOOL wq_probe_channel(NSString **errorText)
             : @"已取得授权，但无法列出应用容器目录";
         return NO;
     }
-    wq_log(@"route probe: active route granted and listed app-data root (%lu entries)",
+    wq_log(@"route probe: worse_query granted and listed app-data root (%lu entries)",
            (unsigned long)entries.count);
     return YES;
 }
