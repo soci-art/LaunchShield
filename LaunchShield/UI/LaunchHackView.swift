@@ -68,6 +68,58 @@ private enum LaunchHackDraftStore {
     }
 }
 
+private enum LaunchHackAssessment {
+    private static func assess(relativePath: String) -> (score: Int, evidence: [String]) {
+        let path = relativePath.lowercased()
+        let components = path.split(separator: "/").map(String.init)
+        let ext = (path as NSString).pathExtension
+        let media = ["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "m4v"].contains(ext)
+        let config = ["plist", "json", "xml", "db", "sqlite", "sqlite3"].contains(ext)
+        var score = 0
+        var evidence: [String] = []
+
+        for group in RulesStore.groups {
+            for directory in group.directories {
+                let marker = directory.lowercased()
+                if path == marker || path.hasPrefix(marker + "/") {
+                    score = max(score, 95)
+                    evidence.append("命中已知广告资源目录：\(group.group)")
+                }
+            }
+        }
+
+        if RulesStore.keywords.contains(where: { !$0.isEmpty && path.contains($0.lowercased()) }) {
+            score = max(score, 75)
+            evidence.append("路径命中广告规则关键词")
+        }
+
+        let adTokens = [
+            "splash", "cold_launch", "coldlaunch", "launch_ad", "startup_ad",
+            "advertisement", "ad_cache", "advertising", "promotion", "campaign",
+            "adsdk", "ad_material", "pangolin", "gdt", "beizi", "admob"
+        ]
+        if adTokens.contains(where: { token in components.contains(where: { $0.contains(token) }) }) {
+            score = max(score, 65)
+            evidence.append("目录或文件名包含广告/启动资源特征")
+        }
+
+        if media && (path.contains("/caches/") || path.hasPrefix("caches/") || path.hasPrefix("tmp/")) {
+            score = max(score, 42)
+            evidence.append("位于缓存目录的图片或视频，需与广告画面比对")
+        }
+
+        if config && adTokens.contains(where: { path.contains($0) }) {
+            score = max(score, 58)
+            evidence.append("疑似广告配置或索引文件")
+        }
+
+        if evidence.isEmpty {
+            evidence.append("通用资源特征，尚无广告直接证据")
+        }
+        return (score, evidence)
+    }
+}
+
 @MainActor
 private final class LaunchHackModel: ObservableObject {
     @Published var apps: [ContainerInfo] = []
@@ -143,7 +195,7 @@ private final class LaunchHackModel: ObservableObject {
                         let relative = file.path.hasPrefix(target.rootPath + "/")
                             ? String(file.path.dropFirst(target.rootPath.count + 1))
                             : file.name
-                        let assessment = Self.assess(relativePath: relative)
+                        let assessment = LaunchHackAssessment.assess(relativePath: relative)
                         guard assessment.score >= 40 else { continue }
 
                         let digest: String?
@@ -193,55 +245,7 @@ private final class LaunchHackModel: ObservableObject {
         }
     }
 
-    private static func assess(relativePath: String) -> (score: Int, evidence: [String]) {
-        let path = relativePath.lowercased()
-        let components = path.split(separator: "/").map(String.init)
-        let ext = (path as NSString).pathExtension
-        let media = ["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "m4v"].contains(ext)
-        let config = ["plist", "json", "xml", "db", "sqlite", "sqlite3"].contains(ext)
-        var score = 0
-        var evidence: [String] = []
 
-        for group in RulesStore.groups {
-            for directory in group.directories {
-                let marker = directory.lowercased()
-                if path == marker || path.hasPrefix(marker + "/") {
-                    score = max(score, 95)
-                    evidence.append("命中已知广告资源目录：\(group.group)")
-                }
-            }
-        }
-
-        if RulesStore.keywords.contains(where: { !$0.isEmpty && path.contains($0.lowercased()) }) {
-            score = max(score, 75)
-            evidence.append("路径命中广告规则关键词")
-        }
-
-        let adTokens = [
-            "splash", "cold_launch", "coldlaunch", "launch_ad", "startup_ad",
-            "advertisement", "ad_cache", "advertising", "promotion", "campaign",
-            "adsdk", "ad_material", "pangolin", "gdt", "beizi", "admob"
-        ]
-        if adTokens.contains(where: { token in components.contains(where: { $0.contains(token) }) }) {
-            score = max(score, 65)
-            evidence.append("目录或文件名包含广告/启动资源特征")
-        }
-
-        if media && (path.contains("/caches/") || path.hasPrefix("caches/") || path.hasPrefix("tmp/")) {
-            score = max(score, 42)
-            evidence.append("位于缓存目录的图片或视频，需与广告画面比对")
-        }
-
-        if config && adTokens.contains(where: { path.contains($0) }) {
-            score = max(score, 58)
-            evidence.append("疑似广告配置或索引文件")
-        }
-
-        if evidence.isEmpty {
-            evidence.append("通用资源特征，尚无广告直接证据")
-        }
-        return (score, evidence)
-    }
 }
 
 // MARK: - LaunchHack interface
