@@ -7,8 +7,9 @@
 //    supported OS/build + no usable group + iOS 26.0-26.6.1 -> bad_query
 //    otherwise -> unavailable
 //
-//  The signing-method label is diagnostic only. It must never override the
-//  effective application-groups entitlement returned by SecTask.
+//  The signing-method label is diagnostic only. The effective process
+//  application-groups entitlement (with a signed-Mach-O fallback) decides
+//  whether worse_query can be attempted; paid/free signing labels do not.
 //
 
 #import "WQRoute.h"
