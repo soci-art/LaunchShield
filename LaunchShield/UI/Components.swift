@@ -360,19 +360,24 @@ struct SheetPage<Content: View>: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.appBackground.ignoresSafeArea()
+        ZStack {
+            Color.appBackground.ignoresSafeArea()
+            NavigationStack {
                 content
+                    .navigationTitle(title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button("关闭") { dismiss() }
+                                .foregroundStyle(Color.accentCyan)
+                        }
+                    }
             }
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("关闭") { dismiss() }
-                        .foregroundStyle(Color.accentCyan)
-                }
-            }
+            // 宽屏封顶居中（清单第 28 条）：折叠屏展开、横屏时整页
+            // 最多 620 宽、居中，和主页一致；推进来的子页同样受限，
+            // 不让卡片和行在宽屏上无限拉满。背景在外层照旧铺满。
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity)
         }
     }
 }
