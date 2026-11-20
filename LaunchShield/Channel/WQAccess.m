@@ -141,10 +141,9 @@ static NSArray<NSString *> *wq_profile_groups(void)
     return result;
 }
 
-// Certificate-signed builds carry their own App Group in the embedded
-// provisioning profile. Free Apple ID installs (including SideStore and
-// LiveContainer) do not; a host-borrowed group is exposed only in the live
-// entitlements and is handled separately by wq_borrowed_group().
+// The process entitlement is the authority for runtime access. The embedded
+// profile is useful diagnostic context, but it may be absent or differ after
+// re-signing; never infer access from the signing method or profile alone.
 static NSArray<NSString *> *wq_entitlement_keychain_groups(void)
 {
     NSMutableArray<NSString *> *result = [NSMutableArray array];
@@ -220,9 +219,9 @@ static NSArray<NSString *> *wq_entitlement_groups(void)
     return result;
 }
 
-// A group counts as usable only when its Library can really be created and
-// opened: a profile that names a group the certificate never provisioned
-// resolves to a container URL that cannot be opened, and must not be picked.
+// A group counts as usable only when it is present in the current process's
+// effective application-groups entitlement and its container Library can
+// really be created and opened.
 static BOOL wq_group_usable(NSString *group)
 {
     NSURL *root = [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:group];
@@ -258,14 +257,10 @@ NSString *wq_app_group(void)
     dispatch_once(&once, ^{
         NSArray<NSString *> *profile = wq_profile_groups();
         NSArray<NSString *> *entitled = wq_entitlement_groups();
-        NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-        for (NSString *candidate in profile) {
-            if (![candidates containsObject:candidate]) [candidates addObject:candidate];
-        }
+        // Only SecTask's effective process entitlement can authorize this
+        // process. Profile entries are logged for diagnosis, never promoted
+        // into runtime permissions.
         for (NSString *candidate in entitled) {
-            if (![candidates containsObject:candidate]) [candidates addObject:candidate];
-        }
-        for (NSString *candidate in candidates) {
             if (!wq_group_usable(candidate)) continue;
             group = candidate;
             break;
@@ -276,7 +271,7 @@ NSString *wq_app_group(void)
                 wq_log(@"App-group cache recovery requires attention; preserved contents retained: %@ (%@)",
                        root.path, wq_errno(errno));
         } else {
-            wq_group_failure = @"这个签名没有给可用的共享组，这个功能用不了。请用带 App Group 的证书和描述文件重新签名后再试。";
+            wq_group_failure = @"当前进程没有可用的 App Group：系统实际授予的 application-groups 为空，或列出的组容器无法打开。请检查签名的有效 entitlements 和安装环境。";
         }
         wq_log(@"App group: %@ (profile: %@; entitled: %@)", group ?: @"NONE",
                profile.count ? [profile componentsJoinedByString:@", "] : @"none",
