@@ -823,14 +823,13 @@ private final class LaunchHackModel: ObservableObject {
 struct LaunchHackView: View {
     @EnvironmentObject private var state: AppState
     @StateObject private var model = LaunchHackModel()
-    @State private var selectedBundleIDs: Set<String> = []
-    @State private var selectionInitialized = false
-    @State private var showAppSelection = false
     @State private var selectedTraceStage: LaunchHackTraceStage = .afterFreeze
     @State private var pendingRuleCandidate: LaunchHackCandidate?
 
+    /// LaunchHack 始终跟随主页当前选中的单个目标，不读取批量勾选范围。
     private var selectedApps: [ContainerInfo] {
-        model.apps.filter { selectedBundleIDs.contains($0.bundleID) && !state.isWhitelisted($0.bundleID) }
+        guard state.targetChosen, !state.isWhitelisted(state.target.bundleID) else { return [] }
+        return model.apps.filter { $0.bundleID == state.target.bundleID }
     }
 
     var body: some View {
@@ -862,9 +861,6 @@ struct LaunchHackView: View {
         .onChange(of: state.containers) { _, containers in
             model.setApps(containers)
             initializeSelectionIfNeeded()
-        }
-        .sheet(isPresented: $showAppSelection) {
-            appSelectionSheet
         }
         .confirmationDialog("将精准定位的广告资源同步到 LaunchShield？",
                             isPresented: Binding(
@@ -902,7 +898,7 @@ struct LaunchHackView: View {
                     .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(Color.primaryText)
             }
-            Text("面向所有已安装 App。通过 WQ 扫描当前可访问的应用容器和关联资源，寻找开屏广告文件、缓存与配置线索。")
+            Text("仅针对 LaunchShield 主页当前选中的 App。通过 WQ 扫描该 App 容器及能够可靠关联的共享组，寻找开屏广告文件、缓存与配置线索。")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -922,15 +918,16 @@ struct LaunchHackView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Spacer()
-                Button("选择应用") { showAppSelection = true }
+                Text(selectedApps.first?.name ?? "请先在主页选择一个 App")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
+                    .lineLimit(1)
             }
 
             HStack {
-                Label("\(selectedApps.count) 个应用", systemImage: "app")
+                Label(selectedApps.isEmpty ? "未选择目标 App" : "单个目标 App", systemImage: "app")
                 Spacer()
-                Label("\(state.groupContainers.count) 个共享组", systemImage: "folder")
+                Label("\(selectedApps.first.map { state.associatedGroups(for: $0.bundleID).count } ?? 0) 个关联共享组", systemImage: "folder")
             }
             .font(.system(size: 12))
             .foregroundStyle(Color.secondaryText)
@@ -944,7 +941,7 @@ struct LaunchHackView: View {
                     } else {
                         Image(systemName: "magnifyingglass")
                     }
-                    Text(model.isScanning ? "正在扫描…" : "扫描所有选中 App")
+                    Text(model.isScanning ? "正在扫描…" : "扫描当前 App")
                 }
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
@@ -953,7 +950,7 @@ struct LaunchHackView: View {
                 .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 13))
             }
             .buttonStyle(.plain)
-            .disabled(model.isScanning || model.isTracking || !state.channel.isAvailable)
+            .disabled(model.isScanning || model.isTracking || selectedApps.isEmpty || !state.channel.isAvailable)
 
             if model.isScanning {
                 ProgressView(value: Double(model.scannedContainers),
@@ -1122,14 +1119,16 @@ struct LaunchHackView: View {
     }
 
     private var trackingTargets: [LaunchHackScanTarget] {
-        var targets = selectedApps.map {
-            LaunchHackScanTarget(bundleID: $0.bundleID, appName: $0.name,
-                                 rootPath: $0.path, groupID: nil)
+        var targets: [LaunchHackScanTarget] = []
+        for app in selectedApps {
+            targets.append(LaunchHackScanTarget(bundleID: app.bundleID, appName: app.name,
+                                                 rootPath: app.path, groupID: nil))
+            // 只纳入 AppState 已按容器标识关联的共享组，不扫描其他 App 的共享容器。
+            targets.append(contentsOf: state.associatedGroups(for: app.bundleID).filter { !$0.path.isEmpty }.map {
+                LaunchHackScanTarget(bundleID: nil, appName: "共享容器 · \($0.bundleID)",
+                                     rootPath: $0.path, groupID: $0.bundleID)
+            })
         }
-        targets.append(contentsOf: state.groupContainers.filter { !$0.path.isEmpty }.map {
-            LaunchHackScanTarget(bundleID: nil, appName: "共享容器 · \($0.bundleID)",
-                                 rootPath: $0.path, groupID: $0.bundleID)
-        })
         var seen = Set<String>()
         return targets.filter { seen.insert($0.rootPath).inserted }
     }
@@ -1280,84 +1279,22 @@ struct LaunchHackView: View {
         .panel()
     }
 
-    private var appSelectionSheet: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button("全选所有用户 App") {
-                        selectedBundleIDs = Set(model.apps.map(\.bundleID))
-                    }
-                    Button("清空选择") {
-                        selectedBundleIDs.removeAll()
-                    }
-                }
-                Section("用户 App") {
-                    ForEach(model.apps) { app in
-                        Toggle(isOn: Binding(
-                            get: { selectedBundleIDs.contains(app.bundleID) },
-                            set: { selected in
-                                if selected { selectedBundleIDs.insert(app.bundleID) }
-                                else { selectedBundleIDs.remove(app.bundleID) }
-                            }
-                        )) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(app.name)
-                                Text(app.bundleID)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .disabled(state.isWhitelisted(app.bundleID))
-                    }
-                }
-            }
-            .navigationTitle("选择扫描应用")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { showAppSelection = false }
-                }
-            }
-        }
-    }
-
     private func loadApps() {
         if state.didLoadContainers {
             model.setApps(state.containers)
-            initializeSelectionIfNeeded()
         } else {
             state.refreshContainers {
                 model.setApps(state.containers)
-                initializeSelectionIfNeeded()
             }
         }
     }
 
-    private func initializeSelectionIfNeeded() {
-        guard !selectionInitialized, !model.apps.isEmpty else { return }
-        selectedBundleIDs = Set(model.apps.map(\.bundleID))
-        selectionInitialized = true
-    }
-
     private func beginScan() {
-        let apps = selectedApps
-        guard !apps.isEmpty else {
-            model.scanMessage = "请至少选择一个用户 App。"
+        let targets = trackingTargets
+        guard !selectedApps.isEmpty, !targets.isEmpty else {
+            model.scanMessage = "请先返回 LaunchShield 主页，选择一个可访问的用户 App。"
             return
         }
-
-        var targets = apps.map {
-            LaunchHackScanTarget(bundleID: $0.bundleID, appName: $0.name,
-                                 rootPath: $0.path, groupID: nil)
-        }
-        // 共享组独立扫描，先记录真实 groupID，不伪造宿主 App 归属。
-        let groups = state.groupContainers.filter { !$0.path.isEmpty }
-        targets.append(contentsOf: groups.map {
-            LaunchHackScanTarget(bundleID: nil, appName: "共享容器 · \($0.bundleID)",
-                                 rootPath: $0.path, groupID: $0.bundleID)
-        })
-        var seen = Set<String>()
-        targets = targets.filter { seen.insert($0.rootPath).inserted }
         model.scan(targets: targets, channel: state.channel)
     }
 }

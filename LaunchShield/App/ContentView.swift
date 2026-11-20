@@ -436,7 +436,15 @@ struct ContentView: View {
                 smallButton(state.allUserAppsChecked ? "取消勾选" : "一键勾选", symbol: "checklist") {
                     if requireSign() { state.toggleCheckAllUserApps() }
                 }
-                smallButton("LaunchHack", symbol: "viewfinder") { if requireSign() { showLaunchHack = true } }
+                smallButton("LaunchHack", symbol: "viewfinder") {
+                    if requireSign() {
+                        if !state.targetChosen || state.targetPath == nil || state.isWhitelisted(state.target.bundleID) {
+                            state.alertText = "请先在「当前目标应用」中选择一个可访问、未加入白名单的 App，再进入 LaunchHack。"
+                        } else {
+                            showLaunchHack = true
+                        }
+                    }
+                }
             }
             HStack(spacing: 10) {
                 Image(systemName: "hand.raised.slash")
