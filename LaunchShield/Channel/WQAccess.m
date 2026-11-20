@@ -19,6 +19,8 @@
 #import "WQLocalization.h"
 #import "WQRoute.h"
 #import <dlfcn.h>
+#import <mach-o/loader.h>
+#include <stdint.h>
 #import <objc/message.h>
 #import <dirent.h>
 #import <errno.h>
@@ -201,21 +203,113 @@ NSString *wq_detect_sign_method(void)
     return method;
 }
 
+
+static uint32_t wq_read_be32(const uint8_t *bytes, size_t length, size_t offset)
+{
+    if (!bytes || offset > length || length - offset < 4) return 0;
+    uint32_t value = 0;
+    memcpy(&value, bytes + offset, sizeof(value));
+    return CFSwapInt32BigToHost(value);
+}
+
+// Erosion-CN-compatible fallback: inspect the executable's signed entitlements
+// only when the current process entitlement cannot be read from SecTask.
+static NSArray<NSString *> *wq_macho_app_groups(void)
+{
+    NSString *path = NSBundle.mainBundle.executablePath;
+    NSData *image = path.length ? [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil] : nil;
+    if (image.length < 32) return @[];
+    const uint8_t *bytes = image.bytes;
+    size_t length = image.length;
+
+    uint32_t magic = 0;
+    memcpy(&magic, bytes, sizeof(magic));
+    size_t headerSize = 0;
+    if (magic == MH_MAGIC_64) headerSize = sizeof(struct mach_header_64);
+    else if (magic == MH_MAGIC) headerSize = sizeof(struct mach_header);
+    else return @[];
+
+    if (length < headerSize) return @[];
+    uint32_t commandCount = 0, commandBytes = 0;
+    memcpy(&commandCount, bytes + 16, sizeof(commandCount));
+    memcpy(&commandBytes, bytes + 20, sizeof(commandBytes));
+    if (commandBytes > length - headerSize || commandCount > commandBytes / sizeof(struct load_command)) return @[];
+
+    size_t cursor = headerSize;
+    size_t commandEnd = headerSize + commandBytes;
+    size_t signatureOffset = 0, signatureLength = 0;
+    for (uint32_t i = 0; i < commandCount; i++) {
+        if (cursor > commandEnd || commandEnd - cursor < sizeof(struct load_command)) return @[];
+        struct load_command command;
+        memcpy(&command, bytes + cursor, sizeof(command));
+        if (command.cmdsize < sizeof(struct load_command) || command.cmdsize > commandEnd - cursor) return @[];
+        if (command.cmd == LC_CODE_SIGNATURE && command.cmdsize >= sizeof(struct linkedit_data_command)) {
+            struct linkedit_data_command signature;
+            memcpy(&signature, bytes + cursor, sizeof(signature));
+            signatureOffset = signature.dataoff;
+            signatureLength = signature.datasize;
+            break;
+        }
+        cursor += command.cmdsize;
+    }
+    if (!signatureLength || signatureOffset > length || signatureLength > length - signatureOffset) return @[];
+
+    const uint8_t *superBlob = bytes + signatureOffset;
+    if (wq_read_be32(superBlob, signatureLength, 0) != 0xfade0cc0) return @[];
+    uint32_t blobLength = wq_read_be32(superBlob, signatureLength, 4);
+    uint32_t blobCount = wq_read_be32(superBlob, signatureLength, 8);
+    if (blobLength > signatureLength || blobLength < 12 || blobCount > (blobLength - 12) / 8) return @[];
+
+    for (uint32_t i = 0; i < blobCount; i++) {
+        size_t indexOffset = 12 + (size_t)i * 8;
+        uint32_t entitlementOffset = wq_read_be32(superBlob, blobLength, indexOffset + 4);
+        if (entitlementOffset > blobLength || blobLength - entitlementOffset < 8) continue;
+        uint32_t entitlementMagic = wq_read_be32(superBlob, blobLength, entitlementOffset);
+        uint32_t entitlementLength = wq_read_be32(superBlob, blobLength, entitlementOffset + 4);
+        if (entitlementMagic != 0xfade7171 || entitlementLength < 8 ||
+            entitlementLength > blobLength - entitlementOffset) continue;
+
+        NSData *plistData = [NSData dataWithBytes:superBlob + entitlementOffset + 8
+                                           length:entitlementLength - 8];
+        id plist = [NSPropertyListSerialization propertyListWithData:plistData options:0 format:nil error:nil];
+        id groups = [plist isKindOfClass:NSDictionary.class]
+            ? ((NSDictionary *)plist)[@"com.apple.security.application-groups"] : nil;
+        if (![groups isKindOfClass:NSArray.class]) continue;
+        NSMutableArray<NSString *> *result = [NSMutableArray array];
+        for (id group in (NSArray *)groups) {
+            if ([group isKindOfClass:NSString.class] && [group hasPrefix:@"group."] &&
+                [group length] && ![result containsObject:group]) [result addObject:group];
+        }
+        return result;
+    }
+    return @[];
+}
+
 static NSArray<NSString *> *wq_entitlement_groups(void)
 {
     NSMutableArray<NSString *> *result = [NSMutableArray array];
     SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
-    if (!task) return result;
-    CFTypeRef value = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.security.application-groups"), NULL);
-    if (value) {
-        NSArray *groups = (__bridge_transfer NSArray *)value;
-        for (id group in groups) {
-            if ([group isKindOfClass:NSString.class] && [group length] && ![result containsObject:group]) {
-                [result addObject:group];
+    if (task) {
+        CFTypeRef value = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.security.application-groups"), NULL);
+        if (value) {
+            id groups = (__bridge_transfer id)value;
+            if ([groups isKindOfClass:NSArray.class]) {
+                for (id group in groups) {
+                    if ([group isKindOfClass:NSString.class] && [group hasPrefix:@"group."] &&
+                        [group length] && ![result containsObject:group]) [result addObject:group];
+                }
+            } else if ([groups isKindOfClass:NSString.class] && [groups hasPrefix:@"group."] &&
+                       [groups length]) {
+                [result addObject:groups];
             }
         }
+        CFRelease(task);
     }
-    CFRelease(task);
+    if (!result.count) {
+        [result addObjectsFromArray:wq_macho_app_groups()];
+        if (result.count) wq_log(@"App group discovery: SecTask empty; recovered %lu signed group(s) from Mach-O",
+                                 (unsigned long)result.count);
+    }
     return result;
 }
 
@@ -260,7 +354,13 @@ NSString *wq_app_group(void)
         // Only SecTask's effective process entitlement can authorize this
         // process. Profile entries are logged for diagnosis, never promoted
         // into runtime permissions.
-        for (NSString *candidate in entitled) {
+        NSMutableArray<NSString *> *ordered = [NSMutableArray array];
+        NSString *bundleGroup = [@"group." stringByAppendingString:NSBundle.mainBundle.bundleIdentifier ?: @""];
+        if (bundleGroup.length > 6 && [entitled containsObject:bundleGroup])
+            [ordered addObject:bundleGroup];
+        for (NSString *candidate in entitled)
+            if (![ordered containsObject:candidate]) [ordered addObject:candidate];
+        for (NSString *candidate in ordered) {
             if (!wq_group_usable(candidate)) continue;
             group = candidate;
             break;
