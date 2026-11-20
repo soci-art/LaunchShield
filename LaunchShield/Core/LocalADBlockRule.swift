@@ -42,6 +42,11 @@ enum LocalADBlockRule {
                 collectSubdirectories(container: container, relative: directory, channel: channel, into: &result)
             }
         }
+        for relative in erosionMatchedDirectoryPaths(container: container, channel: channel, ownerBundleID: ownerBundleID) {
+            guard channel.isDirectory(container + "/" + relative) else { continue }
+            result.append(relative)
+            collectSubdirectories(container: container, relative: relative, channel: channel, into: &result)
+        }
         let unique = Array(Set(result))
         // 深的先冻：先冻子文件夹，再冻外层文件夹。
         return unique.sorted { $0.components(separatedBy: "/").count > $1.components(separatedBy: "/").count }
@@ -385,6 +390,30 @@ enum LocalADBlockRule {
         return tokens
     }
 
+    private static func erosionMatchedDirectoryPaths(container: String, channel: Channel, ownerBundleID: String) -> [String] {
+        var paths: [String] = []
+        for spec in appSpecificAdPaths[ownerBundleID] ?? [] {
+            if channel.isDirectory(container + "/" + spec.relPath) { paths.append(spec.relPath) }
+        }
+        func walk(_ directory: String, relative: String, depth: Int) {
+            guard depth <= 2, let items = try? channel.children(of: directory) else { return }
+            for item in items where item.isDirectory && !item.isSymlink {
+                let lower = item.name.lowercased()
+                if lower.hasPrefix(".") || neverTouchOrDescend.contains(lower) { continue }
+                let childRelative = relative + "/" + item.name
+                if classifyAdFolder(name: item.name) != nil {
+                    paths.append(childRelative)
+                } else if depth < 2 {
+                    walk(item.path, relative: childRelative, depth: depth + 1)
+                }
+            }
+        }
+        for root in ["Documents", "Library/Caches", "Library/Application Support", "tmp"] {
+            walk(container + "/" + root, relative: root, depth: 0)
+        }
+        return Array(Set(paths))
+    }
+
     private static func erosionCandidates(container: String, channel: Channel, ownerBundleID: String) -> [(FileItem, String, String)] {
         var result: [(FileItem, String, String)] = []
         var seen = Set<String>()
@@ -446,7 +475,7 @@ enum LocalADBlockRule {
                                      note: note,
                                      size: item.size,
                                      isSmallConfig: group == "BeiZi" && item.size < 4096,
-                                     dynamicSplashBundleID: ownerBundleID,
+                                     bundleID: ownerBundleID,
                                      appName: ownerName))
         }
 
@@ -480,6 +509,7 @@ enum LocalADBlockRule {
             onVisit?()
             if item.isSymlink { continue }
             if item.isDirectory {
+                if neverTouchOrDescend.contains(item.name.lowercased()) { continue }
                 result.append(contentsOf: files(below: item.path, channel: channel, depth: depth + 1, limit: limit, onVisit: onVisit))
             } else {
                 result.append(item)

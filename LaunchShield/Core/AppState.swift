@@ -1030,7 +1030,7 @@ final class AppState: ObservableObject {
                 let owners = Set(targets.map { $0.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : $0.bundleID })
                 for owner in owners {
                     guard let root = self.channel.containerPath(for: owner) else { continue }
-                    for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel) {
+                    for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel, ownerBundleID: owner) {
                         let full = root + "/" + relative
                         if self.channel.isImmutable(full) {
                             frozenDirCount += 1
@@ -1136,7 +1136,7 @@ final class AppState: ObservableObject {
             // 文件夹冻着的话先解开，还原才算全套撤销。
             for owner in Set(records.map { $0.bundleID }) {
                 guard let root = self.channel.containerPath(for: owner) else { continue }
-                for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel) {
+                for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel, ownerBundleID: owner) {
                     let full = root + "/" + relative
                     if self.channel.isImmutable(full) {
                         try? self.channel.setImmutable(full, false)
