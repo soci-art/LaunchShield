@@ -13,11 +13,11 @@
 #pragma mark - App names from the LaunchServices database
 
 // LaunchServices' own API refuses this app on 27.x (OSStatus -54) and the app
-// bundles cannot be opened, but lsd keeps its database (CSStore2, magic
-// "bdsl") in an Internal Daemon container that we can read. In it, Bundle
-// records are 0x250 bytes long, preceded by [u32][u32 0x250]: +0x0c bundle
-// id, +0x6c bundle name, +0x74 display name, each a string reference
-// (string id << 2). Strings are stored as [u32 id][u32 length][UTF-8][NUL].
+// bundles cannot be opened, but lsd keeps its CSStore2 database (magic "bdsl")
+// in an Internal Daemon container that we can read. Bundle and Plugin records
+// use release-specific layouts below; their fields are string references
+// (string id << 2). The <string> table and Alias table are decoded separately
+// because their IDs can overlap (verified with an iOS 26.1 device sample).
 // Names that exist only in localized form (most Apple apps) are not decoded;
 // the built-in table below covers those.
 
@@ -157,8 +157,8 @@ NSString *wq_ls_store_path(void)
 }
 
 // Record layouts by release. Offsets are from the record body (after the
-// 8-byte header). iOS 26 records are 0x14 bytes shorter, with the container
-// path and the fields after it 4 bytes earlier than on 27.0.
+// 8-byte header). The 26.1 layout is measured against the supplied 16,220,160-byte
+// device sample; its String and Alias tables are decoded independently.
 typedef struct {
     const char *label;
     uint32_t bundleSize, bundleID, container, name, displayName, bundlePath;
@@ -166,6 +166,9 @@ typedef struct {
 } WQLSLayout;
 static const WQLSLayout kWQLSLayouts[] = {
     { "27.0", 0x250, 0x0c, 0x68, 0x6c, 0x74, 0x00, 0x118, 0x00, 0x54 },
+    // iOS 26.1: Bundle 0x238 / Plugin 0xec. Both records reference the
+    // Alias table for container paths at +0x60; String refs remain separate.
+    { "26.1", 0x238, 0x0c, 0x60, 0x64, 0x6c, 0x00, 0x0ec, 0x0c, 0x60 },
     { "26",   0x23c, 0x0c, 0x64, 0x68, 0x70, 0x00, 0x104, 0x00, 0x50 },
     // iOS 27.2 (from a device's layout hint): container fields 4 bytes later
     // than on 27.0. Whether the bundle id moved too isn't known yet, so both
@@ -250,10 +253,9 @@ static NSString *wq_safe_name(NSString *value)
     return normalized;
 }
 
-// Data container path -> bundle id. Apps: the Bundle record's +0x68 field;
-// extensions: 0x118-byte plugin records with the bundle id at +0x00 and the
-// path at +0x54. On iOS 27.2 the containers' identifier attribute can't be
-// read, so this is how their folders get a bundle id (and a name).
+// Data container path -> bundle id. Field offsets are supplied by the
+// selected release layout. On systems where container metadata cannot provide
+// an identifier, this maps the database's path reference back to its bundle id.
 static BOOL wq_is_data_container_path(NSString *path)
 {
     static NSArray<NSString *> *prefixes;
@@ -348,7 +350,8 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
     }
     NSRange heapRange = [data rangeOfData:[NSData dataWithBytes:"<string>" length:8]
                                   options:0 range:NSMakeRange(0, n)];
-    size_t heap = heapRange.location == NSNotFound ? 0 : heapRange.location;
+    BOOL hasStringTable = heapRange.location != NSNotFound;
+    size_t heap = hasStringTable ? heapRange.location : 0;
 
     // Pass 1: Bundle and plug-in records of every known layout, and which
     // string ids they need. The layout that maps the most containers wins.
@@ -405,10 +408,10 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
         return NO;
     }
 
-    // Pass 2: the strings, preferring copies inside the string table. On
-    // iOS 26 container paths live in a second table whose ids overlap the
-    // string table's, so path-shaped strings are also kept by id on their own
-    // (an id with two different paths is unusable).
+    // Pass 2: decode the CSStore tables independently. The <string> marker
+    // starts the String table; path-like Alias entries before it are retained
+    // in separate maps. This is essential on iOS 26.1, where Alias and String
+    // IDs overlap and must never be merged.
     NSMutableDictionary<NSNumber *, NSString *> *strings = [NSMutableDictionary new];
     NSMutableDictionary<NSNumber *, id> *pathStrings = [NSMutableDictionary new];
     NSMutableDictionary<NSNumber *, id> *appPathStrings = [NSMutableDictionary new];
@@ -417,14 +420,17 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
     for (size_t o = 0; o <= n - 8; o += 4) {
         uint32_t sid = wq_rd32(b + o);
         if (!sid || sid >= kIDs || !(need[sid / 8] & (1 << (sid % 8)))) continue;
-        BOOL here = o >= heap, had = strings[@(sid)] != nil;
-        BOOL keepGeneral = !had || (here && !(inHeap[sid / 8] & (1 << (sid % 8))));
+        BOOL here = !hasStringTable || o >= heap, had = strings[@(sid)] != nil;
+        // String and Alias are independent CSStore tables. Never let a
+        // pre-<string> Alias entry occupy or overwrite a String-table id.
+        BOOL keepGeneral = here && (!had || !(inHeap[sid / 8] & (1 << (sid % 8))));
         uint32_t peekLen = o + 8 <= n ? wq_rd32(b + o + 4) : 0;
         BOOL maybePath = peekLen >= 6 && peekLen < 0x400 && o + 8 < n && b[o + 8] == '/';
-        if (!keepGeneral && !maybePath) continue;
+        BOOL aliasPath = maybePath && (!hasStringTable || !here);
+        if (!keepGeneral && !aliasPath) continue;
         NSString *s = wq_cs_string(b, n, o);
         if (!s) continue;
-        if (maybePath) {
+        if (aliasPath) {
             NSMutableDictionary *table = [s containsString:@"/mobile/Containers/Data/"] ? pathStrings
                 : ([s hasSuffix:@".app"] || [s hasSuffix:@".app/"]) ? appPathStrings : nil;
             id previous = table[@(sid)];
@@ -499,6 +505,12 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
             if (safeDisplay && !layoutDisplay[bid]) layoutDisplay[bid] = safeDisplay;
             if (safeBundleName && !layoutBundleName[bid]) layoutBundleName[bid] = safeBundleName;
             id appPath = (r[i + 4] && !(r[i + 4] & 3)) ? appPathStrings[@(r[i + 4] >> 2)] : nil;
+            BOOL appPathAmbiguous = appPath == NSNull.null;
+            if (appPathAmbiguous) appPath = nil;
+            if (!appPath && !appPathAmbiguous && r[i + 4] && !(r[i + 4] & 3)) {
+                NSString *stringPath = strings[@(r[i + 4] >> 2)];
+                if ([stringPath hasSuffix:@".app"] || [stringPath hasSuffix:@".app/"]) appPath = stringPath;
+            }
             if ([appPath isKindOfClass:NSString.class] && !layoutBundlePaths[bid]) {
                 NSString *clean = [appPath hasSuffix:@"/"] ? [appPath substringToIndex:[appPath length] - 1] : appPath;
                 if ([clean hasPrefix:@"/var/"]) clean = [@"/private" stringByAppendingString:clean];
