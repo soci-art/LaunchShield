@@ -736,7 +736,7 @@ final class AppState: ObservableObject {
             log("没有找到\(target.name)的数据容器", .warning)
             return
         }
-        let singleBaidu = scanSet.count == 1 && scanSet[0].bundleID == BaiduNetdisk.bundleID
+        let singleNetdisk = scanSet.count == 1 && scanSet[0].bundleID == LocalADBlockRule.dynamicSplashBundleID
         isBusy = true
         busyText = deep
             ? (scanSet.count == 1 ? "正在深扫\(scanSet[0].name)…" : "正在深扫 \(scanSet.count) 个应用…")
@@ -746,7 +746,7 @@ final class AppState: ObservableObject {
                                     detail: nil)
         work.async {
             var allTargets: [TargetFile] = []
-            var baiduSplash: SplashResolution?
+            var selfSoldSplash: SplashResolution?
             var recognition: [AppRecognition] = []
             var skippedFrozen = 0
             // 真进度（清单第 22 条）：条按扫完的应用数走，文件数是
@@ -772,16 +772,16 @@ final class AppState: ObservableObject {
             for info in scanSet {
                 currentName = info.name
                 reportScanProgress()
-                let isBaidu = info.bundleID == BaiduNetdisk.bundleID
-                let splash = isBaidu ? BaiduNetdisk.resolveSplash(container: info.path, channel: self.channel) : nil
-                if isBaidu { baiduSplash = splash }
-                var found = BaiduNetdisk.targets(container: info.path, channel: self.channel, splash: splash,
+                let isNetdisk = info.bundleID == LocalADBlockRule.dynamicSplashBundleID
+                let splash = isNetdisk ? LocalADBlockRule.resolveSelfSoldSplash(container: info.path, channel: self.channel) : nil
+                if isNetdisk { selfSoldSplash = splash }
+                var found = LocalADBlockRule.targets(container: info.path, channel: self.channel, splash: splash,
                                                  ownerBundleID: info.bundleID, ownerName: info.name,
                                                  onVisit: onVisit)
                 // 关联的共享组容器一并扫，素材算在所属应用名下。
                 let groups = info.isGroup ? [] : self.associatedGroups(for: info.bundleID)
                 for group in groups {
-                    let groupFound = BaiduNetdisk.targets(container: group.path, channel: self.channel, splash: nil,
+                    let groupFound = LocalADBlockRule.targets(container: group.path, channel: self.channel, splash: nil,
                                                           ownerBundleID: info.bundleID, ownerName: info.name,
                                                           onVisit: onVisit)
                     if !groupFound.isEmpty {
@@ -834,29 +834,29 @@ final class AppState: ObservableObject {
                 self.isBusy = false
                 self.busyText = ""
                 self.workProgress = nil
-                self.splash = baiduSplash
+                self.splash = selfSoldSplash
                 self.scanTargets = allTargets
                 self.lastRecognition = recognition
                 self.lastScanSkippedFrozen = skippedFrozen
                 if skippedFrozen > 0 {
                     self.log("扫描跳过已冻结的 0 字节文件 \(skippedFrozen) 个（不重复清零、不重复备份）", .info)
                 }
-                if singleBaidu, let splash = baiduSplash {
+                if singleNetdisk, let splash = selfSoldSplash {
                     let root = scanSet[0].path
                     if splash.exists {
-                        let relative = BaiduNetdisk.relativePath(container: root, path: splash.path)
+                        let relative = LocalADBlockRule.relativePath(container: root, path: splash.path)
                         self.log("软件自营开屏素材：\(relative)", .info)
                         self.log("推导依据：\(splash.url) → MD5 \(splash.md5)", .info)
                     } else {
-                        let relative = BaiduNetdisk.relativePath(container: root, path: splash.path)
+                        let relative = LocalADBlockRule.relativePath(container: root, path: splash.path)
                         self.log("按广告记录算出了素材路径，但那个文件现在不存在：\(relative)（网址 \(splash.url)）", .notice)
                     }
-                } else if singleBaidu {
+                } else if singleNetdisk {
                     self.log("没有读到开屏广告记录，可能广告还没缓存过，或记录文件暂时读不到", .notice)
                 }
                 if scanSet.count == 1 {
                     let groups = Dictionary(grouping: allTargets, by: { $0.group })
-                    var groupOrder = ["软件自营"] + BaiduNetdisk.thirdPartyCacheGroups.map { $0.group }
+                    var groupOrder = ["软件自营"] + LocalADBlockRule.thirdPartyCacheGroups.map { $0.group }
                     for name in groups.keys where !groupOrder.contains(name) { groupOrder.append(name) }
                     for name in groupOrder {
                         guard let list = groups[name], !list.isEmpty else { continue }
@@ -879,7 +879,7 @@ final class AppState: ObservableObject {
     /// 指纹库没登记过的顶层目录名（只记名字，供上传攒指纹库时人工核对）。
     private func unknownDirectories(container: String) -> [String] {
         var known = Set<String>()
-        for group in BaiduNetdisk.thirdPartyCacheGroups {
+        for group in LocalADBlockRule.thirdPartyCacheGroups {
             for directory in group.directories {
                 var prefix = ""
                 for part in directory.components(separatedBy: "/") {
@@ -888,7 +888,7 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        known.insert(BaiduNetdisk.splashCacheRoot)
+        known.insert(LocalADBlockRule.splashCacheRoot)
         var result: [String] = []
         for parent in ["Library/Caches", "Library", "tmp", "Library/Application Support"] {
             guard let items = try? channel.children(of: container + "/" + parent) else { continue }
@@ -965,8 +965,8 @@ final class AppState: ObservableObject {
                     if size == 0 {
                         self.log("已经是 0 字节，跳过：\(targetFile.relativePath)", .info)
                     } else {
-                        let ownerID = targetFile.bundleID.isEmpty ? BaiduNetdisk.bundleID : targetFile.bundleID
-                        let ownerName = targetFile.appName.isEmpty ? BaiduNetdisk.displayName : targetFile.appName
+                        let ownerID = targetFile.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : targetFile.bundleID
+                        let ownerName = targetFile.appName.isEmpty ? LocalADBlockRule.dynamicSplashDisplayName : targetFile.appName
                         // 这个文件生根在哪个容器：应用自己的，或某个共享组。
                         // 备份和配方都记准这个根，之后定位才不会找错地方。
                         let located = self.locateFile(path: targetFile.path,
@@ -1027,10 +1027,10 @@ final class AppState: ObservableObject {
             var frozenDirCount = 0
             var freezeDirFailureCount = 0
             if true {
-                let owners = Set(targets.map { $0.bundleID.isEmpty ? BaiduNetdisk.bundleID : $0.bundleID })
+                let owners = Set(targets.map { $0.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : $0.bundleID })
                 for owner in owners {
                     guard let root = self.channel.containerPath(for: owner) else { continue }
-                    for relative in BaiduNetdisk.freezeDirectories(container: root, channel: self.channel) {
+                    for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel) {
                         let full = root + "/" + relative
                         if self.channel.isImmutable(full) {
                             frozenDirCount += 1
@@ -1136,7 +1136,7 @@ final class AppState: ObservableObject {
             // 文件夹冻着的话先解开，还原才算全套撤销。
             for owner in Set(records.map { $0.bundleID }) {
                 guard let root = self.channel.containerPath(for: owner) else { continue }
-                for relative in BaiduNetdisk.freezeDirectories(container: root, channel: self.channel) {
+                for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel) {
                     let full = root + "/" + relative
                     if self.channel.isImmutable(full) {
                         try? self.channel.setImmutable(full, false)
@@ -2319,10 +2319,10 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        for group in BaiduNetdisk.thirdPartyCacheGroups {
+        for group in LocalADBlockRule.thirdPartyCacheGroups {
             for directory in group.directories { addTree(directory) }
         }
-        addTree(BaiduNetdisk.splashCacheRoot)
+        addTree(LocalADBlockRule.splashCacheRoot)
         return result.sorted { $0.components(separatedBy: "/").count > $1.components(separatedBy: "/").count }
     }
 
@@ -2455,7 +2455,7 @@ final class AppState: ObservableObject {
         var newRecipes: [Recipe] = []
         for bundleID in bundleIDs {
             guard cleared < 300, let info = channel.container(for: bundleID) else { continue }
-            let files = BaiduNetdisk.targets(container: info.path, channel: channel, splash: nil,
+            let files = LocalADBlockRule.targets(container: info.path, channel: channel, splash: nil,
                                              ownerBundleID: info.bundleID, ownerName: info.name)
             for file in files where file.size > 0 {
                 guard cleared < 300 else { break }
@@ -2497,8 +2497,8 @@ final class AppState: ObservableObject {
                                newBackups: inout [BackupRecord], newRecipes: inout [Recipe]) -> Bool {
         if isWhitelisted(file.bundleID) { return false }
         if DatabaseFile.matches(relativePath: file.relativePath) { return false }
-        let ownerID = file.bundleID.isEmpty ? BaiduNetdisk.bundleID : file.bundleID
-        let ownerName = file.appName.isEmpty ? BaiduNetdisk.displayName : file.appName
+        let ownerID = file.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : file.bundleID
+        let ownerName = file.appName.isEmpty ? LocalADBlockRule.dynamicSplashDisplayName : file.appName
         let located = locateFile(path: file.path, relativePath: file.relativePath, ownerID: ownerID)
         do {
             if channel.isImmutable(file.path) {

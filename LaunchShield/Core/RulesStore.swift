@@ -19,26 +19,16 @@ enum RulesStore {
 
     // MARK: - 内置保底规则（与服务器 v1 种子一致）
 
-    static let builtinGroups: [(group: String, directories: [String])] = [
-        ("优量汇", ["Library/Caches/default/tencent_gdtimg", "Library/Caches/default/tencent_gdtres",
-                    "tmp/gdtMedia",
-                    "Library/tencent_gdtmob", "Library/Caches/GDT", "Library/Caches/GDTMEC"]),
-        ("穿山甲", ["Library/Caches/com.hackemist.CSJSDImageCache/default",
-                    "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache",
-                    "Library/Caches/CSJLottieResources", "Library/Caches/buadsdk",
-                    "Library/com.bytedance.buadsdk.root", "Library/po_csj_dt", "Library/csj_alog",
-                    "Library/Caches/com.csj.plist.v4"]),
-        ("BeiZi", ["Library/Caches/BeiZiMaterial", "Library/Caches/BeiZiDirectory",
-                    "Library/Caches/beizi_cookie_sql"]),
-        ("美数", ["Library/Caches/MSAdSDK"]),
-        ("UBIX", ["Library/ubixad"]),
-        ("趣盟", ["Library/Caches/com.qumeng.yykit"]),
-        ("AdMob", ["Library/Caches/AdMob", "Library/Application Support/GoogleMobileAds"]),
-        ("其他广告", ["Library/Advertises"])
-    ]
+    // Erosion-CN rule data is embedded in LocalADBlockRule and scanned locally.
+    // No Baidu-only default rule list is maintained here.
+    static let builtinGroups: [(group: String, directories: [String])] = []
 
-    static let builtinKeywords = ["csj", "gdt", "beizi", "msadsdk", "ubix", "qumeng",
-                                  "admob", "advertise", "splash", "buadsdk", "pangolin"]
+    static let builtinKeywords = [
+        "csj", "pangle", "buadsdk", "gdt", "beizi", "baidumobad", "bd_ad_cache",
+        "splash", "launch", "adcache", "adsdk", "tanx", "jadyun", "sigmob",
+        "mintegral", "tradplus", "applovin", "chartboost", "googlemobileads",
+        "unityads", "vungle", "ironsource", "qumeng", "ubixad", "ksadsdk"
+    ]
 
     // MARK: - 当前生效规则
 
