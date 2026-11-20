@@ -1664,6 +1664,7 @@ struct LaunchHackView: View {
                         }
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Color.orange)
+                        .disabled(isGovernanceRunning || state.isBusy)
                     }
                 } else if candidate.groupID != nil {
                     Text("共享容器尚未关联宿主 App，暂不能导入或处理")
@@ -1842,6 +1843,7 @@ struct LaunchHackView: View {
     }
 
     private func beginScan() {
+        selectedGovernanceIDs.removeAll()
         let targets = trackingTargets
         guard !selectedApps.isEmpty, !targets.isEmpty else {
             model.scanMessage = "请先返回 LaunchShield 主页，选择一个可访问的用户 App。"
