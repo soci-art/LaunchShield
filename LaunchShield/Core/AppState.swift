@@ -1476,6 +1476,14 @@ final class AppState: ObservableObject {
                 }
                 let appBundleID = candidate.bundleID.isEmpty ? self.target.bundleID : candidate.bundleID
                 let appName = candidate.appName.isEmpty ? self.target.name : candidate.appName
+                let parts = candidate.relativePath.split(separator: "/", omittingEmptySubsequences: false)
+                guard !candidate.relativePath.isEmpty, !candidate.relativePath.hasPrefix("/"),
+                      !candidate.relativePath.contains("\\"), !candidate.relativePath.unicodeScalars.contains(where: { $0.value == 0 }),
+                      parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+                    failure = "\(candidate.appName)：候选路径不安全，已跳过"
+                    continue
+                }
+                let full = root.hasSuffix("/") ? root + candidate.relativePath : root + "/" + candidate.relativePath
                 let changeKey = appBundleID + "\n" + full
                 let now = Date().timeIntervalSince1970
                 if let lastFailure = self.unstableClearFailureTimes[changeKey], now - lastFailure > self.unstableClearCooldown {
@@ -1487,14 +1495,6 @@ final class AppState: ObservableObject {
                     self.log("应用正在使用中，暂时跳过：\(appName) \(candidate.relativePath)。关闭应用后再试", .notice)
                     continue
                 }
-                let parts = candidate.relativePath.split(separator: "/", omittingEmptySubsequences: false)
-                guard !candidate.relativePath.isEmpty, !candidate.relativePath.hasPrefix("/"),
-                      !candidate.relativePath.contains("\\"), !candidate.relativePath.unicodeScalars.contains(where: { $0.value == 0 }),
-                      parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-                    failure = "\(candidate.appName)：候选路径不安全，已跳过"
-                    continue
-                }
-                let full = root.hasSuffix("/") ? root + candidate.relativePath : root + "/" + candidate.relativePath
                 if DatabaseFile.matches(relativePath: candidate.relativePath) {
                     skippedDB += 1
                     self.log("跳过数据库文件：\(appName) \(candidate.relativePath)", .info)
