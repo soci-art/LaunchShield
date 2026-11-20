@@ -123,7 +123,7 @@ enum LocalADBlockRule {
     }
 
 
-    // Erosion-CN container safety exclusions.
+    // Container safety exclusions.
     private static let protectedBundleIDs: Set<String> = [
         "com.jbdotparty.Erosion", "com.apple.PosterBoard", "com.apple.springboard",
         "com.apple.Preferences", "com.apple.mobilephone"
@@ -139,7 +139,7 @@ enum LocalADBlockRule {
         return ignoredAppGroupPrefixes.contains { lower.hasPrefix($0) }
     }
 
-    // MARK: - Erosion-CN built-in local rule data
+    // MARK: - Built-in local rule data
     // Curated per-app splash & ad cache candidate subpaths (only reported when verified present on disk)
     private static let appSpecificAdPaths: [String: [(relPath: String, zh: String, en: String)]] = [
         "com.sina.weibo": [
@@ -434,19 +434,19 @@ enum LocalADBlockRule {
         var result: [(FileItem, String, String)] = []
         var seen = Set<String>()
 
-        // Erosion-CN per-app rules: only evaluate paths against their matching bundle ID.
+        // Per-app rules: only evaluate paths against their matching bundle ID.
         for spec in appSpecificAdPaths[ownerBundleID] ?? [] {
             let path = container + "/" + spec.relPath
             if channel.isDirectory(path) {
                 for file in files(below: path, channel: channel, depth: 0, limit: 4000) where seen.insert(file.path).inserted {
-                    result.append((file, "Erosion-CN", spec.zh))
+                    result.append((file, "本地广告规则", spec.zh))
                 }
             } else if let item = channel.item(at: path), !item.isDirectory, seen.insert(item.path).inserted {
-                result.append((item, "Erosion-CN", spec.zh))
+                result.append((item, "本地广告规则", spec.zh))
             }
         }
 
-        // Erosion-CN SDK/config rules: shallow scan only the standard app data roots.
+        // SDK/config rules: shallow scan only the standard app data roots.
         func walk(_ directory: String, depth: Int) {
             guard depth <= 2, let items = try? channel.children(of: directory) else { return }
             for item in items {
@@ -456,13 +456,13 @@ enum LocalADBlockRule {
                 if item.isDirectory {
                     if let match = classifyAdFolder(name: item.name) {
                         for file in files(below: item.path, channel: channel, depth: 0, limit: 4000) where seen.insert(file.path).inserted {
-                            result.append((file, "Erosion-CN", match.zh))
+                            result.append((file, "本地广告规则", match.zh))
                         }
                     } else if depth < 2 {
                         walk(item.path, depth: depth + 1)
                     }
                 } else if let match = exactAdConfigFiles[lower], seen.insert(item.path).inserted {
-                    result.append((item, "Erosion-CN", match.zh))
+                    result.append((item, "本地广告规则", match.zh))
                 }
             }
         }
