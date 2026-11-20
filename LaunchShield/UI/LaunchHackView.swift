@@ -1017,12 +1017,16 @@ struct LaunchHackView: View {
                     let deleted = result.changes.filter { $0.status.contains("删除") }.count
                     let replaced = result.changes.filter { $0.status.contains("内容替换") }.count
                     let frozen = result.changes.filter { $0.status.contains("冻结状态变化") }.count
+                    let candidateMatched = result.changes.filter { isCandidateTraceMatch($0) }.count
                     HStack(spacing: 8) {
                         traceMetric("新增", added)
                         traceMetric("删除", deleted)
                         traceMetric("内容替换", replaced)
                         traceMetric("冻结变化", frozen)
                     }
+                    Text("其中 \(candidateMatched) 项与当前扫描候选资源路径匹配（仅表示路径关联，仍需人工确认）。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.secondaryText)
                     if !result.incomplete.isEmpty {
                         Text("有 \(result.incomplete.count) 个容器扫描不完整或缺少对应检查点，已跳过这些容器的差异判断。")
                             .font(.system(size: 10))
@@ -1048,6 +1052,11 @@ struct LaunchHackView: View {
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(Color.secondaryText)
                                     .textSelection(.enabled)
+                                if isCandidateTraceMatch(change) {
+                                    Text("与当前扫描候选资源匹配 · 待人工确认")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(Color.accentCyan)
+                                }
                                 Text(change.detail)
                                     .font(.system(size: 10))
                                     .foregroundStyle(Color.secondaryText)
@@ -1069,6 +1078,12 @@ struct LaunchHackView: View {
         }
         .padding(16)
         .panel()
+    }
+
+    private func isCandidateTraceMatch(_ change: LaunchHackTraceChange) -> Bool {
+        model.candidates.contains {
+            $0.appName == change.containerName && $0.relativePath == change.relativePath
+        }
     }
 
     private func traceMetric(_ title: String, _ value: Int) -> some View {
