@@ -1868,6 +1868,127 @@ final class AppState: ObservableObject {
 
     // MARK: - Recipes
 
+    /// LaunchHack 已定位的单个媒体资源：复核路径与文件指纹后，复用 LaunchShield 的备份、清零、冻结和 Recipe 守护链。
+    func importLaunchHackCandidate(bundleID: String, appName: String, relativePath: String,
+                                   expectedSize: UInt64, expectedModifiedAt: Date,
+                                   expectedMD5: String?) {
+        let ownerID = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ownerID.isEmpty, !isWhitelisted(ownerID) else {
+            alertText = "目标应用未关联或已加入排除白名单，不能同步规则。"
+            return
+        }
+        guard requireChannel() else { return }
+        guard FileKind.of(relativePath) == .image || FileKind.of(relativePath) == .video else {
+            alertText = "配置文件只作为定位证据，不直接清零或冻结。请定位到它对应的图片/视频资源。"
+            return
+        }
+        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.contains("\\"),
+              !relativePath.unicodeScalars.contains(where: { $0.value == 0 }),
+              parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              !DatabaseFile.matches(relativePath: relativePath) else {
+            alertText = "目标路径不安全或属于受保护文件类型，已拒绝同步。"
+            return
+        }
+        guard let root = channel.rootPath(bundleID: ownerID, groupID: nil) else {
+            alertText = "找不到目标 App 容器，无法确认资源归属。"
+            return
+        }
+        let recipeExists = recipes.first {
+            $0.bundleID == ownerID && $0.groupID == nil && $0.relativePath == relativePath
+        }
+        if recipeExists?.frozen == true {
+            alertText = "该资源已经在 LaunchShield 守护列表中并处于冻结状态。"
+            return
+        }
+        guard !isBusy else {
+            alertText = "LaunchShield 正在执行其他文件操作，请稍后再试。"
+            return
+        }
+
+        isBusy = true
+        busyText = "正在核验资源、备份并同步冻结规则…"
+        work.async {
+            let full = root.hasSuffix("/") ? root + relativePath : root + "/" + relativePath
+            let wasImmutable = self.channel.isImmutable(full)
+            do {
+                guard let item = self.channel.item(at: full), !item.isDirectory, !item.isSymlink else {
+                    throw ChannelFailure("目标文件不存在、不是普通文件或已变成符号链接")
+                }
+                guard item.size == expectedSize,
+                      abs(item.modified.timeIntervalSince(expectedModifiedAt)) <= 2 else {
+                    throw ChannelFailure("资源在扫描后发生变化，请重新扫描并核验，未执行清零")
+                }
+                let currentMD5 = try self.channel.md5(full)
+                if let expectedMD5, currentMD5.caseInsensitiveCompare(expectedMD5) != .orderedSame {
+                    throw ChannelFailure("资源 MD5 与扫描记录不一致，已取消操作")
+                }
+                if wasImmutable { try self.channel.setImmutable(full, false) }
+                let record = try self.backupManager.backup(path: full,
+                                                           relativePath: relativePath,
+                                                           bundleID: ownerID,
+                                                           appName: appName,
+                                                           source: "LaunchHack 精准定位同步",
+                                                           groupID: nil,
+                                                           channel: self.channel)
+                try self.store.registerBackup(record)
+                guard currentMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                    throw ChannelFailure("备份校验失败，未清零目标文件")
+                }
+                try self.channel.truncate(full)
+                var frozen = false
+                var freezeFailure: String?
+                do {
+                    try self.channel.setImmutable(full, true)
+                    frozen = true
+                } catch {
+                    freezeFailure = error.localizedDescription
+                }
+                let recipe = Recipe(id: recipeExists?.id ?? UUID(),
+                                    bundleID: ownerID,
+                                    appName: appName,
+                                    relativePath: relativePath,
+                                    createdAt: recipeExists?.createdAt ?? Date(),
+                                    frozen: frozen,
+                                    placeholder: false,
+                                    lastCheckedAt: Date(),
+                                    lastState: RecipeState.normal.rawValue,
+                                    groupID: nil)
+                DispatchQueue.main.async {
+                    self.isBusy = false
+                    self.busyText = ""
+                    if let index = self.store.file.recipes.firstIndex(where: {
+                        $0.bundleID == ownerID && $0.groupID == nil && $0.relativePath == relativePath
+                    }) {
+                        self.store.file.recipes[index] = recipe
+                    } else {
+                        self.store.file.recipes.append(recipe)
+                    }
+                    self.store.save()
+                    self.recipes = self.store.file.recipes
+                    self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                    if let freezeFailure {
+                        self.log("LaunchHack 资源已备份并清零，但冻结失败：\\(relativePath)：\\(freezeFailure)", .warning)
+                        self.alertText = "已备份并清零，配方已同步；但冻结失败：\\(freezeFailure)。请在已守护列表重试冻结。"
+                    } else {
+                        self.log("LaunchHack 资源已备份、清零、冻结并同步到守护配方：\\(relativePath)", .success)
+                        self.alertText = "已完成：原文件已备份，资源已清零并冻结，规则已同步到 LaunchShield「已守护应用」。"
+                    }
+                }
+            } catch {
+                if wasImmutable, self.channel.item(at: full) != nil {
+                    try? self.channel.setImmutable(full, true)
+                }
+                DispatchQueue.main.async {
+                    self.isBusy = false
+                    self.busyText = ""
+                    self.log("LaunchHack 规则同步失败：\\(relativePath)：\\(error.localizedDescription)", .warning)
+                    self.alertText = "同步失败，目标文件未完成处理：\\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     func checkRecipes(silent: Bool = false) {
         let excludedIDs = whitelistedBundleIDs
         let allRecipes = recipes

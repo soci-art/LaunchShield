@@ -827,6 +827,7 @@ struct LaunchHackView: View {
     @State private var selectionInitialized = false
     @State private var showAppSelection = false
     @State private var selectedTraceStage: LaunchHackTraceStage = .afterFreeze
+    @State private var pendingRuleCandidate: LaunchHackCandidate?
 
     private var selectedApps: [ContainerInfo] {
         model.apps.filter { selectedBundleIDs.contains($0.bundleID) && !state.isWhitelisted($0.bundleID) }
@@ -864,6 +865,28 @@ struct LaunchHackView: View {
         }
         .sheet(isPresented: $showAppSelection) {
             appSelectionSheet
+        }
+        .confirmationDialog("将精准定位的广告资源同步到 LaunchShield？",
+                            isPresented: Binding(
+                                get: { pendingRuleCandidate != nil },
+                                set: { if !$0 { pendingRuleCandidate = nil } }
+                            ),
+                            titleVisibility: .visible) {
+            Button("备份、清零并冻结", role: .destructive) {
+                if let candidate = pendingRuleCandidate,
+                   let bundleID = candidate.bundleID {
+                    state.importLaunchHackCandidate(bundleID: bundleID,
+                                                     appName: candidate.appName,
+                                                     relativePath: candidate.relativePath,
+                                                     expectedSize: candidate.size,
+                                                     expectedModifiedAt: candidate.modifiedAt,
+                                                     expectedMD5: candidate.md5)
+                }
+                pendingRuleCandidate = nil
+            }
+            Button("取消", role: .cancel) { pendingRuleCandidate = nil }
+        } message: {
+            Text("仅对已关联宿主 App 的图片/视频资源执行。LaunchShield 会先校验文件、备份原件，再清零并冻结；配置文件和未关联共享组不会直接执行。")
         }
     }
 
@@ -1179,6 +1202,23 @@ struct LaunchHackView: View {
                         }
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.accentCyan)
+
+                        if let bundleID = candidate.bundleID,
+                           FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video {
+                            Button("同步到 LaunchShield 并冻结") {
+                                pendingRuleCandidate = candidate
+                            }
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.accentCyan)
+                        } else if candidate.groupID != nil {
+                            Text("共享组未关联宿主 App，暂不能执行")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.orange)
+                        } else {
+                            Text("配置/索引仅作定位证据")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.secondaryText)
+                        }
 
                         Spacer()
                         if let md5 = candidate.md5 {
