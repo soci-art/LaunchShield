@@ -26,7 +26,7 @@ private struct LaunchHackCandidate: Codable, Identifiable, Hashable {
     }
 
     var confidenceText: String {
-        score >= 80 ? "高置信度" : (score >= 60 ? "中置信度" : "低置信度")
+        score >= 80 ? "优先核验" : (score >= 60 ? "建议核验" : "低优先级")
     }
 
     var kindText: String {
@@ -85,22 +85,29 @@ private enum LaunchHackContentAnalyzer {
                           "launchad", "launch_ad", "bootimagebiz", "bootimagedoc"]
             .contains { marker in components.contains { $0.contains(marker) } }
         let preferences = lower.contains("/library/preferences/") || lower.hasPrefix("library/preferences/")
-        return configExtensions.contains(ext) && size > 0 && size <= 2 * 1024 * 1024
-            && (preferences || adSpecific)
+        let applicationSupport = lower.contains("/library/application support/")
+            || lower.hasPrefix("library/application support/")
+        return configExtensions.contains(ext) && size > 0 && size <= 512 * 1024
+            && (preferences || applicationSupport || adSpecific)
     }
 
     static func analyze(path: String, relativePath: String, data: Data) -> LaunchHackContentEvidence? {
         let ext = (relativePath as NSString).pathExtension.lowercased()
-        var searchableText = String(decoding: data, as: UTF8.self)
+        var structuredStrings: [String]?
 
-        if ext == "plist",
+        if (ext == "plist" || ext == "xml"),
            let object = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
-            searchableText += "\n" + flattenStrings(object).joined(separator: "\n")
+            structuredStrings = flattenStrings(object)
         } else if ext == "json",
                   let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
-            searchableText += "\n" + flattenStrings(object).joined(separator: "\n")
+            structuredStrings = flattenStrings(object)
         }
 
+        // Binary plist 不能直接按 UTF-8 扫描；优先使用结构化解析结果。
+        // XML/JSON 文本解析失败时才回退到 UTF-8 原文。
+        let rawText = String(data: data, encoding: .utf8)
+        let searchableText = ((structuredStrings ?? []) + (rawText.map { [$0] } ?? []))
+            .joined(separator: "\n")
         let urls = extractURLs(searchableText)
         let lower = searchableText.lowercased()
         let markers = [
@@ -114,20 +121,25 @@ private enum LaunchHackContentAnalyzer {
         return LaunchHackContentEvidence(sourcePath: path, urls: urls, hasAdSignals: hasSignals)
     }
 
-    static func resourceMatches(_ relativePath: String, evidence: LaunchHackContentEvidence) -> Bool {
+    static func resourceMatchReasons(_ relativePath: String, evidence: LaunchHackContentEvidence) -> [String] {
         let name = ((relativePath as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
-        guard !name.isEmpty else { return false }
+        guard !name.isEmpty else { return [] }
+
+        var reasons: [String] = []
         for url in evidence.urls {
             if let component = URLComponents(string: url),
-               let last = component.path.split(separator: "/").last {
-                let remoteName = (String(last) as NSString).deletingPathExtension.lowercased()
-                if !remoteName.isEmpty && name == remoteName {
-                    return true
+               let last = component.percentEncodedPath.split(separator: "/").last {
+                let encodedName = (String(last) as NSString).deletingPathExtension.lowercased()
+                let decodedName = encodedName.removingPercentEncoding?.lowercased() ?? encodedName
+                if name == encodedName || name == decodedName {
+                    reasons.append("本地文件名与配置 URL 路径文件名一致")
                 }
             }
-            if LocalADBlockRule.digests(for: url).contains(name) { return true }
+            if LocalADBlockRule.digests(for: url).contains(name) {
+                reasons.append("本地文件名与配置 URL 的 MD5 对应")
+            }
         }
-        return false
+        return Array(Set(reasons)).sorted()
     }
 
     static func displayURL(_ value: String) -> String {
@@ -153,7 +165,7 @@ private enum LaunchHackContentAnalyzer {
         if let text = value as? String { return [text] }
         if let dictionary = value as? [String: Any] {
             return dictionary.keys.sorted().flatMap { key in
-                [key] + flattenStrings(dictionary[key]!)
+                [key] + flattenStrings(dictionary[key] ?? NSNull())
             }
         }
         if let array = value as? [Any] {
@@ -178,14 +190,14 @@ private enum LaunchHackAssessment {
                 let marker = directory.lowercased()
                 if path == marker || path.hasPrefix(marker + "/") {
                     score = max(score, 95)
-                    evidence.append("命中已知广告资源目录：\(group.group)")
+                    evidence.append("[路径推测] 命中已知广告资源目录：\(group.group)")
                 }
             }
         }
 
         if RulesStore.keywords.contains(where: { !$0.isEmpty && path.contains($0.lowercased()) }) {
             score = max(score, 75)
-            evidence.append("路径命中广告规则关键词")
+            evidence.append("[路径推测] 路径命中广告规则关键词")
         }
 
         let adTokens = [
@@ -195,21 +207,21 @@ private enum LaunchHackAssessment {
         ]
         if adTokens.contains(where: { token in components.contains(where: { $0.contains(token) }) }) {
             score = max(score, 65)
-            evidence.append("目录或文件名包含广告/启动资源特征")
+            evidence.append("[路径推测] 目录或文件名包含广告/启动资源特征")
         }
 
         if media && (path.contains("/caches/") || path.hasPrefix("caches/") || path.hasPrefix("tmp/")) {
             score = max(score, 42)
-            evidence.append("位于缓存目录的图片或视频，需与广告画面比对")
+            evidence.append("[路径推测] 位于缓存目录的图片或视频，需与广告画面比对")
         }
 
         if config && adTokens.contains(where: { path.contains($0) }) {
             score = max(score, 58)
-            evidence.append("疑似广告配置或索引文件")
+            evidence.append("[路径推测] 疑似广告配置或索引文件")
         }
 
         if evidence.isEmpty {
-            evidence.append("通用资源特征，尚无广告直接证据")
+            evidence.append("[待验证] 通用资源特征，尚无广告直接证据")
         }
         return (score, evidence)
     }
@@ -286,18 +298,23 @@ private final class LaunchHackModel: ObservableObject {
                         }
                     )
 
-                    // 先读取小型配置文件，建立“配置 URL/缓存标识 -> 本地资源”的只读关联索引。
-                    // 单容器最多分析 300 个配置文件，每个文件最多 2 MiB，避免无界读取。
+                    // 读取偏好设置、应用支持目录和广告特征配置，建立只读关联索引。
+                    // 每容器最多读取 160 个配置、总计 24 MiB；单文件上限 512 KiB。
                     var configEvidence: [LaunchHackContentEvidence] = []
-                    for config in files where !config.isDirectory && !config.isSymlink && LaunchHackContentAnalyzer.isReadableConfig(config.path, size: config.size) {
-                        if configEvidence.count >= 300 { break }
+                    var configBytesRead: UInt64 = 0
+                    for config in files where !config.isDirectory && !config.isSymlink
+                        && LaunchHackContentAnalyzer.isReadableConfig(config.path, size: config.size) {
+                        if configEvidence.count >= 160 { break }
+                        if configBytesRead + config.size > 24 * 1024 * 1024 { continue }
+
                         let relative = config.path.hasPrefix(target.rootPath + "/")
                             ? String(config.path.dropFirst(target.rootPath.count + 1))
                             : config.name
-                        guard let data = try? channel.read(config.path, maxBytes: 2 * 1024 * 1024),
-                              let evidence = LaunchHackContentAnalyzer.analyze(
-                                path: relative, relativePath: relative, data: data
-                              ) else { continue }
+                        guard let data = try? channel.read(config.path, maxBytes: 512 * 1024) else { continue }
+                        configBytesRead += UInt64(data.count)
+                        guard let evidence = LaunchHackContentAnalyzer.analyze(
+                            path: relative, relativePath: relative, data: data
+                        ) else { continue }
                         configEvidence.append(evidence)
                     }
 
@@ -314,29 +331,31 @@ private final class LaunchHackModel: ObservableObject {
                            let parsed = configEvidence.first(where: { $0.sourcePath == relative }) {
                             if parsed.hasAdSignals {
                                 score = max(score, 62)
-                                evidence.append("已读取配置内容，发现广告/开屏字段或关键词")
+                                evidence.append("[内容已读取] 配置内容包含广告/开屏字段或关键词")
                             }
                             if !parsed.urls.isEmpty {
                                 score = max(score, 68)
-                                evidence.append("配置中提取到 \(parsed.urls.count) 个 URL")
+                                evidence.append("[内容已读取] 配置中提取到 \(parsed.urls.count) 个 URL")
                                 evidence.append(contentsOf: parsed.urls.prefix(3).map {
-                                    "配置 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
+                                    "[内容已读取] 配置 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
                                 })
                             }
                         }
 
                         let matchingConfigs = configEvidence.filter {
-                            LaunchHackContentAnalyzer.resourceMatches(relative, evidence: $0)
+                            !LaunchHackContentAnalyzer.resourceMatchReasons(relative, evidence: $0).isEmpty
                         }
                         if !matchingConfigs.isEmpty {
                             score = max(score, 88)
-                            evidence.append("资源文件名或缓存 MD5 与 \(matchingConfigs.count) 个配置 URL 对应")
-                            evidence.append(contentsOf: matchingConfigs.prefix(2).map {
-                                "关联配置：\($0.sourcePath)"
-                            })
-                            evidence.append(contentsOf: matchingConfigs.flatMap { $0.urls.prefix(2) }.prefix(3).map {
-                                "关联 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
-                            })
+                            evidence.append("[关联证据] 资源文件名与配置 URL 的文件名或 URL-MD5 精确对应")
+                            for config in matchingConfigs.prefix(2) {
+                                evidence.append("[关联配置] \(config.sourcePath)")
+                                evidence.append(contentsOf: LaunchHackContentAnalyzer.resourceMatchReasons(relative, evidence: config)
+                                    .map { "[关联证据] \($0)" })
+                                evidence.append(contentsOf: config.urls.prefix(2).map {
+                                    "[内容已读取] 关联 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
+                                })
+                            }
                         }
 
                         guard score >= 40 else { continue }
