@@ -43,6 +43,16 @@ private struct LaunchHackCandidate: Codable, Identifiable, Hashable {
     }
 }
 
+private struct LaunchHackDomainFinding: Identifiable {
+    let host: String
+    var urls: [String]
+    var configPaths: [String]
+    var resourcePaths: Set<String>
+
+    var id: String { host }
+    var resourceCount: Int { resourcePaths.count }
+}
+
 private struct LaunchHackRuleDraft: Codable, Identifiable {
     let id: UUID
     let candidate: LaunchHackCandidate
@@ -874,6 +884,43 @@ struct LaunchHackView: View {
     @State private var pendingRuleCandidate: LaunchHackCandidate?
     @State private var showUploadConfirmation = false
 
+    /// 只把配置文件中实际读出的 URL 作为静态来源线索；不声称这是运行时网络请求。
+    private var domainFindings: [LaunchHackDomainFinding] {
+        let urlPrefixes = ["[内容已读取] 配置 URL：", "[内容已读取] 关联 URL："]
+        var findings: [String: LaunchHackDomainFinding] = [:]
+
+        for candidate in model.candidates {
+            for evidence in candidate.evidence {
+                if let prefix = urlPrefixes.first(where: { evidence.hasPrefix($0) }) {
+                    let rawURL = String(evidence.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard let components = URLComponents(string: rawURL),
+                          let host = components.host?.lowercased(), !host.isEmpty else { continue }
+                    var finding = findings[host] ?? LaunchHackDomainFinding(
+                        host: host, urls: [], configPaths: [], resourcePaths: []
+                    )
+                    if !finding.urls.contains(rawURL) { finding.urls.append(rawURL) }
+                    finding.resourcePaths.insert(candidate.relativePath)
+                    findings[host] = finding
+                } else if evidence.hasPrefix("[关联配置] ") {
+                    let configPath = String(evidence.dropFirst("[关联配置] ".count))
+                    // 配置路径只作为候选资源的关联证据展示，不单独推断域名。
+                    for host in findings.keys {
+                        guard var finding = findings[host] else { continue }
+                        if !finding.configPaths.contains(configPath) {
+                            finding.configPaths.append(configPath)
+                            findings[host] = finding
+                        }
+                    }
+                }
+            }
+        }
+
+        return findings.values.sorted {
+            if $0.resourceCount != $1.resourceCount { return $0.resourceCount > $1.resourceCount }
+            return $0.host.localizedStandardCompare($1.host) == .orderedAscending
+        }
+    }
+
     /// LaunchHack 始终跟随主页当前选中的单个目标，不读取批量勾选范围。
     private var selectedApps: [ContainerInfo] {
         guard state.targetChosen, !state.isWhitelisted(state.target.bundleID) else { return [] }
@@ -886,6 +933,9 @@ struct LaunchHackView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     introduction
                     scanPanel
+                    if !model.candidates.isEmpty {
+                        sourceIntelPanel
+                    }
                     tracePanel
                     if !model.candidates.isEmpty {
                         candidatePanel
@@ -1020,6 +1070,73 @@ struct LaunchHackView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .panel()
+    }
+
+    private var sourceIntelPanel: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                Text("广告来源线索")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                Text("静态配置分析")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+            }
+
+            Text("以下域名来自目标 App 可读取的 plist、JSON 或 XML 配置内容，并已与候选资源建立关联。它们不是运行时请求记录，不能单凭域名认定为广告服务器。")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if domainFindings.isEmpty {
+                Text("本次扫描没有从可读取配置中提取到可关联的域名。动态下发、加密配置或不可访问的数据仍可能存在。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondaryText)
+            } else {
+                ForEach(domainFindings.prefix(20)) { finding in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(finding.host)
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.primaryText)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Text("\(finding.resourceCount) 个关联资源")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.accentCyan)
+                        }
+                        ForEach(finding.urls.prefix(3), id: \.self) { url in
+                            Text(url)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Color.secondaryText)
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                        }
+                        if !finding.configPaths.isEmpty {
+                            Text("关联配置：\(finding.configPaths.prefix(2).joined(separator: "、"))")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.secondaryText)
+                                .lineLimit(2)
+                        }
+                        Text("证据等级：配置引用 · 需要进一步验证")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.orange)
+                    }
+                    .padding(.vertical, 7)
+                    if finding.id != domainFindings.prefix(20).last?.id {
+                        Divider().overlay(Color.primaryText.opacity(0.08))
+                    }
+                }
+                if domainFindings.count > 20 {
+                    Text("另有 \(domainFindings.count - 20) 个域名线索未展开。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            }
         }
         .padding(16)
         .panel()
