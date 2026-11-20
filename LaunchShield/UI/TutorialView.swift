@@ -16,7 +16,7 @@ struct TutorialView: View {
                         HowToUseView()
                     } label: {
                         menuRow(icon: "book", title: "如何使用",
-                                subtitle: "从选应用、扫描、清零到开守护，六步走完一遍")
+                                subtitle: "从选应用、扫描、清零到还原，五步走完一遍")
                     }
                     .buttonStyle(.plain)
 
@@ -59,15 +59,14 @@ struct TutorialView: View {
     }
 }
 
-/// 二级页：如何使用（原六步教程原样搬来）。
+/// 二级页：如何使用（原教程原样搬来）。
 struct HowToUseView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
                 step(1, "第一次打开，先开权限",
-                     "弹窗问通知和联网时，都点允许。通知是给守护被挤掉时提醒你用的，联网是上传日志和检查更新用的。") {
+                     "弹窗问联网时，点允许。联网是上传日志、更新规则和检查更新用的。") {
                     VStack(spacing: 8) {
-                        mockRow { Text("系统通知").font(.system(size: 13)).foregroundStyle(Color.primaryText); Spacer(); chip("允许") }
                         mockRow { Text("联网").font(.system(size: 13)).foregroundStyle(Color.primaryText); Spacer(); chip("允许") }
                     }
                 }
@@ -100,19 +99,7 @@ struct HowToUseView: View {
                         chip("已冻结 ❄")
                     }
                 }
-                step(5, "开守护，新广告自动处理",
-                     "打开守护模式，它会一直盯着广告文件，有新的自动清零冻结。点「一键开启并隐藏」，守护窗口直接藏起来，屏幕上看不到。") {
-                    VStack(spacing: 9) {
-                        mockRow {
-                            Text("守护模式").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.primaryText)
-                            Spacer()
-                            Capsule().fill(Color.green).frame(width: 40, height: 24)
-                                .overlay(Circle().fill(.white).padding(2).shadow(radius: 1), alignment: .trailing)
-                        }
-                        mockRow { mockButton("🙈 一键开启并隐藏") }
-                    }
-                }
-                step(6, "想恢复，随时还原",
+                step(5, "想恢复，随时还原",
                      "清零前都自动留了备份。在「备份记录」里点全部还原，素材会原样写回去，应用恢复原状。") {
                     mockRow {
                         Text("备份记录").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.primaryText)

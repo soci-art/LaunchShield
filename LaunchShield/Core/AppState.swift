@@ -47,7 +47,6 @@ final class AppState: ObservableObject {
     let channel = Channel.shared
     let logs = LogStore()
     let store = LibraryStore()
-    let guardService = GuardService.shared
 
     @Published var target: AppTarget = .baidu
     /// 目标是否已由用户选定。默认未选择：打开先是空的，选了或一键勾选才有目标。
@@ -184,7 +183,6 @@ final class AppState: ObservableObject {
     private var lastReminderCheckAt: Date?
     /// 实时检测的定时器（清单第 12 条）：应用开着时每 30 分钟查一次。
     private var reminderTimer: Timer?
-    @Published var guardInterruption: Date?
     @Published var beforeSnapshot: ContainerSnapshot?
     @Published var afterSnapshot: ContainerSnapshot?
     /// Per-app snapshots for the find-ad flow, keyed by bundle ID. The scope
@@ -208,8 +206,7 @@ final class AppState: ObservableObject {
     private var fullScanTotalIds: Int64 = 0
 
     private var didBootstrap = false
-    private var reportedNewFiles = Set<String>()
-    // 文件在清零期间连续变化时短暂退避，避免守护/重复扫描反复撞同一文件。
+    // 文件在清零期间连续变化时短暂退避，避免重复扫描反复撞同一文件。
     private var unstableClearFailureCounts: [String: Int] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureCounts") as? [String: Int] ?? [:]
     private var unstableClearFailureTimes: [String: Double] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureTimes") as? [String: Double] ?? [:]
     private let unstableClearFailureLimit = 3
@@ -304,18 +301,6 @@ final class AppState: ObservableObject {
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
-        if let when = guardService.interruption {
-            guardInterruption = when
-            log("守护曾在 \(Format.fullDate(when)) 中断；上次不是一直运行", .warning)
-        }
-        guardService.log = { [weak self] message, level in
-            guard let self = self else { return }
-            self.log(message, level)
-        }
-        guardService.poll = { [weak self] deep in
-            guard let self = self else { return }
-            self.guardTick(deep: deep)
-        }
         firstLaunchChecks()
         recheckChannel()
     }
@@ -432,33 +417,22 @@ final class AppState: ObservableObject {
                     self.work.async { self.sweepAdDirectories(reason: "启动补扫") }
                 }
                 self.checkRecipes(silent: true)
-                // 上次守护还开着、是被杀进程/装新版断掉的：自动续上，
-                // 不用用户再手动开一遍。手动关掉的不会续（标记在关的时候就清了）。
-                if self.guardService.wasActiveAtLaunch, !self.guardService.isRunning {
-                    if let error = self.guardService.start(hidden: true) {
-                        self.log("守护没能自动续上：\(error)", .warning)
-                    } else {
-                        self.guardInterruption = nil
-                        self.log("守护已自动续上：上次开着，App 重开后接着守", .success)
-                    }
-                }
             }
         }
     }
 
-    /// 首次打开检查权限：通知（被挤通知要用）当场请一次；联网靠真发一次
-    /// 请求探明（顺带触发系统的数据权限弹窗），结果写进日志。
+    /// 首次打开检查联网：靠真发一次请求探明（顺带触发系统的数据
+    /// 权限弹窗），结果写进日志。
     private func firstLaunchChecks() {
         let key = "app.didFirstLaunchChecks"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
         UserDefaults.standard.set(true, forKey: key)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            GuardService.requestNotificationPermission()
             GitHubUpdate.fetchLatest { info, _ in
                 self?.log(info != nil ? "首次检查：联网正常" : "首次检查：暂时连不上服务器，上传、更新规则和检查更新需要联网",
                           .info)
             }
-            self?.log("首次打开：已检查通知与联网权限", .info)
+            self?.log("首次打开：已检查联网", .info)
         }
     }
 
@@ -481,10 +455,6 @@ final class AppState: ObservableObject {
 
     func dismissAlert() {
         alertText = nil
-    }
-
-    func dismissInterruption() {
-        guardInterruption = nil
     }
 
     // MARK: - Logging
@@ -2399,88 +2369,14 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Guard
-
-    var guardRunning: Bool { guardService.isRunning }
-
-    func setGuard(_ enabled: Bool) {
-        if enabled {
-            guard requireChannel() else { return }
-            if let error = guardService.start() {
-                alertText = error
-                log("守护没有开启：\(error)", .warning)
-            } else {
-                guardInterruption = nil
-                log("守护已开启：每 3 秒检查配方大小，每 30 秒比对一次目录", .success)
-                alertText = "守护已开启。它靠一个小画中画窗口让系统保持本应用运行，被系统终止后这里会显示中断记录。"
-            }
-        } else {
-            guardService.stop()
-            log("守护已停止", .notice)
-        }
-    }
-
-    /// 「一键开启并隐藏」：守护直接以隐藏窗口启动；已经在守护中就只把
-    /// 窗口压到 0.1 藏起来。
-    func startGuardAndHide() {
-        if guardService.isRunning {
-            guardService.setPiPHidden(true)
-            alertText = "守护窗口已隐藏。"
-            return
-        }
-        guard requireChannel() else { return }
-        if let error = guardService.start(hidden: true) {
-            alertText = error
-            log("守护没有开启：\(error)", .warning)
-        } else {
-            guardInterruption = nil
-            log("守护已开启并隐藏：每 3 秒检查配方大小，每 30 秒比对一次目录", .success)
-            alertText = "守护已开启，窗口已隐藏。被系统终止后这里会显示中断记录。"
-        }
-    }
-
-    private func guardTick(deep: Bool) {
-        guard guardService.isRunning else { return }
-        let list = recipes.filter { !isWhitelisted($0.bundleID) }
-        guard !list.isEmpty else { return }
-
-        var truncated = 0
-        for recipe in list where !recipe.placeholder {
-            guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
-            let full = RecipeEngine.fullPath(recipe, container: root)
-            guard let item = channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
-            if DatabaseFile.matches(relativePath: recipe.relativePath) { continue }
-            do {
-                if channel.isImmutable(full) {
-                    try channel.setImmutable(full, false)
-                }
-                try channel.truncate(full)
-                truncated += 1
-                log("值守重新清零：\(recipe.appName) · \(recipe.relativePath)（\(Format.bytes(item.size))）", .success)
-            } catch {
-                log("值守清零失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
-            }
-        }
-        if truncated > 0 {
-            DispatchQueue.main.async {
-                self.checkRecipes(silent: true)
-            }
-        }
-
-        if deep {
-            compareRecipeDirectories(list)
-            sweepAdDirectories(reason: "值守")
-        }
-    }
-
-    // MARK: - 目录补扫（守护深查与启动时共用）
+    // MARK: - 目录补扫（启动时）
 
     /// 目录自动处理：把已知广告目录里新冒出来的非零文件当场备份、清零
     /// 冻结并存入守护列表；名字带冷开/开屏的新目录也一样自动压。
-    /// 范围：有配方的应用＋当前目标＋一键勾选的应用。守护的「目录自动
-    /// 处理」关掉时不做。必须在后台队列调用。
+    /// 范围：有配方的应用＋当前目标＋一键勾选的应用。启动时补扫一遍。
+    /// 必须在后台队列调用。
     private func sweepAdDirectories(reason: String) {
-        guard channel.isAvailable, guardService.dirWatch else { return }
+        guard channel.isAvailable else { return }
         var bundleIDs = Set(recipes.map { $0.bundleID })
         if targetChosen { bundleIDs.insert(target.bundleID) }
         bundleIDs.formUnion(checkedIDs)
@@ -3084,25 +2980,6 @@ final class AppState: ObservableObject {
             if x != y { return x > y }
         }
         return false
-    }
-
-    private func compareRecipeDirectories(_ list: [Recipe]) {
-        var current = Set<String>()
-        for recipe in list {
-            guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
-            let directory = (RecipeEngine.fullPath(recipe, container: root) as NSString).deletingLastPathComponent
-            guard let items = try? channel.children(of: directory) else { continue }
-            let known = Set(list.filter { $0.bundleID == recipe.bundleID && $0.groupID == recipe.groupID }
-                .map { ($0.relativePath as NSString).lastPathComponent })
-            for item in items where !item.isDirectory && !known.contains(item.name) {
-                current.insert(item.path)
-            }
-        }
-        let added = current.subtracting(reportedNewFiles)
-        reportedNewFiles = current
-        guard !added.isEmpty else { return }
-        let names = added.prefix(3).map { ($0 as NSString).lastPathComponent }.joined(separator: "、")
-        log("值守发现 \(added.count) 个新文件，没有自动处理：\(names)", .notice)
     }
 
     // MARK: - Helpers

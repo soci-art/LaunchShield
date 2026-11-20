@@ -4,7 +4,6 @@ import UIKit
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.scenePhase) private var scenePhase
-    @ObservedObject private var guardService = GuardService.shared
 
     @State private var showAppPicker = false
     @State private var showWhitelist = false
@@ -34,7 +33,6 @@ struct ContentView: View {
                         summarySection
                         sourceSection
                         actionsSection
-                        guardCard
                         recipesSection
                         logSection
                         updateSection
@@ -674,119 +672,6 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
         }
-    }
-
-    // MARK: - Guard
-
-    private var guardCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("守护模式", systemImage: "pip")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.secondaryText)
-                Spacer()
-                Toggle("", isOn: Binding(get: { guardService.isRunning },
-                                         set: { if $0 && !requireSign() { return }; state.setGuard($0) }))
-                    .labelsHidden()
-                    .tint(.cyan)
-            }
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(guardService.isRunning ? Color.green : Color.secondaryText.opacity(0.4))
-                    .frame(width: 7, height: 7)
-                Text(guardService.statusText)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text(guardService.silentBoost ? "静音补强 开" : "静音补强 关")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            Button {
-                if requireSign() { state.startGuardAndHide() }
-            } label: {
-                Label("一键开启并隐藏", systemImage: "eye.slash")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.accentCyan)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .background(Color.accentCyan.opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            Text("靠一个小画中画窗口保持运行，自动盯着广告文件，有新的就清零冻结。")
-                .font(.system(size: 12))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("悬浮高度")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.primaryText)
-                    Spacer()
-                    Text(guardService.pipDisplayHeight <= 0.15 ? "0.1 pt（已隐藏）" : (guardService.pipDisplayHeight < 10 ? String(format: "%.1f pt", guardService.pipDisplayHeight) : "\(Int(guardService.pipDisplayHeight)) pt"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.secondaryText)
-                }
-                Slider(value: Binding(get: { guardService.pipDisplayHeight },
-                                      set: { guardService.setPipDisplayHeight($0) }),
-                       in: 0.1...240, step: 0.1)
-                    .tint(.cyan)
-                Text("画中画窗口的高度，拖动即时生效；拖到最底就是隐藏，一键开启并隐藏时滑块会跟着到底。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("静音音频补强（默认关，打开会增加电耗）",
-                       isOn: Binding(get: { guardService.silentBoost },
-                                     set: { guardService.silentBoost = $0 }))
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.primaryText)
-                    .tint(.cyan)
-                Text("打开后锁屏了守护也不容易断，更稳；代价是更耗电。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("被挤通知",
-                       isOn: Binding(get: { guardService.squeezeNotify },
-                                     set: { guardService.squeezeNotify = $0 }))
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.primaryText)
-                    .tint(.cyan)
-                Text("别的 App 开画中画把守护挤掉时，发通知提醒你")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("目录自动处理",
-                       isOn: Binding(get: { guardService.dirWatch },
-                                     set: { guardService.dirWatch = $0 }))
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.primaryText)
-                    .tint(.cyan)
-                Text("广告目录和冷开目录里一有新文件，守护就自动清零冻结（先备份）")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            if let when = state.guardInterruption {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                    Text("守护曾于 \(Format.fullDate(when)) 中断")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                    Spacer()
-                    Button("知道了") { state.dismissInterruption() }
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.accentCyan)
-                        .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(16)
-        .panel()
     }
 
     // MARK: - Recipes
