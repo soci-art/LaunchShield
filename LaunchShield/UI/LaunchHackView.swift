@@ -212,6 +212,7 @@ private enum LaunchHackMediaAnalyzer {
 
             let image: CGImage?
             var details: String
+            var analysisEvidence = "[内容已分析] 已从临时副本提取媒体属性；未写入目标容器"
             switch kind {
             case .image:
                 guard let source = CGImageSourceCreateWithURL(localURL as CFURL, nil),
@@ -237,6 +238,14 @@ private enum LaunchHackMediaAnalyzer {
                 let frameTime = CMTime(seconds: min(0.5, safeDuration > 0 ? safeDuration / 2 : 0),
                                        preferredTimescale: 600)
                 image = try? generator.copyCGImage(at: frameTime, actualTime: nil)
+                guard safeDuration > 0 || image != nil else {
+                    return LaunchHackMediaAnalysis(details: "视频容器无法解析或系统不支持该编码",
+                                                   previewData: nil,
+                                                   evidence: "[无法分析] AVFoundation 无法读取视频时长或关键帧")
+                }
+                if image == nil {
+                    analysisEvidence = "[部分分析] 已读取视频时长，但未能提取关键帧"
+                }
                 let durationText = safeDuration > 0 ? String(format: "%.2f 秒", safeDuration) : "时长未知"
                 let dimensions = image.map { "\($0.width) × \($0.height)" } ?? "关键帧不可用"
                 details = "视频 · \(durationText) · \(dimensions) · \(ByteCountFormatter.string(fromByteCount: Int64(clamping: localSize), countStyle: .file))"
@@ -247,7 +256,7 @@ private enum LaunchHackMediaAnalyzer {
             let preview = image.flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.68) }
             let boundedPreview = (preview?.count ?? 0) <= 160 * 1024 ? preview : nil
             return LaunchHackMediaAnalysis(details: details, previewData: boundedPreview,
-                                           evidence: "[内容已分析] 已从临时副本提取媒体属性；未写入目标容器")
+                                           evidence: analysisEvidence)
         } catch {
             return LaunchHackMediaAnalysis(details: "媒体分析失败：\(error.localizedDescription)",
                                            previewData: nil,
@@ -504,7 +513,7 @@ private final class LaunchHackModel: ObservableObject {
                 self.candidates = Array(sorted.prefix(500))
                 self.isScanning = false
                 let failureText = failures.isEmpty ? "" : "；\(failures.count) 个容器无法完整读取"
-                self.scanMessage = "扫描完成：访问 \(visitedTotal) 个文件，发现 \(found.count) 个候选资源\(failureText)。候选需要人工核验，不会自动冻结。"
+                self.scanMessage = "扫描完成：访问 \(visitedTotal) 个文件，发现 \(found.count) 个候选资源；媒体分析 \(mediaAnalyzedCount) 项\(failureText)。候选需要人工核验，不会自动冻结。"
             }
         }
     }
