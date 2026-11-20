@@ -1659,12 +1659,18 @@ struct LaunchHackView: View {
                         .foregroundStyle(imported ? Color.green : Color.accentCyan)
                         .disabled(imported)
 
-                        Button("确认并处理") {
-                            pendingRuleCandidate = candidate
+                        if candidate.isFrozen {
+                            Text("已冻结")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.green)
+                        } else {
+                            Button("确认并处理") {
+                                pendingRuleCandidate = candidate
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                            .disabled(isGovernanceRunning || state.isBusy)
                         }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.orange)
-                        .disabled(isGovernanceRunning || state.isBusy)
                     }
                 } else if candidate.groupID != nil {
                     Text("共享容器尚未关联宿主 App，暂不能导入或处理")
