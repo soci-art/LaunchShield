@@ -25,7 +25,7 @@ private struct LaunchHackCandidate: Codable, Identifiable, Hashable {
         (bundleID ?? "group:\(groupID ?? "unknown")") + "|" + relativePath
     }
 
-    var confidenceText: String {
+    var priorityText: String {
         score >= 80 ? "优先核验" : (score >= 60 ? "建议核验" : "低优先级")
     }
 
@@ -550,6 +550,10 @@ struct LaunchHackView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             }
+            Text("优先级只用于安排核验顺序，不代表广告已被确认。[内容已读取] 表示读取到的配置内容；[关联证据] 表示配置与本地资源存在文件名或 URL-MD5 对应；[路径推测] 仅依据路径特征。")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
 
             ForEach(model.candidates) { candidate in
                 VStack(alignment: .leading, spacing: 7) {
@@ -564,7 +568,7 @@ struct LaunchHackView: View {
                                 .textSelection(.enabled)
                         }
                         Spacer(minLength: 8)
-                        Text(candidate.confidenceText)
+                        Text(candidate.priorityText)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(candidate.score >= 80 ? Color.green : Color.accentCyan)
                     }
