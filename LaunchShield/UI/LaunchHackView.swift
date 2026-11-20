@@ -1,4 +1,7 @@
 import SwiftUI
+import ImageIO
+import AVFoundation
+import UIKit
 
 // MARK: - LaunchHack data
 
@@ -20,6 +23,8 @@ private struct LaunchHackCandidate: Codable, Identifiable, Hashable {
     let isFrozen: Bool
     let score: Int
     let evidence: [String]
+    var mediaDetails: String? = nil
+    var previewData: Data? = nil
 
     var id: String {
         (bundleID ?? "group:\(groupID ?? "unknown")") + "|" + relativePath
@@ -175,6 +180,82 @@ private enum LaunchHackContentAnalyzer {
     }
 }
 
+private struct LaunchHackMediaAnalysis {
+    let details: String
+    let previewData: Data?
+    let evidence: String
+}
+
+private enum LaunchHackMediaAnalyzer {
+    // 临时副本只落在 LaunchShield 自己的 tmp 目录；目标容器始终只读。
+    static func analyze(path: String, relativePath: String, channel: Channel) -> LaunchHackMediaAnalysis? {
+        let kind = FileKind.of(relativePath)
+        guard kind == .image || kind == .video else { return nil }
+
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("LaunchHackMedia-\\(UUID().uuidString)", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? fileManager.removeItem(at: directory) }
+
+            let ext = (relativePath as NSString).pathExtension
+            let localURL = directory.appendingPathComponent("candidate.\\(ext.isEmpty ? "bin" : ext)")
+            try channel.copyToLocal(path: path, destination: localURL.path)
+
+            let attributes = try fileManager.attributesOfItem(atPath: localURL.path)
+            let localSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            guard localSize > 0, localSize <= 32 * 1024 * 1024 else {
+                return LaunchHackMediaAnalysis(details: "临时副本超出分析大小限制", previewData: nil,
+                                               evidence: "[待验证] 媒体副本超出 32 MiB 分析上限")
+            }
+
+            let image: CGImage?
+            var details: String
+            switch kind {
+            case .image:
+                guard let source = CGImageSourceCreateWithURL(localURL as CFURL, nil),
+                      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                      let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                      let height = properties[kCGImagePropertyPixelHeight] as? Int else {
+                    return LaunchHackMediaAnalysis(details: "图片格式无法解析", previewData: nil,
+                                                   evidence: "[无法分析] 图片副本无法解析")
+                }
+                image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 480,
+                    kCGImageSourceCreateThumbnailWithTransform: true
+                ] as CFDictionary)
+                details = "图片 · \\(width) × \\(height) · \\(ByteCountFormatter.string(fromByteCount: Int64(clamping: localSize), countStyle: .file))"
+            case .video:
+                let asset = AVURLAsset(url: localURL)
+                let duration = asset.duration.seconds
+                let safeDuration = duration.isFinite && duration > 0 ? duration : 0
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 480, height: 480)
+                let frameTime = CMTime(seconds: min(0.5, safeDuration > 0 ? safeDuration / 2 : 0),
+                                       preferredTimescale: 600)
+                image = try? generator.copyCGImage(at: frameTime, actualTime: nil)
+                let durationText = safeDuration > 0 ? String(format: "%.2f 秒", safeDuration) : "时长未知"
+                let dimensions = image.map { "\\($0.width) × \\($0.height)" } ?? "关键帧不可用"
+                details = "视频 · \\(durationText) · \\(dimensions) · \\(ByteCountFormatter.string(fromByteCount: Int64(clamping: localSize), countStyle: .file))"
+            case .other:
+                return nil
+            }
+
+            let preview = image.flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.68) }
+            let boundedPreview = (preview?.count ?? 0) <= 160 * 1024 ? preview : nil
+            return LaunchHackMediaAnalysis(details: details, previewData: boundedPreview,
+                                           evidence: "[内容已分析] 已从临时副本提取媒体属性；未写入目标容器")
+        } catch {
+            return LaunchHackMediaAnalysis(details: "媒体分析失败：\\(error.localizedDescription)",
+                                           previewData: nil,
+                                           evidence: "[无法分析] WQ 临时复制或媒体解析失败")
+        }
+    }
+}
+
 private enum LaunchHackAssessment {
     private static func assess(relativePath: String) -> (score: Int, evidence: [String]) {
         let path = relativePath.lowercased()
@@ -280,6 +361,8 @@ private final class LaunchHackModel: ObservableObject {
             var visitedTotal = 0
             var completed = 0
             var failures: [String] = []
+            var mediaAnalyzedCount = 0
+            var mediaBytesCopied: UInt64 = 0
 
             for target in targets {
                 do {
@@ -367,6 +450,23 @@ private final class LaunchHackModel: ObservableObject {
                             digest = nil
                         }
 
+                        var mediaDetails: String?
+                        var previewData: Data?
+                        if (FileKind.of(relative) == .image || FileKind.of(relative) == .video),
+                           file.size <= 32 * 1024 * 1024,
+                           mediaAnalyzedCount < 24,
+                           mediaBytesCopied + file.size <= 128 * 1024 * 1024 {
+                            mediaAnalyzedCount += 1
+                            mediaBytesCopied += file.size
+                            if let media = LaunchHackMediaAnalyzer.analyze(
+                                path: file.path, relativePath: relative, channel: channel
+                            ) {
+                                mediaDetails = media.details
+                                previewData = media.previewData
+                                evidence.append(media.evidence)
+                            }
+                        }
+
                         found.append(LaunchHackCandidate(
                             bundleID: target.bundleID,
                             groupID: target.groupID,
@@ -377,7 +477,9 @@ private final class LaunchHackModel: ObservableObject {
                             md5: digest,
                             isFrozen: channel.isImmutable(file.path),
                             score: min(score, 98),
-                            evidence: Array(Set(evidence)).sorted()
+                            evidence: Array(Set(evidence)).sorted(),
+                            mediaDetails: mediaDetails,
+                            previewData: previewData
                         ))
                     }
                 } catch {
@@ -580,6 +682,20 @@ struct LaunchHackView: View {
                     }
                     .font(.system(size: 10))
                     .foregroundStyle(Color.secondaryText)
+
+                    if let details = candidate.mediaDetails {
+                        Text(details)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.primaryText)
+                        if let data = candidate.previewData, let image = UIImage(data: data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: .infinity)
+                                .frame(maxHeight: 150)
+                                .clipShape(RoundedRectangle(cornerRadius: 9))
+                        }
+                    }
 
                     ForEach(candidate.evidence, id: \.self) { evidence in
                         Text("• \(evidence)")
