@@ -899,6 +899,7 @@ struct LaunchHackView: View {
     @State private var pendingLocalRuleCandidate: LaunchHackCandidate?
     @State private var localRuleMessage = ""
     @State private var showUploadConfirmation = false
+    @State private var showBulkImportConfirmation = false
     @State private var isProfessionalMode = false
 
     /// 只把配置文件中实际读出的 URL 作为静态来源线索；不声称这是运行时网络请求。
@@ -1023,6 +1024,29 @@ struct LaunchHackView: View {
         } message: {
             Text("仅保存该 App 下图片/视频的精确路径，供 LaunchShield 后续扫描使用。不会清零、冻结或上传文件。")
         }
+        .confirmationDialog("批量导入可用候选？", isPresented: $showBulkImportConfirmation, titleVisibility: .visible) {
+            Button("导入 \(importableCandidates.filter { candidate in
+                !RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
+                                                   relativePath: candidate.relativePath)
+            }.count) 项") {
+                var importedCount = 0
+                for candidate in importableCandidates {
+                    guard let bundleID = candidate.bundleID,
+                          !RulesStore.containsLocalCandidate(bundleID: bundleID, relativePath: candidate.relativePath) else { continue }
+                    if RulesStore.addLocalCandidate(bundleID: bundleID,
+                                                     appName: candidate.appName,
+                                                     relativePath: candidate.relativePath) {
+                        importedCount += 1
+                    }
+                }
+                localRuleMessage = importedCount > 0
+                    ? "已导入 \(importedCount) 项本地规则；只保存精确路径，没有修改原文件。"
+                    : "没有新增规则，候选可能已导入或不符合要求。"
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("仅批量保存已关联宿主 App 的图片/视频精确路径，供后续扫描使用。不会清零、冻结、上传或修改原文件。")
+        }
         .confirmationDialog("上传本次识别数据？", isPresented: $showUploadConfirmation, titleVisibility: .visible) {
             Button("仅上传识别元数据") {
                 model.uploadRecognitionData()
@@ -1146,18 +1170,18 @@ struct LaunchHackView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Spacer()
-                Text(model.isScanning ? "检测中" : (model.candidates.isEmpty ? "等待检测" : "已完成初步识别"))
+                Text(model.isScanning ? "检测中" : (model.candidates.isEmpty ? "等待检测" : "初步分析完成"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(model.isScanning ? Color.accentCyan : Color.secondaryText)
             }
-            HStack(spacing: 10) {
-                resultMetric("\(model.candidates.count)", "相关项目")
-                resultMetric("\(model.candidates.filter { $0.score >= 80 }.count)", "高优先级")
-                resultMetric("\(model.candidates.filter { $0.score < 80 }.count)", "其他候选")
+            HStack(spacing: 8) {
+                resultMetric("\(model.candidates.count)", "发现项目")
+                resultMetric("\(priorityCandidates.count)", "优先核验")
+                resultMetric("\(reviewCandidates.count)", "需要确认")
             }
             Text(model.candidates.isEmpty
-                 ? "检测后会在下方集中显示识别结果。"
-                 : "识别结果是待核验线索。确认后可导入本地规则，或单独执行处理。")
+                 ? "检测会只读检查当前应用可访问的资源，不会自动清理或上传。"
+                 : "优先核验表示线索较强，不代表已确认是广告。请查看资源后再决定处理。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1180,6 +1204,25 @@ struct LaunchHackView: View {
         }
         .padding(15)
         .panel()
+    }
+
+    private var priorityCandidates: [LaunchHackCandidate] {
+        model.candidates.filter { $0.score >= 80 }
+    }
+
+    private var reviewCandidates: [LaunchHackCandidate] {
+        model.candidates.filter { $0.score >= 60 && $0.score < 80 }
+    }
+
+    private var evidenceOnlyCandidates: [LaunchHackCandidate] {
+        model.candidates.filter { $0.score < 60 || (!$0.bundleID.isNilOrEmpty && false) }
+    }
+
+    private var importableCandidates: [LaunchHackCandidate] {
+        model.candidates.filter {
+            $0.bundleID != nil &&
+            (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
+        }
     }
 
     private func resultMetric(_ value: String, _ title: String) -> some View {
@@ -1452,119 +1495,170 @@ struct LaunchHackView: View {
     }
 
     private var candidatePanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("识别项目")
-                    .font(.system(size: 15, weight: .semibold))
+                Text("处理建议")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Spacer()
                 Text("\(model.candidates.count) 项")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             }
+
             if !localRuleMessage.isEmpty {
                 Text(localRuleMessage)
-                    .font(.system(size: 11))
-                    .foregroundStyle(localRuleMessage.contains("已加入") ? Color.green : Color.secondaryText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(localRuleMessage.contains("已导入") ? Color.green : Color.secondaryText)
             }
 
-            ForEach(model.candidates) { candidate in
-                let canImport = candidate.bundleID != nil
-                    && (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video)
-                let imported = candidate.bundleID.map {
-                    RulesStore.containsLocalCandidate(bundleID: $0, relativePath: candidate.relativePath)
-                } ?? false
-
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(candidate.relativePath)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Color.secondaryText)
-                            .textSelection(.enabled)
-                        HStack(spacing: 8) {
-                            Text(candidate.kindText)
-                            Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: candidate.size), countStyle: .file))
-                            Text(candidate.isFrozen ? "已冻结" : "未冻结")
-                        }
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.secondaryText)
-
-                        if let details = candidate.mediaDetails {
-                            Text(details)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Color.primaryText)
-                            if let data = candidate.previewData, let image = UIImage(data: data) {
-                                Image(uiImage: image)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxWidth: .infinity)
-                                    .frame(maxHeight: 140)
-                                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                            }
-                        }
-                        if isProfessionalMode {
-                            ForEach(candidate.evidence, id: \.self) { evidence in
-                                Text(evidence)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Color.secondaryText)
-                                    .textSelection(.enabled)
-                            }
-                            if let md5 = candidate.md5 {
-                                Button("复制 MD5") { UIPasteboard.general.string = md5 }
-                                    .font(.system(size: 10))
-                            }
-                        }
-                        if canImport {
-                            HStack(spacing: 12) {
-                                Button(imported ? "已导入本地规则" : "导入本地规则") {
-                                    pendingLocalRuleCandidate = candidate
-                                }
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(imported ? Color.green : Color.accentCyan)
-                                .disabled(imported)
-
-                                Button("立即处理并冻结") {
-                                    pendingRuleCandidate = candidate
-                                }
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color.orange)
-                            }
-                        } else if candidate.groupID != nil {
-                            Text("共享组尚未关联宿主 App，暂不能导入或处理")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.orange)
-                        } else {
-                            Text("配置/索引文件仅作为定位证据")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.secondaryText)
-                        }
-                    }
-                    .padding(.vertical, 6)
+            if !importableCandidates.isEmpty {
+                Button {
+                    showBulkImportConfirmation = true
                 } label: {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(candidate.appName)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(Color.primaryText)
-                            Text((candidate.relativePath as NSString).lastPathComponent)
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.secondaryText)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 4)
-                        Text(candidate.priorityText)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(candidate.score >= 80 ? Color.green : Color.accentCyan)
-                    }
-                    .contentShape(Rectangle())
+                    Label("批量加入本地识别规则（\(importableCandidates.filter { candidate in
+                        !RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
+                                                           relativePath: candidate.relativePath)
+                    }.count)）", systemImage: "tray.and.arrow.down")
+                        .frame(maxWidth: .infinity)
                 }
-                if candidate.id != model.candidates.last?.id {
-                    Divider().overlay(Color.primaryText.opacity(0.06))
-                }
+                .buttonStyle(.bordered)
+                .disabled(importableCandidates.allSatisfy { candidate in
+                    RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
+                                                       relativePath: candidate.relativePath)
+                })
+            }
+
+            if !priorityCandidates.isEmpty {
+                candidateGroup(title: "优先核验", subtitle: "路径或目录线索较强，仍需人工确认", candidates: priorityCandidates)
+            }
+            if !reviewCandidates.isEmpty {
+                candidateGroup(title: "需要确认", subtitle: "存在部分广告相关特征", candidates: reviewCandidates)
+            }
+            if !evidenceOnlyCandidates.isEmpty {
+                candidateGroup(title: "仅作分析参考", subtitle: "目前缺少足够的广告关联证据", candidates: evidenceOnlyCandidates)
             }
         }
         .padding(15)
         .panel()
+    }
+
+    private func candidateGroup(title: String, subtitle: String, candidates: [LaunchHackCandidate]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                Text("\(candidates.count) 项")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            Text(subtitle)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.secondaryText)
+
+            ForEach(candidates) { candidate in
+                candidateRow(candidate)
+                if candidate.id != candidates.last?.id {
+                    Divider().overlay(Color.primaryText.opacity(0.06))
+                }
+            }
+        }
+        .padding(11)
+        .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
+    }
+
+    private func candidateRow(_ candidate: LaunchHackCandidate) -> some View {
+        let canImport = candidate.bundleID != nil
+            && (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video)
+        let imported = candidate.bundleID.map {
+            RulesStore.containsLocalCandidate(bundleID: $0, relativePath: candidate.relativePath)
+        } ?? false
+
+        return DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(candidate.relativePath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.secondaryText)
+                    .textSelection(.enabled)
+                HStack(spacing: 8) {
+                    Text(candidate.kindText)
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: candidate.size), countStyle: .file))
+                    Text(candidate.isFrozen ? "已冻结" : "未冻结")
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(Color.secondaryText)
+
+                if let details = candidate.mediaDetails {
+                    Text(details)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.primaryText)
+                    if let data = candidate.previewData, let image = UIImage(data: data) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .frame(maxHeight: 140)
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                }
+                if isProfessionalMode {
+                    ForEach(candidate.evidence, id: \.self) { evidence in
+                        Text(evidence)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.secondaryText)
+                            .textSelection(.enabled)
+                    }
+                    if let md5 = candidate.md5 {
+                        Button("复制 MD5") { UIPasteboard.general.string = md5 }
+                            .font(.system(size: 10))
+                    }
+                }
+                if canImport {
+                    HStack(spacing: 12) {
+                        Button(imported ? "已加入本地规则" : "加入本地规则") {
+                            pendingLocalRuleCandidate = candidate
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(imported ? Color.green : Color.accentCyan)
+                        .disabled(imported)
+
+                        Button("确认并处理") {
+                            pendingRuleCandidate = candidate
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.orange)
+                    }
+                } else if candidate.groupID != nil {
+                    Text("共享容器尚未关联宿主 App，暂不能导入或处理")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.orange)
+                } else {
+                    Text("配置/索引文件仅作为定位证据，不直接修改")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            }
+            .padding(.vertical, 6)
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(candidate.appName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    Text((candidate.relativePath as NSString).lastPathComponent)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text(candidate.priorityText)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(candidate.score >= 80 ? Color.green : Color.accentCyan)
+            }
+            .contentShape(Rectangle())
+        }
     }
 
     private var draftPanel: some View {
