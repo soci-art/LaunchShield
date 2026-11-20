@@ -1238,6 +1238,24 @@ struct LaunchHackView: View {
         model.candidates.filter { $0.score < 60 }
     }
 
+    private var readyCandidates: [LaunchHackCandidate] {
+        model.candidates.filter {
+            $0.bundleID != nil && !$0.isFrozen &&
+            (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
+        }.sorted { $0.score > $1.score }
+    }
+
+    private var completedCandidates: [LaunchHackCandidate] {
+        model.candidates.filter { $0.isFrozen }
+    }
+
+    private var unsupportedCandidates: [LaunchHackCandidate] {
+        model.candidates.filter {
+            $0.bundleID == nil ||
+            (FileKind.of($0.relativePath) != .image && FileKind.of($0.relativePath) != .video)
+        }
+    }
+
     private var importableCandidates: [LaunchHackCandidate] {
         model.candidates.filter {
             $0.bundleID != nil &&
@@ -1517,13 +1535,19 @@ struct LaunchHackView: View {
     private var candidatePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("处理建议")
+                Text("资源处理状态")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Spacer()
                 Text("\(model.candidates.count) 项")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
+            }
+
+            HStack(spacing: 8) {
+                statusCount(readyCandidates.count, title: "可处理", color: .accentCyan)
+                statusCount(completedCandidates.count, title: "已处理", color: .green)
+                statusCount(unsupportedCandidates.count, title: "暂不支持", color: .orange)
             }
 
             if !localRuleMessage.isEmpty {
@@ -1533,9 +1557,7 @@ struct LaunchHackView: View {
             }
 
             if !importableCandidates.isEmpty {
-                Button {
-                    showBulkImportConfirmation = true
-                } label: {
+                Button { showBulkImportConfirmation = true } label: {
                     Label("批量加入本地识别规则（\(importableCandidates.filter { candidate in
                         !RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
                                                            relativePath: candidate.relativePath)
@@ -1549,7 +1571,7 @@ struct LaunchHackView: View {
                 })
             }
 
-            let selectedGovernanceCandidates = model.candidates.filter { selectedGovernanceIDs.contains($0.id) }
+            let selectedGovernanceCandidates = readyCandidates.filter { selectedGovernanceIDs.contains($0.id) }
             if !selectedGovernanceCandidates.isEmpty {
                 Button {
                     governanceQueue = selectedGovernanceCandidates
@@ -1560,22 +1582,42 @@ struct LaunchHackView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(isGovernanceRunning || state.isBusy || model.isScanning)
-                Text("先逐项展开并核验资源，再勾选需要处理的项目。评分仅用于排序，不代表已确认广告。")
+                Text("只处理已逐项核验并勾选的资源。优先级评分不代表广告事实。")
                     .font(.system(size: 10))
                     .foregroundStyle(Color.secondaryText)
             }
-            if !priorityCandidates.isEmpty {
-                candidateGroup(title: "优先核验", subtitle: "路径或目录线索较强，仍需人工确认", candidates: priorityCandidates)
+
+            if !readyCandidates.isEmpty {
+                candidateGroup(title: "可处理", subtitle: "已关联宿主 App、尚未冻结的图片或视频；仍需你确认具体项目", candidates: readyCandidates)
             }
-            if !reviewCandidates.isEmpty {
-                candidateGroup(title: "需要确认", subtitle: "存在部分广告相关特征", candidates: reviewCandidates)
+            if !completedCandidates.isEmpty {
+                candidateGroup(title: "已处理 / 已冻结", subtitle: "扫描时已检测到冻结状态；刚完成治理后可复查刷新状态", candidates: completedCandidates)
             }
-            if !evidenceOnlyCandidates.isEmpty {
-                candidateGroup(title: "仅作分析参考", subtitle: "目前缺少足够的广告关联证据", candidates: evidenceOnlyCandidates)
+            if !unsupportedCandidates.isEmpty {
+                candidateGroup(title: "暂不支持", subtitle: "共享容器未关联宿主 App，或资源类型不适合直接清理；仅保留为定位证据", candidates: unsupportedCandidates)
+            }
+            if model.candidates.isEmpty {
+                Text("当前没有候选资源。可以重新扫描目标 App。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
             }
         }
         .padding(15)
         .panel()
+    }
+
+    private func statusCount(_ count: Int, title: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(count)")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func candidateGroup(title: String, subtitle: String, candidates: [LaunchHackCandidate]) -> some View {
@@ -1763,6 +1805,16 @@ struct LaunchHackView: View {
                 .padding(.vertical, 4)
             }
             if !isGovernanceRunning {
+                if succeeded > 0 {
+                    Button {
+                        selectedGovernanceIDs.removeAll()
+                        beginScan()
+                    } label: {
+                        Label("复查当前应用", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
                 Button("清除本次报告") { governanceResults = [] }
                     .font(.system(size: 11, weight: .medium))
             }
