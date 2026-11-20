@@ -1915,6 +1915,9 @@ final class AppState: ObservableObject {
                 guard let item = self.channel.item(at: full), !item.isDirectory, !item.isSymlink else {
                     throw ChannelFailure("目标文件不存在、不是普通文件或已变成符号链接")
                 }
+                guard item.size > 0 else {
+                    throw ChannelFailure("目标文件为空，无需清零或建立冻结规则")
+                }
                 guard item.size == expectedSize,
                       abs(item.modified.timeIntervalSince(expectedModifiedAt)) <= 2 else {
                     throw ChannelFailure("资源在扫描后发生变化，请重新扫描并核验，未执行清零")
@@ -1968,10 +1971,10 @@ final class AppState: ObservableObject {
                     self.recipes = self.store.file.recipes
                     self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                     if let freezeFailure {
-                        self.log("LaunchHack 资源已备份并清零，但冻结失败：\\(relativePath)：\\(freezeFailure)", .warning)
-                        self.alertText = "已备份并清零，配方已同步；但冻结失败：\\(freezeFailure)。请在已守护列表重试冻结。"
+                        self.log("LaunchHack 资源已备份并清零，但冻结失败：\(relativePath)：\(freezeFailure)", .warning)
+                        self.alertText = "已备份并清零，配方已同步；但冻结失败：\(freezeFailure)。请在已守护列表重试冻结。"
                     } else {
-                        self.log("LaunchHack 资源已备份、清零、冻结并同步到守护配方：\\(relativePath)", .success)
+                        self.log("LaunchHack 资源已备份、清零、冻结并同步到守护配方：\(relativePath)", .success)
                         self.alertText = "已完成：原文件已备份，资源已清零并冻结，规则已同步到 LaunchShield「已守护应用」。"
                     }
                 }
@@ -1982,8 +1985,8 @@ final class AppState: ObservableObject {
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
-                    self.log("LaunchHack 规则同步失败：\\(relativePath)：\\(error.localizedDescription)", .warning)
-                    self.alertText = "同步失败，目标文件未完成处理：\\(error.localizedDescription)"
+                    self.log("LaunchHack 规则同步失败：\(relativePath)：\(error.localizedDescription)", .warning)
+                    self.alertText = "同步失败，目标文件未完成处理：\(error.localizedDescription)"
                 }
             }
         }
