@@ -14,6 +14,8 @@
 #import "WQRoute.h"
 #import "WQAccess.h"
 #import "bad_query.h"
+#import <sys/sysctl.h>
+#import <stdlib.h>
 
 static WQRouteState gState = WQRouteStateUnset;
 static BOOL gResolved;
@@ -108,8 +110,11 @@ WQRouteState wq_route_state(void)
     if (gResolved) return gState;
     gState = wq_route_compute();
     gResolved = YES;
+    // Avoid touching the App Group cache on a system already known to be
+    // outside the supported worse_query window.
+    NSString *effectiveGroup = gState == WQRouteStateWorse ? wq_app_group() : nil;
     wq_log(@"route: effectiveAppGroup=%@",
-           wq_app_group() ?: @"none");
+           effectiveGroup ?: @"none");
     wq_log(@"route: signMethod=%@ iOS=%@ build=%@ state=%@",
            wq_route_sign_method() ?: @"none",
            wq_route_version_text(), wq_route_build_text(),
