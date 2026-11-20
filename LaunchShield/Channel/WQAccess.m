@@ -351,9 +351,9 @@ NSString *wq_app_group(void)
     dispatch_once(&once, ^{
         NSArray<NSString *> *profile = wq_profile_groups();
         NSArray<NSString *> *entitled = wq_entitlement_groups();
-        // Only SecTask's effective process entitlement can authorize this
-        // process. Profile entries are logged for diagnosis, never promoted
-        // into runtime permissions.
+        // The effective process entitlement is authoritative. If SecTask
+        // returned no value, wq_entitlement_groups() already tried the signed
+        // Mach-O fallback; profile entries remain diagnostic only.
         NSMutableArray<NSString *> *ordered = [NSMutableArray array];
         NSString *bundleGroup = [@"group." stringByAppendingString:NSBundle.mainBundle.bundleIdentifier ?: @""];
         if (bundleGroup.length > 6 && [entitled containsObject:bundleGroup])
