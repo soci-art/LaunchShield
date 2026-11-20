@@ -164,6 +164,20 @@ private enum LaunchHackContentAnalyzer {
         return components.string ?? value
     }
 
+    /// 对证据句子中的 URL 脱敏，避免 query/fragment 携带 token 或追踪参数。
+    static func displayURLs(in text: String) -> String {
+        let pattern = #"https?://[^\s"'<>]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        var result = text
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            let raw = String(result[range]).trimmingCharacters(in: CharacterSet(charactersIn: ".,);]"))
+            result.replaceSubrange(range, with: displayURL(raw))
+        }
+        return result
+    }
+
     private static func extractURLs(_ text: String) -> [String] {
         guard let regex = try? NSRegularExpression(pattern: "https?://[^\\s\\\"'<>]+") else { return [] }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -542,7 +556,7 @@ private final class LaunchHackModel: ObservableObject {
                 "md5": candidate.md5 as Any? ?? NSNull(),
                 "isFrozen": candidate.isFrozen,
                 "priorityScore": candidate.score,
-                "evidence": candidate.evidence,
+                "evidence": candidate.evidence.map { LaunchHackContentAnalyzer.displayURLs(in: $0) },
                 "mediaDetails": candidate.mediaDetails as Any? ?? NSNull()
             ]
         }
@@ -1127,8 +1141,8 @@ struct LaunchHackView: View {
             }
             HStack(spacing: 10) {
                 resultMetric("\(model.candidates.count)", "相关项目")
-                resultMetric("\(model.candidates.filter { $0.score >= 80 }.count)", "较强关联")
-                resultMetric("\(model.candidates.filter { $0.score < 80 }.count)", "待核验")
+                resultMetric("\(model.candidates.filter { $0.score >= 80 }.count)", "高优先级")
+                resultMetric("\(model.candidates.filter { $0.score < 80 }.count)", "其他候选")
             }
             Text(model.candidates.isEmpty
                  ? "完成检测后，识别到的图片、视频、配置和来源线索会集中显示在这里。"
