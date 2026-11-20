@@ -528,8 +528,32 @@ static void wq_log_recovery_failure(NSString *libraryPath, int error, NSString *
     wq_log(@"token cache recovery failed: %@; preserved contents retained. Every folder outside WQ Files is refused until this is repaired: Settings → Reset Access Cache.", line);
 }
 
+static _Atomic BOOL gCacheRecoveryBlocked = false;
+
+// Recover the worse_query Caches swap. If its journal is inconsistent, use
+// the existing non-destructive reset routine: it renames preserved contents
+// aside and never deletes them. A hard failure trips a process-local circuit
+// breaker so thousands of paths do not repeat the same doomed token request.
+static BOOL wq_recover_or_reset_cache(int library, NSString *libraryPath)
+{
+    if (WQCacheSwapRecover(library)) return YES;
+    int recoveryError = errno;
+    NSMutableArray<NSString *> *steps = [NSMutableArray new];
+    if (WQCacheSwapReset(library, steps)) {
+        wq_log(@"token cache recovery: automatically repaired %@; preserved data retained (%@)",
+               libraryPath, steps.count ? [steps componentsJoinedByString:@", "] : @"no changes needed");
+        return YES;
+    }
+    int repairError = errno;
+    if (repairError == 0) repairError = recoveryError;
+    wq_log_recovery_failure(libraryPath, repairError, wq_cache_state(library));
+    errno = repairError;
+    return NO;
+}
+
 static int64_t wq_query(NSString *target, BOOL altFlags)
 {
+    if (atomic_load_explicit(&gCacheRecoveryBlocked, memory_order_relaxed)) return -8;
     NSString *group = wq_app_group();
     if (!group) return -1;
     NSFileManager *files = NSFileManager.defaultManager;
@@ -546,18 +570,24 @@ static int64_t wq_query(NSString *target, BOOL altFlags)
         return -4;
     }
     int64_t handle = -4;
+    BOOL recoveryFailed = NO;
     @try {
-        // Keep the exact Caches swap point required by worse_query, but preserve
-        // its original inode and nested contents. Next acquisition recovers an
-        // interrupted swap from the durable marker, before doing another query.
-        if (WQCacheSwapBegin(library, target)) handle = wq_query_token(group, altFlags);
+        // Recover first. A broken journal gets one non-destructive repair
+        // attempt before the query; if repair still fails, stop retrying every
+        // container and leave the preserved cache data untouched.
+        if (!wq_recover_or_reset_cache(library, libraryPath)) {
+            recoveryFailed = YES;
+            atomic_store_explicit(&gCacheRecoveryBlocked, true, memory_order_relaxed);
+            handle = -8;
+        } else if (WQCacheSwapBegin(library, target)) {
+            handle = wq_query_token(group, altFlags);
+        }
     } @catch (NSException *exception) {
         wq_log(@"token query exception: %@", exception.reason);
         handle = -9;
     } @finally {
-        if (!WQCacheSwapRecover(library)) {
-            int error = errno;
-            wq_log_recovery_failure(libraryPath, error, wq_cache_state(library));
+        if (!recoveryFailed && !wq_recover_or_reset_cache(library, libraryPath)) {
+            atomic_store_explicit(&gCacheRecoveryBlocked, true, memory_order_relaxed);
             if (handle >= 0) wq_release_handle(handle);
             handle = -8;
         }
@@ -589,6 +619,7 @@ BOOL wq_reset_access_cache(NSString **errorText)
         return NO;
     }
     BOOL ok = WQCacheSwapReset(library, done);
+    if (ok) atomic_store_explicit(&gCacheRecoveryBlocked, false, memory_order_relaxed);
     int err = errno;
     close(lock);
     close(library);

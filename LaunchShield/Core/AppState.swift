@@ -209,6 +209,11 @@ final class AppState: ObservableObject {
 
     private var didBootstrap = false
     private var reportedNewFiles = Set<String>()
+    // 文件在清零期间连续变化时短暂退避，避免守护/重复扫描反复撞同一文件。
+    private var unstableClearFailureCounts: [String: Int] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureCounts") as? [String: Int] ?? [:]
+    private var unstableClearFailureTimes: [String: Double] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureTimes") as? [String: Double] ?? [:]
+    private let unstableClearFailureLimit = 3
+    private let unstableClearCooldown: TimeInterval = 600
 
     init() {
         backupManager = BackupManager(store: store)
@@ -1458,6 +1463,7 @@ final class AppState: ObservableObject {
             var done = 0
             var failure: String?
             var skippedDB = 0
+            var skippedActiveFiles = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
             for candidate in selected {
@@ -1470,6 +1476,17 @@ final class AppState: ObservableObject {
                 }
                 let appBundleID = candidate.bundleID.isEmpty ? self.target.bundleID : candidate.bundleID
                 let appName = candidate.appName.isEmpty ? self.target.name : candidate.appName
+                let changeKey = appBundleID + "\n" + full
+                let now = Date().timeIntervalSince1970
+                if let lastFailure = self.unstableClearFailureTimes[changeKey], now - lastFailure > self.unstableClearCooldown {
+                    self.unstableClearFailureCounts.removeValue(forKey: changeKey)
+                    self.unstableClearFailureTimes.removeValue(forKey: changeKey)
+                }
+                if (self.unstableClearFailureCounts[changeKey] ?? 0) >= self.unstableClearFailureLimit {
+                    skippedActiveFiles += 1
+                    self.log("应用正在使用中，暂时跳过：\(appName) \(candidate.relativePath)。关闭应用后再试", .notice)
+                    continue
+                }
                 let parts = candidate.relativePath.split(separator: "/", omittingEmptySubsequences: false)
                 guard !candidate.relativePath.isEmpty, !candidate.relativePath.hasPrefix("/"),
                       !candidate.relativePath.contains("\\"), !candidate.relativePath.unicodeScalars.contains(where: { $0.value == 0 }),
@@ -1512,6 +1529,10 @@ final class AppState: ObservableObject {
                     }
                     try self.channel.truncate(full)
                     done += 1
+                    self.unstableClearFailureCounts.removeValue(forKey: changeKey)
+                    self.unstableClearFailureTimes.removeValue(forKey: changeKey)
+                    UserDefaults.standard.set(self.unstableClearFailureCounts, forKey: "ls.unstableClearFailureCounts")
+                    UserDefaults.standard.set(self.unstableClearFailureTimes, forKey: "ls.unstableClearFailureTimes")
                     self.log("已清零确认的素材：\(appName) \(candidate.relativePath)", .success)
                     if located.isKnown {
                         newRecipes.append(Recipe(id: UUID(),
@@ -1526,6 +1547,17 @@ final class AppState: ObservableObject {
                                                  groupID: located.groupID))
                     }
                 } catch {
+                    let failureMessage = error.localizedDescription
+                    if failureMessage.localizedCaseInsensitiveContains("发生变化") || failureMessage.localizedCaseInsensitiveContains("changed") || failureMessage.contains("备份校验不一致") {
+                        let count = (self.unstableClearFailureCounts[changeKey] ?? 0) + 1
+                        self.unstableClearFailureCounts[changeKey] = count
+                        self.unstableClearFailureTimes[changeKey] = Date().timeIntervalSince1970
+                        UserDefaults.standard.set(self.unstableClearFailureCounts, forKey: "ls.unstableClearFailureCounts")
+                        UserDefaults.standard.set(self.unstableClearFailureTimes, forKey: "ls.unstableClearFailureTimes")
+                        if count >= self.unstableClearFailureLimit {
+                            self.log("文件连续 \(count) 次在清零期间发生变化，后续 10 分钟暂时跳过：\(appName) \(candidate.relativePath)", .notice)
+                        }
+                    }
                     if wasImmutable {
                         do {
                             if self.channel.item(at: full) != nil { try self.channel.setImmutable(full, true) }
@@ -1554,13 +1586,16 @@ final class AppState: ObservableObject {
                 let dbNote = skippedDB > 0
                     ? "另有 \(skippedDB) 个数据库文件已跳过（被应用占用着、清不动，也不是广告素材）。"
                     : ""
+                let busyNote = skippedActiveFiles > 0
+                    ? "另有 \(skippedActiveFiles) 个文件因持续变化已暂时跳过；请关闭对应应用后再清理。"
+                    : ""
                 let completionText: String
                 if let failure {
                     self.log("清零候选没有全部完成，没清成的：\(failure)", .warning)
-                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。" + dbNote
+                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。" + dbNote + busyNote
                 } else {
                     self.log("确认的素材已清零：\(done) 个，配方已存入守护列表", .success)
-                    completionText = "已清零 \(done) 个素材，并加入已守护应用。" + dbNote
+                    completionText = "已清零 \(done) 个素材，并加入已守护应用。" + dbNote + busyNote
                     self.candidates = []
                     self.selectedCandidatePaths = []
                 }
@@ -2499,6 +2534,17 @@ final class AppState: ObservableObject {
         if DatabaseFile.matches(relativePath: file.relativePath) { return false }
         let ownerID = file.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : file.bundleID
         let ownerName = file.appName.isEmpty ? LocalADBlockRule.dynamicSplashDisplayName : file.appName
+        let changeKey = ownerID + "\n" + file.path
+        let now = Date().timeIntervalSince1970
+        if let lastFailure = unstableClearFailureTimes[changeKey], now - lastFailure > unstableClearCooldown {
+            unstableClearFailureCounts.removeValue(forKey: changeKey)
+            unstableClearFailureTimes.removeValue(forKey: changeKey)
+        }
+        if (unstableClearFailureCounts[changeKey] ?? 0) >= unstableClearFailureLimit {
+            log("应用正在使用中，暂时跳过：\(ownerName) \(file.relativePath)。关闭应用后再试", .notice)
+            return false
+        }
+        let wasImmutable = channel.isImmutable(file.path)
         let located = locateFile(path: file.path, relativePath: file.relativePath, ownerID: ownerID)
         do {
             if channel.isImmutable(file.path) {
@@ -2515,6 +2561,10 @@ final class AppState: ObservableObject {
             newBackups.append(record)
             try channel.truncate(file.path)
             try channel.setImmutable(file.path, true)
+            unstableClearFailureCounts.removeValue(forKey: changeKey)
+            unstableClearFailureTimes.removeValue(forKey: changeKey)
+            UserDefaults.standard.set(unstableClearFailureCounts, forKey: "ls.unstableClearFailureCounts")
+            UserDefaults.standard.set(unstableClearFailureTimes, forKey: "ls.unstableClearFailureTimes")
             if located.isKnown {
                 newRecipes.append(Recipe(id: UUID(),
                                          bundleID: ownerID,
@@ -2529,7 +2579,22 @@ final class AppState: ObservableObject {
             }
             return true
         } catch {
-            log("自动清文件失败：\(file.relativePath)：\(error.localizedDescription)", .warning)
+            let message = error.localizedDescription
+            if wasImmutable, channel.item(at: file.path) != nil {
+                do { try channel.setImmutable(file.path, true) }
+                catch { log("恢复原冻结状态失败：\(file.relativePath)：\(error.localizedDescription)", .warning) }
+            }
+            if message.localizedCaseInsensitiveContains("发生变化") || message.localizedCaseInsensitiveContains("changed") || message.contains("备份校验不一致") {
+                let count = (unstableClearFailureCounts[changeKey] ?? 0) + 1
+                unstableClearFailureCounts[changeKey] = count
+                unstableClearFailureTimes[changeKey] = Date().timeIntervalSince1970
+                UserDefaults.standard.set(unstableClearFailureCounts, forKey: "ls.unstableClearFailureCounts")
+                UserDefaults.standard.set(unstableClearFailureTimes, forKey: "ls.unstableClearFailureTimes")
+                if count >= unstableClearFailureLimit {
+                    log("文件连续 \(count) 次在清零期间发生变化，后续 10 分钟暂时跳过：\(ownerName) \(file.relativePath)", .notice)
+                }
+            }
+            log("自动清文件失败：\(file.relativePath)：\(message)", .warning)
             return false
         }
     }
@@ -2565,6 +2630,7 @@ final class AppState: ObservableObject {
         for dir in matched {
             guard cleared + count < 300 else { break }
             var dirCleared = 0
+            var skippedActiveInDir = false
             var stack: [(path: String, relative: String)] = [(info.path + "/" + dir, dir)]
             var subdirs: [String] = []
             var fileBudget = 0
@@ -2584,14 +2650,23 @@ final class AppState: ObservableObject {
                         if autoClearFile(file, source: "冷开广告", newBackups: &newBackups, newRecipes: &newRecipes) {
                             dirCleared += 1
                             count += 1
+                        } else {
+                            let key = file.bundleID + "\n" + file.path
+                            if (unstableClearFailureCounts[key] ?? 0) >= unstableClearFailureLimit {
+                                skippedActiveInDir = true
+                            }
                         }
                     }
                 }
             }
-            for sub in subdirs.sorted(by: { $0.count > $1.count }) {
-                try? channel.setImmutable(sub, true)
+            if !skippedActiveInDir {
+                for sub in subdirs.sorted(by: { $0.count > $1.count }) {
+                    try? channel.setImmutable(sub, true)
+                }
+                try? channel.setImmutable(info.path + "/" + dir, true)
+            } else {
+                log("冷开广告目录有文件仍在变化，本轮不冻结目录：\(info.name) \(dir)", .notice)
             }
-            try? channel.setImmutable(info.path + "/" + dir, true)
             if dirCleared > 0 {
                 log("自动压：\(info.name) 冷开广告目录 \(dir) 清了 \(dirCleared) 个文件", .success)
             }
@@ -2604,11 +2679,20 @@ final class AppState: ObservableObject {
     /// 日志页「导出 → 上传」：把运行日志传到收集箱。
     func uploadLog() {
         var text = exportLogText()
-        // 上传封顶（清单第 10 条）：日志太长就只传最后约 1.5 MB，
-        // 开头注明截过，免得一份日志把收集箱撑爆。
-        if text.utf8.count > 1_500_000 {
-            let tail = String(decoding: Data(text.utf8.suffix(1_500_000)), as: UTF8.self)
-            text = "（日志太长，只传了最后约 1.5 MB）\n" + String(tail.drop(while: { $0 != "\n" }))
+        // 超长时固定保留环境头部，再用剩余预算截取日志尾部。
+        // 这样版本、系统、路线、签名方式、共享组和导出时间不会丢。
+        let uploadLimit = 1_500_000
+        let fullData = Data(text.utf8)
+        if fullData.count > uploadLimit {
+            let sectionMarker = "\n\n———— 运行日志 ————\n"
+            let header = text.components(separatedBy: sectionMarker).first ?? text.components(separatedBy: "\n").prefix(8).joined(separator: "\n")
+            let notice = "（日志过长：已保留环境头部和最近日志；中间部分已截断）"
+            let tailMarker = "\n\n———— 最近日志尾部 ————\n"
+            let budget = max(0, uploadLimit - header.utf8.count - notice.utf8.count - tailMarker.utf8.count - 2)
+            var tailData = Data(fullData.suffix(budget))
+            if let newline = tailData.firstIndex(of: 0x0A) { tailData.removeSubrange(...newline) }
+            let tail = String(data: tailData, encoding: .utf8) ?? ""
+            text = header + "\n\n" + notice + tailMarker + tail
         }
         CollectUploader.upload(kind: "log", contentType: "text/plain; charset=utf-8", body: Data(text.utf8)) { [weak self] ok, message in
             guard let self = self else { return }
