@@ -68,6 +68,101 @@ private enum LaunchHackDraftStore {
     }
 }
 
+private struct LaunchHackContentEvidence {
+    let sourcePath: String
+    let urls: [String]
+    let hasAdSignals: Bool
+}
+
+private enum LaunchHackContentAnalyzer {
+    private static let configExtensions: Set<String> = ["plist", "json", "xml"]
+
+    static func isReadableConfig(_ path: String, size: UInt64) -> Bool {
+        let lower = path.lowercased()
+        let ext = (path as NSString).pathExtension.lowercased()
+        let components = lower.split(separator: "/").map(String.init)
+        let adSpecific = ["splash", "adcache", "ad_cache", "advert", "adsdk",
+                          "launchad", "launch_ad", "bootimagebiz", "bootimagedoc"]
+            .contains { marker in components.contains { $0.contains(marker) } }
+        let preferences = lower.contains("/library/preferences/") || lower.hasPrefix("library/preferences/")
+        return configExtensions.contains(ext) && size > 0 && size <= 2 * 1024 * 1024
+            && (preferences || adSpecific)
+    }
+
+    static func analyze(path: String, relativePath: String, data: Data) -> LaunchHackContentEvidence? {
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        var searchableText = String(decoding: data, as: UTF8.self)
+
+        if ext == "plist",
+           let object = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
+            searchableText += "\n" + flattenStrings(object).joined(separator: "\n")
+        } else if ext == "json",
+                  let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+            searchableText += "\n" + flattenStrings(object).joined(separator: "\n")
+        }
+
+        let urls = extractURLs(searchableText)
+        let lower = searchableText.lowercased()
+        let markers = [
+            "splash", "cold_launch", "coldlaunch", "launch_ad", "startup_ad",
+            "advertisement", "ad_cache", "advertising", "promotion", "campaign",
+            "adsdk", "ad_material", "admob", "gdt", "pangolin", "beizi",
+            "activity_message", "content_url_list", "appopen", "openad"
+        ]
+        let hasSignals = markers.contains { lower.contains($0) }
+        guard !urls.isEmpty || hasSignals else { return nil }
+        return LaunchHackContentEvidence(sourcePath: path, urls: urls, hasAdSignals: hasSignals)
+    }
+
+    static func resourceMatches(_ relativePath: String, evidence: LaunchHackContentEvidence) -> Bool {
+        let name = ((relativePath as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
+        guard !name.isEmpty else { return false }
+        for url in evidence.urls {
+            if let component = URLComponents(string: url),
+               let last = component.path.split(separator: "/").last {
+                let remoteName = (String(last) as NSString).deletingPathExtension.lowercased()
+                if !remoteName.isEmpty && name == remoteName {
+                    return true
+                }
+            }
+            if LocalADBlockRule.digests(for: url).contains(name) { return true }
+        }
+        return false
+    }
+
+    static func displayURL(_ value: String) -> String {
+        guard var components = URLComponents(string: value) else { return value }
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? value
+    }
+
+    private static func extractURLs(_ text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: "https?://[^\\s\\\"'<>]+") else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var seen = Set<String>()
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let matchRange = Range(match.range, in: text) else { return nil }
+            let value = String(text[matchRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,);]"))
+            guard seen.insert(value).inserted else { return nil }
+            return value
+        }
+    }
+
+    private static func flattenStrings(_ value: Any) -> [String] {
+        if let text = value as? String { return [text] }
+        if let dictionary = value as? [String: Any] {
+            return dictionary.keys.sorted().flatMap { key in
+                [key] + flattenStrings(dictionary[key]!)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.flatMap { flattenStrings($0) }
+        }
+        return []
+    }
+}
+
 private enum LaunchHackAssessment {
     private static func assess(relativePath: String) -> (score: Int, evidence: [String]) {
         let path = relativePath.lowercased()
@@ -191,12 +286,60 @@ private final class LaunchHackModel: ObservableObject {
                         }
                     )
 
-                    for file in files {
+                    // 先读取小型配置文件，建立“配置 URL/缓存标识 -> 本地资源”的只读关联索引。
+                    // 单容器最多分析 300 个配置文件，每个文件最多 2 MiB，避免无界读取。
+                    var configEvidence: [LaunchHackContentEvidence] = []
+                    for config in files where !config.isDirectory && !config.isSymlink && LaunchHackContentAnalyzer.isReadableConfig(config.path, size: config.size) {
+                        if configEvidence.count >= 300 { break }
+                        let relative = config.path.hasPrefix(target.rootPath + "/")
+                            ? String(config.path.dropFirst(target.rootPath.count + 1))
+                            : config.name
+                        guard let data = try? channel.read(config.path, maxBytes: 2 * 1024 * 1024),
+                              let evidence = LaunchHackContentAnalyzer.analyze(
+                                path: relative, relativePath: relative, data: data
+                              ) else { continue }
+                        configEvidence.append(evidence)
+                    }
+
+                    for file in files where !file.isDirectory && !file.isSymlink {
                         let relative = file.path.hasPrefix(target.rootPath + "/")
                             ? String(file.path.dropFirst(target.rootPath.count + 1))
                             : file.name
                         let assessment = LaunchHackAssessment.assess(relativePath: relative)
-                        guard assessment.score >= 40 else { continue }
+                        var score = assessment.score
+                        var evidence = assessment.evidence
+
+                        let isConfig = LaunchHackContentAnalyzer.isReadableConfig(relative, size: file.size)
+                        if isConfig,
+                           let parsed = configEvidence.first(where: { $0.sourcePath == relative }) {
+                            if parsed.hasAdSignals {
+                                score = max(score, 62)
+                                evidence.append("已读取配置内容，发现广告/开屏字段或关键词")
+                            }
+                            if !parsed.urls.isEmpty {
+                                score = max(score, 68)
+                                evidence.append("配置中提取到 \(parsed.urls.count) 个 URL")
+                                evidence.append(contentsOf: parsed.urls.prefix(3).map {
+                                    "配置 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
+                                })
+                            }
+                        }
+
+                        let matchingConfigs = configEvidence.filter {
+                            LaunchHackContentAnalyzer.resourceMatches(relative, evidence: $0)
+                        }
+                        if !matchingConfigs.isEmpty {
+                            score = max(score, 88)
+                            evidence.append("资源文件名或缓存 MD5 与 \(matchingConfigs.count) 个配置 URL 对应")
+                            evidence.append(contentsOf: matchingConfigs.prefix(2).map {
+                                "关联配置：\($0.sourcePath)"
+                            })
+                            evidence.append(contentsOf: matchingConfigs.flatMap { $0.urls.prefix(2) }.prefix(3).map {
+                                "关联 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
+                            })
+                        }
+
+                        guard score >= 40 else { continue }
 
                         let digest: String?
                         if file.size <= 16 * 1024 * 1024, found.count < 250 {
@@ -214,8 +357,8 @@ private final class LaunchHackModel: ObservableObject {
                             modifiedAt: file.modified,
                             md5: digest,
                             isFrozen: channel.isImmutable(file.path),
-                            score: assessment.score,
-                            evidence: assessment.evidence
+                            score: min(score, 98),
+                            evidence: Array(Set(evidence)).sorted()
                         ))
                     }
                 } catch {
