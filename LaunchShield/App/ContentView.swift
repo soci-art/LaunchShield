@@ -1036,6 +1036,8 @@ private struct AppWhitelistView: View {
 
     var body: some View {
         SheetPage("排除白名单") {
+            // 整页可滚：已排除名单再长也不会把下面的添加区挤没。
+            ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("加入白名单的应用不会被扫描、清理、找广告或守护。规则只按 Bundle ID 匹配。")
                     .font(.system(size: 12))
@@ -1058,27 +1060,33 @@ private struct AppWhitelistView: View {
                             .foregroundStyle(Color.secondaryText)
                             .padding(.vertical, 5)
                     } else {
-                        ForEach(state.appWhitelist.keys.sorted(), id: \.self) { bundleID in
-                            HStack(spacing: 9) {
-                                Image(systemName: "app.fill")
-                                    .foregroundStyle(Color.accentCyan)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(state.whitelistName(for: bundleID))
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Color.primaryText)
-                                    Text(bundleID)
-                                        .font(.system(size: 9, design: .monospaced))
-                                        .foregroundStyle(Color.secondaryText)
-                                        .lineLimit(1)
+                        // 名单封顶高、卡内自己滚，不再无限长下去挤占整页。
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 9) {
+                                ForEach(state.appWhitelist.keys.sorted(), id: \.self) { bundleID in
+                                    HStack(spacing: 9) {
+                                        Image(systemName: "app.fill")
+                                            .foregroundStyle(Color.accentCyan)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(state.whitelistName(for: bundleID))
+                                                .font(.system(size: 13, weight: .medium))
+                                                .foregroundStyle(Color.primaryText)
+                                            Text(bundleID)
+                                                .font(.system(size: 9, design: .monospaced))
+                                                .foregroundStyle(Color.secondaryText)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        Button("移除") { state.removeFromWhitelist(bundleID) }
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(Color.orange)
+                                            .buttonStyle(.plain)
+                                    }
+                                    .padding(.vertical, 5)
                                 }
-                                Spacer()
-                                Button("移除") { state.removeFromWhitelist(bundleID) }
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(Color.orange)
-                                    .buttonStyle(.plain)
                             }
-                            .padding(.vertical, 5)
                         }
+                        .frame(maxHeight: 240)
                     }
                 }
                 .padding(13)
@@ -1161,6 +1169,7 @@ private struct AppWhitelistView: View {
                 Spacer(minLength: 0)
             }
             .padding(18)
+            }
         }
         .appAlert(state)
         .onAppear {
