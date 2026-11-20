@@ -1215,7 +1215,7 @@ struct LaunchHackView: View {
     }
 
     private var evidenceOnlyCandidates: [LaunchHackCandidate] {
-        model.candidates.filter { $0.score < 60 || (!$0.bundleID.isNilOrEmpty && false) }
+        model.candidates.filter { $0.score < 60 }
     }
 
     private var importableCandidates: [LaunchHackCandidate] {
