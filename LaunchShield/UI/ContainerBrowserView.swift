@@ -209,8 +209,10 @@ struct FilePreviewSheet: View {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
-                            .frame(maxWidth: .infinity)
+                            // 宽屏封顶（清单第 28 条）：小图别被拉满整幅宽发糊。
+                            .frame(maxWidth: 520)
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .frame(maxWidth: .infinity, alignment: .center)
                     } else if failed || item.kind == .other {
                         VStack(spacing: 8) {
                             Image(systemName: item.kind.symbol)

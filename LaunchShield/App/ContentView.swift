@@ -25,10 +25,9 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
-                        announcementEntry
+                        entryPair
                         signCard
                         fullScanCards
-                        tutorialEntry
                         targetCard
                         summarySection
                         sourceSection
@@ -195,6 +194,15 @@ struct ContentView: View {
 
     /// 更新公告入口（清单第 20 条）：主页最上方、签名方式卡上面，
     /// 跟「使用教程」一行同款式；未读带红点，点开看公告卡。
+    /// 更新公告＋使用教程两个入口行并成一组：宽屏（折叠屏内屏等）
+    /// 下并排双列，窄屏上下排列（清单第 28 条）。
+    private var entryPair: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12)], spacing: 12) {
+            announcementEntry
+            tutorialEntry
+        }
+    }
+
     private var announcementEntry: some View {
         Button {
             showAnnouncement = true
