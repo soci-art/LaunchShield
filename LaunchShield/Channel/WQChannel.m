@@ -218,9 +218,9 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 {
     switch (wq_route_state()) {
         case WQRouteStateUnset:
-            return @"无法自动识别当前签名方式，请重新安装应用后再试。";
+            return @"无法自动识别当前访问通道，请重新打开应用后再试。";
         case WQRouteStateMissingAppGroup:
-            return _worseProbeError ?: (wq_app_group_error() ?: @"签名配置缺少可用的 App Groups entitlement；请使用启用 App Groups 的显式 App ID 重新签名。");
+            return _worseProbeError ?: (wq_app_group_error() ?: @"当前进程没有可用的 App Group；请检查签名实际授予的 application-groups 权限。");
         case WQRouteStateUnsupported: {
             NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
             size_t size = 0;
@@ -232,7 +232,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
                     build[0] ? [NSString stringWithUTF8String:build] : @"未知"];
         }
         case WQRouteStateBad:
-            return @"bad_query 在这台设备上没拿到访问权限。请确认系统版本（26.0–26.6.1）和签名方式后再试。";
+            return @"bad_query 在这台设备上没有取得访问权限。请检查系统版本、目标容器路径和系统返回的错误日志。";
         case WQRouteStateWorse: {
             if (_worseProbeError.length) return _worseProbeError;
             NSString *reason = wq_app_group_error();
