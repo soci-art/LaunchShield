@@ -900,6 +900,12 @@ struct LaunchHackView: View {
     @State private var localRuleMessage = ""
     @State private var showUploadConfirmation = false
     @State private var showBulkImportConfirmation = false
+    @State private var showBulkGovernanceConfirmation = false
+    @State private var selectedGovernanceIDs: Set<String> = []
+    @State private var governanceQueue: [LaunchHackCandidate] = []
+    @State private var governanceResults: [(id: String, name: String, success: Bool, message: String)] = []
+    @State private var governanceIndex = 0
+    @State private var isGovernanceRunning = false
     @State private var isProfessionalMode = false
 
     /// 只把配置文件中实际读出的 URL 作为静态来源线索；不声称这是运行时网络请求。
@@ -956,6 +962,9 @@ struct LaunchHackView: View {
                     resultOverviewCard
                     if !model.candidates.isEmpty {
                         candidatePanel
+                    }
+                    if !governanceResults.isEmpty || isGovernanceRunning {
+                        governanceReportPanel
                     }
                     professionalModeCard
                     if isProfessionalMode {
@@ -1023,6 +1032,17 @@ struct LaunchHackView: View {
             Button("取消", role: .cancel) { pendingLocalRuleCandidate = nil }
         } message: {
             Text("仅保存该 App 下图片/视频的精确路径，供 LaunchShield 后续扫描使用。不会清零、冻结或上传文件。")
+        }
+        .confirmationDialog("批量处理已勾选资源？", isPresented: $showBulkGovernanceConfirmation, titleVisibility: .visible) {
+            Button("开始串行处理 \(governanceQueue.count) 项", role: .destructive) {
+                governanceResults = []
+                governanceIndex = 0
+                isGovernanceRunning = true
+                processNextGovernanceCandidate()
+            }
+            Button("取消", role: .cancel) { governanceQueue = [] }
+        } message: {
+            Text("仅处理你逐项核验后勾选的图片/视频资源。每项都会重新核验、备份并校验后才清零和冻结；每次只执行一项，失败项目会记录原因并继续下一项。")
         }
         .confirmationDialog("批量导入可用候选？", isPresented: $showBulkImportConfirmation, titleVisibility: .visible) {
             Button("导入 \(importableCandidates.filter { candidate in
@@ -1529,6 +1549,21 @@ struct LaunchHackView: View {
                 })
             }
 
+            let selectedGovernanceCandidates = model.candidates.filter { selectedGovernanceIDs.contains($0.id) }
+            if !selectedGovernanceCandidates.isEmpty {
+                Button {
+                    governanceQueue = selectedGovernanceCandidates
+                    showBulkGovernanceConfirmation = true
+                } label: {
+                    Label("处理已勾选资源（\(selectedGovernanceCandidates.count)）", systemImage: "shield.lefthalf.filled")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isGovernanceRunning || state.isBusy || model.isScanning)
+                Text("先逐项展开并核验资源，再勾选需要处理的项目。评分仅用于排序，不代表已确认广告。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.secondaryText)
+            }
             if !priorityCandidates.isEmpty {
                 candidateGroup(title: "优先核验", subtitle: "路径或目录线索较强，仍需人工确认", candidates: priorityCandidates)
             }
@@ -1656,8 +1691,101 @@ struct LaunchHackView: View {
                 Text(candidate.priorityText)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(candidate.score >= 80 ? Color.green : Color.accentCyan)
+                if candidate.bundleID != nil && !candidate.isFrozen &&
+                    (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video) {
+                    Button {
+                        if selectedGovernanceIDs.contains(candidate.id) {
+                            selectedGovernanceIDs.remove(candidate.id)
+                        } else {
+                            selectedGovernanceIDs.insert(candidate.id)
+                        }
+                    } label: {
+                        Image(systemName: selectedGovernanceIDs.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 18))
+                            .foregroundStyle(selectedGovernanceIDs.contains(candidate.id) ? Color.accentCyan : Color.secondaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isGovernanceRunning || state.isBusy)
+                }
             }
             .contentShape(Rectangle())
+        }
+    }
+
+    private var governanceReportPanel: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("治理执行报告")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                if isGovernanceRunning {
+                    ProgressView()
+                    Text("第 \(min(governanceIndex + 1, governanceQueue.count)) / \(governanceQueue.count) 项")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            }
+            if isGovernanceRunning {
+                ProgressView(value: Double(governanceIndex), total: Double(max(governanceQueue.count, 1)))
+            }
+            let succeeded = governanceResults.filter { $0.success }.count
+            let failed = governanceResults.count - succeeded
+            HStack(spacing: 12) {
+                Label("成功 \(succeeded)", systemImage: "checkmark.circle")
+                    .foregroundStyle(Color.green)
+                Label("未完成 \(failed)", systemImage: "exclamationmark.circle")
+                    .foregroundStyle(Color.orange)
+            }
+            .font(.system(size: 11, weight: .medium))
+            ForEach(governanceResults.indices, id: \.self) { index in
+                let item = governanceResults[index]
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(item.name).font(.system(size: 11, weight: .semibold))
+                        Spacer()
+                        Text(item.success ? "已完成" : "未完成")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(item.success ? Color.green : Color.orange)
+                    }
+                    Text(item.message)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+            }
+            if !isGovernanceRunning {
+                Button("清除本次报告") { governanceResults = [] }
+                    .font(.system(size: 11, weight: .medium))
+            }
+        }
+        .padding(15)
+        .panel()
+    }
+
+    private func processNextGovernanceCandidate() {
+        guard governanceIndex < governanceQueue.count else {
+            isGovernanceRunning = false
+            selectedGovernanceIDs.subtract(governanceQueue.map(\.id))
+            return
+        }
+        let candidate = governanceQueue[governanceIndex]
+        guard let bundleID = candidate.bundleID else {
+            governanceResults.append((candidate.id, candidate.appName, false, "未关联宿主 App，已跳过。"))
+            governanceIndex += 1
+            processNextGovernanceCandidate()
+            return
+        }
+        state.importLaunchHackCandidate(bundleID: bundleID,
+                                        appName: candidate.appName,
+                                        relativePath: candidate.relativePath,
+                                        expectedSize: candidate.size,
+                                        expectedModifiedAt: candidate.modifiedAt,
+                                        expectedMD5: candidate.md5) { success, message in
+            governanceResults.append((candidate.id, candidate.appName, success, message))
+            governanceIndex += 1
+            processNextGovernanceCandidate()
         }
     }
 
