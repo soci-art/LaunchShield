@@ -1018,7 +1018,7 @@ struct LaunchHackView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("只上传 App 标识、相对路径、文件 MD5、证据标签和脱敏后的 URL；不会上传图片、视频、文件内容或 URL 查询参数。")
+            Text("将上传应用名称与标识、共享组标识、相对路径、文件大小与修改时间、MD5、冻结状态、识别优先级、媒体属性及证据文本。证据中的 URL 会移除查询参数和片段。不会上传图片、视频或其他原始文件内容。")
         }
     }
 
@@ -1299,7 +1299,7 @@ struct LaunchHackView: View {
                                 .foregroundStyle(Color.accentCyan)
                         }
                         ForEach(finding.urls.prefix(3), id: \.self) { url in
-                            Text(url)
+                            Text(LaunchHackContentAnalyzer.displayURL(url))
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(Color.secondaryText)
                                 .textSelection(.enabled)
