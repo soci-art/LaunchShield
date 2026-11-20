@@ -482,10 +482,15 @@ final class GuardService: NSObject, ObservableObject {
             // 普通模式，也不许开麦克风采集：videoChat 模式＋麦克风一开，
             // 系统就按「通话中」抢走全机声音路线，别家 App 的声音被赶去
             // 听筒、底部扬声器没声（2026-11-19 用户日志实证，关守护即恢复）。
-            // 同理不带 allowBluetooth，免得蓝牙耳机被拉去走通话音质。
+            // 蓝牙只放行 allowBluetoothA2DP（高质量输出），不带
+            // allowBluetooth（那是通话音质＋麦克风采集）：playAndRecord
+            // 一个蓝牙许可都不带时，系统不把蓝牙耳机列为可用路线，守护
+            // 一开耳机就被踢掉、只能外放且选不回来（2026-11-20 实测，
+            // 关守护即恢复）。defaultToSpeaker 保留：没连耳机时仍默认走
+            // 扬声器，是上面那次修没声的一部分，不能拆。
             try session.setCategory(.playAndRecord,
                                     mode: .default,
-                                    options: [.mixWithOthers, .defaultToSpeaker])
+                                    options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP])
             try session.setActive(true)
         } catch {
             log?("设置音频会话失败：\(error.localizedDescription)", .warning)
