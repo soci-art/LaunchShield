@@ -388,9 +388,14 @@ private enum LaunchHackTraceStore {
         return records
     }
 
-    static func save(_ records: [LaunchHackTraceCheckpoint]) {
-        guard let data = try? JSONEncoder().encode(records) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+    static func save(_ records: [LaunchHackTraceCheckpoint]) -> Bool {
+        guard let data = try? JSONEncoder().encode(records) else { return false }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 }
 
@@ -482,6 +487,12 @@ private final class LaunchHackModel: ObservableObject {
     @Published var traceCheckpoints: [LaunchHackTraceCheckpoint] = LaunchHackTraceStore.load()
     @Published var isTracking = false
     @Published var trackingMessage = "尚未建立追踪基线。"
+
+    init() {
+        if !traceCheckpoints.isEmpty {
+            trackingMessage = "已载入本机追踪记录：\(traceCheckpoints.count) 个阶段。"
+        }
+    }
 
     func setApps(_ containers: [ContainerInfo]) {
         apps = containers
@@ -602,6 +613,11 @@ private final class LaunchHackModel: ObservableObject {
                 failedContainers: failed
             )
             DispatchQueue.main.async {
+                self.isTracking = false
+                guard !containers.isEmpty else {
+                    self.trackingMessage = "没有容器成功完成本次记录，原有追踪数据保持不变。"
+                    return
+                }
                 if stage == .baseline {
                     self.traceCheckpoints = [checkpoint]
                 } else {
@@ -609,19 +625,19 @@ private final class LaunchHackModel: ObservableObject {
                     self.traceCheckpoints.append(checkpoint)
                     self.traceCheckpoints.sort { $0.createdAt < $1.createdAt }
                 }
-                LaunchHackTraceStore.save(self.traceCheckpoints)
-                self.isTracking = false
+                let saved = LaunchHackTraceStore.save(self.traceCheckpoints)
                 let count = containers.reduce(0) { $0 + $1.entries.count }
                 let incomplete = containers.filter { $0.truncated }.count
-                self.trackingMessage = "「\(stage.title)」已记录：\(containers.count) 个容器、\(count) 个文件、\(hashedFiles) 个 MD5；\(incomplete) 个容器达到扫描上限，\(failed.count) 个容器未能读取。"
+                self.trackingMessage = "「\(stage.title)」已记录：\(containers.count) 个容器、\(count) 个文件、\(hashedFiles) 个 MD5；\(incomplete) 个容器达到扫描上限，\(failed.count) 个容器未能读取。\(saved ? "已保存到本机" : "本机保存失败，请检查存储空间")。"
             }
         }
     }
 
     func clearTrace() {
         traceCheckpoints = []
-        LaunchHackTraceStore.save(traceCheckpoints)
-        trackingMessage = "追踪记录已清空。"
+        trackingMessage = LaunchHackTraceStore.save(traceCheckpoints)
+            ? "本机追踪记录已清空。"
+            : "无法更新本机追踪文件，请检查存储空间。"
     }
 
     func scan(targets: [LaunchHackScanTarget], channel: Channel) {
