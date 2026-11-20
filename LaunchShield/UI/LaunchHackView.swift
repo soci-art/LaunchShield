@@ -194,13 +194,13 @@ private enum LaunchHackMediaAnalyzer {
 
         let fileManager = FileManager.default
         let directory = fileManager.temporaryDirectory
-            .appendingPathComponent("LaunchHackMedia-\\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("LaunchHackMedia-\(UUID().uuidString)", isDirectory: true)
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             defer { try? fileManager.removeItem(at: directory) }
 
             let ext = (relativePath as NSString).pathExtension
-            let localURL = directory.appendingPathComponent("candidate.\\(ext.isEmpty ? "bin" : ext)")
+            let localURL = directory.appendingPathComponent("candidate.\(ext.isEmpty ? "bin" : ext)")
             try channel.copyToLocal(path: path, destination: localURL.path)
 
             let attributes = try fileManager.attributesOfItem(atPath: localURL.path)
@@ -226,7 +226,7 @@ private enum LaunchHackMediaAnalyzer {
                     kCGImageSourceThumbnailMaxPixelSize: 480,
                     kCGImageSourceCreateThumbnailWithTransform: true
                 ] as CFDictionary)
-                details = "图片 · \\(width) × \\(height) · \\(ByteCountFormatter.string(fromByteCount: Int64(clamping: localSize), countStyle: .file))"
+                details = "图片 · \(width) × \(height) · \(ByteCountFormatter.string(fromByteCount: Int64(clamping: localSize), countStyle: .file))"
             case .video:
                 let asset = AVURLAsset(url: localURL)
                 let duration = asset.duration.seconds
@@ -238,8 +238,8 @@ private enum LaunchHackMediaAnalyzer {
                                        preferredTimescale: 600)
                 image = try? generator.copyCGImage(at: frameTime, actualTime: nil)
                 let durationText = safeDuration > 0 ? String(format: "%.2f 秒", safeDuration) : "时长未知"
-                let dimensions = image.map { "\\($0.width) × \\($0.height)" } ?? "关键帧不可用"
-                details = "视频 · \\(durationText) · \\(dimensions) · \\(ByteCountFormatter.string(fromByteCount: Int64(clamping: localSize), countStyle: .file))"
+                let dimensions = image.map { "\($0.width) × \($0.height)" } ?? "关键帧不可用"
+                details = "视频 · \(durationText) · \(dimensions) · \(ByteCountFormatter.string(fromByteCount: Int64(clamping: localSize), countStyle: .file))"
             case .other:
                 return nil
             }
@@ -249,7 +249,7 @@ private enum LaunchHackMediaAnalyzer {
             return LaunchHackMediaAnalysis(details: details, previewData: boundedPreview,
                                            evidence: "[内容已分析] 已从临时副本提取媒体属性；未写入目标容器")
         } catch {
-            return LaunchHackMediaAnalysis(details: "媒体分析失败：\\(error.localizedDescription)",
+            return LaunchHackMediaAnalysis(details: "媒体分析失败：\(error.localizedDescription)",
                                            previewData: nil,
                                            evidence: "[无法分析] WQ 临时复制或媒体解析失败")
         }
