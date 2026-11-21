@@ -16,6 +16,9 @@ struct ContentView: View {
     @State private var showClearConfirm = false
     @State private var showClearCacheConfirm = false
     @State private var showRestoreConfirm = false
+    @State private var showLaunchHackUploadConfirm = false
+    @State private var pendingLaunchHackCandidate: LaunchHackCandidate?
+    @State private var showAllLaunchHackFindings = false
     @State private var ipaShareItem: ShareItem?
 
     var body: some View {
@@ -25,14 +28,15 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
+                        entryPair
+                        signCard
                         targetCard
                         fullScanCards
+                        launchHackFindingsSection
                         summarySection
                         sourceSection
                         actionsSection
                         recipesSection
-                        entryPair
-                        signCard
                         logSection
                         updateSection
                         footer
@@ -116,6 +120,39 @@ struct ContentView: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("请先完全退出目标应用。还原会用备份覆盖现在的文件。")
+        }
+        .confirmationDialog("确认处理这项识别资源？",
+                            isPresented: Binding(
+                                get: { pendingLaunchHackCandidate != nil },
+                                set: { if !$0 { pendingLaunchHackCandidate = nil } }
+                            ),
+                            titleVisibility: .visible) {
+            Button("先备份，再清零并冻结", role: .destructive) {
+                if let candidate = pendingLaunchHackCandidate,
+                   let bundleID = candidate.bundleID {
+                    state.importLaunchHackCandidate(bundleID: bundleID,
+                                                     appName: candidate.appName,
+                                                     relativePath: candidate.relativePath,
+                                                     expectedSize: candidate.size,
+                                                     expectedModifiedAt: candidate.modifiedAt,
+                                                     expectedMD5: candidate.md5,
+                                                     groupID: candidate.groupID)
+                }
+                pendingLaunchHackCandidate = nil
+            }
+            Button("取消", role: .cancel) { pendingLaunchHackCandidate = nil }
+        } message: {
+            Text("此操作由 LaunchShield 主界面执行：先重新核验文件与指纹、备份原件，再清零并冻结。LaunchHack 只负责识别，不会修改目标文件。")
+        }
+        .confirmationDialog("上传本次识别数据？", isPresented: $showLaunchHackUploadConfirm, titleVisibility: .visible) {
+            Button("确认上传识别元数据") {
+                state.uploadLaunchHackRecognition()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(state.launchHackUploadResultUncertain
+                 ? "上次上传结果未确认，服务器可能已经收到数据。请先核对服务器记录，再决定是否重试。"
+                 : "仅上传识别元数据、路径、文件指纹和脱敏证据，不上传图片、视频或其他原始文件。服务器解析和规则整理由服务端完成。")
         }
     }
 
@@ -518,6 +555,129 @@ struct ContentView: View {
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - LaunchHack findings (display and governance live on the main screen)
+
+    private var launchHackFindingsSection: some View {
+        if state.launchHackFindings.isEmpty {
+            EmptyView()
+        } else {
+            let findings = showAllLaunchHackFindings
+                ? state.launchHackFindings
+                : Array(state.launchHackFindings.prefix(3))
+            VStack(alignment: .leading, spacing: 11) {
+                HStack {
+                    SectionHeader(title: "广告检测结果",
+                                  subtitle: "已从 LaunchHack 同步；所有处理操作都在这里完成")
+                    Spacer()
+                    StatusBadge(text: "\\(state.launchHackFindings.count) 项", tint: .cyan)
+                }
+                HStack(spacing: 8) {
+                    SummaryTile(title: "优先核验",
+                                value: "\\(state.launchHackFindings.filter { $0.score >= 80 }.count)",
+                                detail: "高关联线索",
+                                symbol: "exclamationmark.magnifyingglass",
+                                tint: .orange)
+                    SummaryTile(title: "其他线索",
+                                value: "\\(state.launchHackFindings.filter { $0.score < 80 }.count)",
+                                detail: "需要人工判断",
+                                symbol: "doc.text.magnifyingglass",
+                                tint: .cyan)
+                }
+                VStack(spacing: 0) {
+                    ForEach(findings) { candidate in
+                        DisclosureGroup {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(candidate.relativePath)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(Color.secondaryText)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text("\\(candidate.kindText) · \\(Format.bytes(candidate.size)) · \\(Format.date(candidate.modifiedAt))")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color.secondaryText)
+                                ForEach(Array(candidate.evidence.prefix(3)), id: \\.self) { evidence in
+                                    Text(evidence)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.secondaryText)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                if let details = candidate.mediaDetails {
+                                    Text(details)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(Color.primaryText)
+                                }
+                                if let bundleID = candidate.bundleID,
+                                   FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video {
+                                    Button("确认后备份、清零并冻结") {
+                                        pendingLaunchHackCandidate = candidate
+                                    }
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.accentCyan)
+                                    .disabled(state.isBusy)
+                                } else {
+                                    Text("当前仅作为定位证据，暂不能直接处理。")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.secondaryText)
+                                }
+                            }
+                            .padding(.vertical, 7)
+                        } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: candidate.kindText == "图片" ? "photo" : (candidate.kindText == "视频" ? "video" : "doc.text"))
+                                    .foregroundStyle(candidate.score >= 80 ? Color.orange : Color.accentCyan)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text((candidate.relativePath as NSString).lastPathComponent)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Color.primaryText)
+                                        .lineLimit(1)
+                                    Text(candidate.appName)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.secondaryText)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                StatusBadge(text: candidate.isFrozen ? "已冻结" : candidate.priorityText,
+                                            tint: candidate.isFrozen ? .green : (candidate.score >= 80 ? .orange : .cyan))
+                            }
+                            .padding(.vertical, 9)
+                            .contentShape(Rectangle())
+                        }
+                        .tint(Color.accentCyan)
+                        if candidate.id != findings.last?.id {
+                            Divider().overlay(Color.primaryText.opacity(0.06))
+                        }
+                    }
+                }
+                .padding(.horizontal, 13)
+                .panel()
+                if state.launchHackFindings.count > 3 {
+                    Button(showAllLaunchHackFindings ? "收起结果" : "展开全部（\\(state.launchHackFindings.count) 项）") {
+                        showAllLaunchHackFindings.toggle()
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
+                }
+                HStack(spacing: 12) {
+                    Button {
+                        showLaunchHackUploadConfirm = true
+                    } label: {
+                        Label(state.isUploadingLaunchHackFindings ? "正在上传…" : "上传识别数据",
+                              systemImage: "arrow.up.circle")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .disabled(state.isUploadingLaunchHackFindings || state.isBusy)
+                    Spacer()
+                    if !state.launchHackUploadMessage.isEmpty {
+                        Text(state.launchHackUploadMessage)
+                            .font(.system(size: 10))
+                            .foregroundStyle(state.launchHackUploadMessage.contains("成功") ? Color.green : Color.secondaryText)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Summary

@@ -94,6 +94,7 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(appWhitelist, forKey: "ls.appWhitelist")
         checkedIDs = Set(checkedIDs.filter { $0.lowercased() != key })
         scanTargets.removeAll { $0.bundleID.lowercased() == key }
+        launchHackFindings.removeAll { $0.bundleID?.lowercased() == key }
         candidates.removeAll { $0.bundleID.lowercased() == key }
         selectedCandidatePaths = Set(selectedCandidatePaths.filter { path in candidates.contains { $0.id == path } })
         lastRecognition.removeAll { $0.bundleID.lowercased() == key }
@@ -136,6 +137,11 @@ final class AppState: ObservableObject {
     @Published var recipes: [Recipe] = []
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
+    /// LaunchHack 只读扫描后同步到主界面的识别结果；治理操作统一由主界面发起。
+    @Published var launchHackFindings: [LaunchHackCandidate] = []
+    @Published var launchHackUploadMessage = ""
+    @Published var isUploadingLaunchHackFindings = false
+    @Published var launchHackUploadResultUncertain = UserDefaults.standard.bool(forKey: "ls.launchHackUploadResultUncertain")
     @Published var splash: SplashResolution?
     @Published var isBusy = false
     @Published var busyText = ""
@@ -493,6 +499,68 @@ final class AppState: ObservableObject {
         return text
     }
 
+    /// 将 LaunchHack 的扫描结果交回主界面。这里只同步识别证据，不执行文件修改。
+    func syncLaunchHackFindings(_ findings: [LaunchHackCandidate]) {
+        let filtered = findings.filter { candidate in
+            guard let bundleID = candidate.bundleID else { return true }
+            return !isWhitelisted(bundleID)
+        }
+        launchHackFindings = Array(filtered.prefix(500))
+        if !filtered.isEmpty {
+            log("LaunchHack 识别结果已同步到主界面：\\(filtered.count) 项", .success)
+        }
+    }
+
+    /// 识别数据上传由 LaunchShield 主界面发起；LaunchHack 本身只负责扫描和同步。
+    func uploadLaunchHackRecognition() {
+        guard !isUploadingLaunchHackFindings else { return }
+        guard !launchHackFindings.isEmpty else {
+            launchHackUploadMessage = "没有可上传的识别数据。"
+            return
+        }
+        let records: [[String: Any]] = launchHackFindings.map { candidate in
+            [
+                "bundleID": candidate.bundleID as Any? ?? NSNull(),
+                "groupID": candidate.groupID as Any? ?? NSNull(),
+                "appName": candidate.appName,
+                "relativePath": candidate.relativePath,
+                "size": candidate.size,
+                "modifiedAt": ISO8601DateFormatter().string(from: candidate.modifiedAt),
+                "md5": candidate.md5 as Any? ?? NSNull(),
+                "isFrozen": candidate.isFrozen,
+                "priorityScore": candidate.score,
+                "evidence": candidate.evidence.map { LaunchHackContentAnalyzer.displayURLs(in: $0) },
+                "mediaDetails": candidate.mediaDetails as Any? ?? NSNull()
+            ]
+        }
+        let payload: [String: Any] = [
+            "schemaVersion": 1,
+            "uploadedAt": ISO8601DateFormatter().string(from: Date()),
+            "source": "LaunchHack",
+            "records": records
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            launchHackUploadMessage = "识别数据序列化失败，未上传。"
+            return
+        }
+        isUploadingLaunchHackFindings = true
+        launchHackUploadMessage = "正在上传识别元数据…"
+        CollectUploader.upload(kind: "launchhack-recognition",
+                               contentType: "application/json",
+                               body: data) { [weak self] success, message in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isUploadingLaunchHackFindings = false
+                self.launchHackUploadResultUncertain = !success
+                UserDefaults.standard.set(!success, forKey: "ls.launchHackUploadResultUncertain")
+                self.launchHackUploadMessage = success
+                    ? "识别数据上传成功（\\(records.count) 项）。"
+                    : "上传结果未确认：\\(message)。服务器可能已经收到数据；请先核对服务器记录，再决定是否重试。"
+            }
+        }
+    }
+
     // MARK: - Containers and target
 
     func refreshContainers(completion: (() -> Void)? = nil) {
@@ -526,6 +594,8 @@ final class AppState: ObservableObject {
         target = AppTarget(bundleID: container.bundleID, name: container.name)
         targetChosen = true
         scanTargets = []
+        launchHackFindings = []
+        launchHackUploadMessage = ""
         lastScanSkippedFrozen = 0
         splash = nil
         candidates = []

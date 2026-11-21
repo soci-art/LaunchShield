@@ -55,6 +55,40 @@ enum FileKind {
     }
 }
 
+/// LaunchHack 的只读识别结果。这里只承载证据，不包含任何治理动作。
+struct LaunchHackCandidate: Codable, Identifiable, Hashable {
+    let bundleID: String?
+    let groupID: String?
+    let appName: String
+    let relativePath: String
+    let size: UInt64
+    let modifiedAt: Date
+    let md5: String?
+    let isFrozen: Bool
+    let score: Int
+    let evidence: [String]
+    var mediaDetails: String? = nil
+    var previewData: Data? = nil
+
+    var id: String {
+        let owner = bundleID ?? "unowned"
+        let container = groupID.map { "group:" + $0 } ?? "app"
+        return owner + "|" + container + "|" + relativePath
+    }
+
+    var priorityText: String {
+        score >= 80 ? "优先核验" : (score >= 60 ? "建议核验" : "低优先级")
+    }
+
+    var kindText: String {
+        switch FileKind.of(relativePath) {
+        case .image: return "图片"
+        case .video: return "视频"
+        case .other: return "配置或其他文件"
+        }
+    }
+}
+
 struct FileItem: Identifiable, Hashable {
     let name: String
     let path: String

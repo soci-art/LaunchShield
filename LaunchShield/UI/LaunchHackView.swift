@@ -12,39 +12,6 @@ private struct LaunchHackScanTarget: Hashable {
     let groupID: String?
 }
 
-private struct LaunchHackCandidate: Codable, Identifiable, Hashable {
-    let bundleID: String?
-    let groupID: String?
-    let appName: String
-    let relativePath: String
-    let size: UInt64
-    let modifiedAt: Date
-    let md5: String?
-    let isFrozen: Bool
-    let score: Int
-    let evidence: [String]
-    var mediaDetails: String? = nil
-    var previewData: Data? = nil
-
-    var id: String {
-        let owner = bundleID ?? "unowned"
-        let container = groupID.map { "group:" + $0 } ?? "app"
-        return owner + "|" + container + "|" + relativePath
-    }
-
-    var priorityText: String {
-        score >= 80 ? "优先核验" : (score >= 60 ? "建议核验" : "低优先级")
-    }
-
-    var kindText: String {
-        switch FileKind.of(relativePath) {
-        case .image: return "图片"
-        case .video: return "视频"
-        case .other: return "配置或其他文件"
-        }
-    }
-}
-
 private struct LaunchHackDomainFinding: Identifiable {
     let host: String
     var urls: [String]
@@ -104,7 +71,7 @@ private struct LaunchHackContentEvidence {
     let hasAdSignals: Bool
 }
 
-private enum LaunchHackContentAnalyzer {
+enum LaunchHackContentAnalyzer {
     private static let configExtensions: Set<String> = ["plist", "json", "xml"]
 
     static func isReadableConfig(_ path: String, size: UInt64) -> Bool {
@@ -1022,24 +989,17 @@ struct LaunchHackView: View {
                     scanActionCard
                     resultOverviewCard
                     if !model.candidates.isEmpty {
-                        candidatePanel
-                        uploadPanel
-                    }
-                    if !governanceResults.isEmpty || isGovernanceRunning {
-                        governanceReportPanel
-                    }
-                    if !model.candidates.isEmpty || model.checkpoint(for: .baseline) != nil {
-                        effectReviewPanel
-                    }
-                    professionalModeCard
-                    if isProfessionalMode {
-                        sourceIntelPanel
-                        tracePanel
-                        draftPanel
+                        Label("已将 \\(model.candidates.count) 项识别结果同步到 LaunchShield 主界面。请返回主界面查看摘要、核验并执行后续操作。",
+                              systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.green)
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .panel()
                     }
                 }
                 .padding(16)
-                .frame(maxWidth: 720)
+                .frame(maxWidth: 620)
                 .frame(maxWidth: .infinity)
             }
             .background(Color.appBackground.ignoresSafeArea())
@@ -1055,98 +1015,8 @@ struct LaunchHackView: View {
         .onChange(of: state.containers) { _, containers in
             model.setApps(containers)
         }
-        .confirmationDialog("立即处理这项资源？",
-                            isPresented: Binding(
-                                get: { pendingRuleCandidate != nil },
-                                set: { if !$0 { pendingRuleCandidate = nil } }
-                            ),
-                            titleVisibility: .visible) {
-            Button("备份、清零并冻结", role: .destructive) {
-                if let candidate = pendingRuleCandidate,
-                   let bundleID = candidate.bundleID {
-                    state.importLaunchHackCandidate(bundleID: bundleID,
-                                                     appName: candidate.appName,
-                                                     relativePath: candidate.relativePath,
-                                                     expectedSize: candidate.size,
-                                                     expectedModifiedAt: candidate.modifiedAt,
-                                                     expectedMD5: candidate.md5)
-                }
-                pendingRuleCandidate = nil
-            }
-            Button("取消", role: .cancel) { pendingRuleCandidate = nil }
-        } message: {
-            Text("仅对已关联宿主 App 的图片/视频资源执行。LaunchShield 会先校验文件、备份原件，再清零并冻结；配置文件和未关联共享组不会直接执行。")
-        }
-        .confirmationDialog("导入 LaunchShield 本地规则？",
-                            isPresented: Binding(
-                                get: { pendingLocalRuleCandidate != nil },
-                                set: { if !$0 { pendingLocalRuleCandidate = nil } }
-                            ),
-                            titleVisibility: .visible) {
-            Button("确认导入") {
-                if let candidate = pendingLocalRuleCandidate, let bundleID = candidate.bundleID {
-                    let ok = RulesStore.addLocalCandidate(bundleID: bundleID,
-                                                          appName: candidate.appName,
-                                                          relativePath: candidate.relativePath)
-                    localRuleMessage = ok
-                        ? "已加入本地规则，后续扫描会按该路径识别；不会修改原文件。"
-                        : "导入失败：该项目不符合本地规则要求。"
-                }
-                pendingLocalRuleCandidate = nil
-            }
-            Button("取消", role: .cancel) { pendingLocalRuleCandidate = nil }
-        } message: {
-            Text("仅保存该 App 下图片/视频的精确路径，供 LaunchShield 后续扫描使用。不会清零、冻结或上传文件。")
-        }
-        .confirmationDialog("批量处理已勾选资源？", isPresented: $showBulkGovernanceConfirmation, titleVisibility: .visible) {
-            Button("开始串行处理 \(governanceQueue.count) 项", role: .destructive) {
-                guard !state.isBusy, !model.isScanning, !model.isTracking else {
-                    model.scanMessage = "当前有其他任务正在执行，请完成后再开始批量治理。"
-                    governanceQueue = []
-                    return
-                }
-                governanceResults = []
-                governanceIndex = 0
-                isGovernanceRunning = true
-                processNextGovernanceCandidate()
-            }
-            Button("取消", role: .cancel) { governanceQueue = [] }
-        } message: {
-            Text("仅处理你逐项核验后勾选的图片/视频资源。每项都会重新核验、备份并校验后才清零和冻结；每次只执行一项，失败项目会记录原因并继续下一项。")
-        }
-        .confirmationDialog("批量导入可用候选？", isPresented: $showBulkImportConfirmation, titleVisibility: .visible) {
-            Button("导入 \(newImportableCandidateCount) 项") {
-                var importedCount = 0
-                for candidate in importableCandidates {
-                    guard let bundleID = candidate.bundleID,
-                          !RulesStore.containsLocalCandidate(bundleID: bundleID, relativePath: candidate.relativePath) else { continue }
-                    if RulesStore.addLocalCandidate(bundleID: bundleID,
-                                                     appName: candidate.appName,
-                                                     relativePath: candidate.relativePath) {
-                        importedCount += 1
-                    }
-                }
-                localRuleMessage = importedCount > 0
-                    ? "已导入 \(importedCount) 项本地规则；只保存精确路径，没有修改原文件。"
-                    : "没有新增规则，候选可能已导入或不符合要求。"
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("仅批量保存已关联宿主 App 的图片/视频精确路径，供后续扫描使用。不会清零、冻结、上传或修改原文件。")
-        }
-        .confirmationDialog("上传本次识别数据？", isPresented: $showUploadConfirmation, titleVisibility: .visible) {
-            Button("仅上传识别元数据") {
-                guard !state.isBusy, !model.isScanning, !isGovernanceRunning, !model.isTracking else {
-                    model.uploadMessage = "当前有扫描、治理或复查任务正在执行，请完成后再上传。"
-                    return
-                }
-                model.uploadRecognitionData()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text(model.uploadResultUncertain
-                 ? "上次提交未能确认结果，服务器可能已经收到数据。再次提交可能产生重复记录，请先核对服务器记录。确认后才会重新提交。"
-                 : "将上传应用名称与标识、共享组标识、相对路径、文件大小与修改时间、MD5、冻结状态、识别优先级、媒体属性及证据文本。证据中的 URL 会移除查询参数和片段。不会上传图片、视频或其他原始文件内容。")
+        .onChange(of: model.candidates) { _, candidates in
+            state.syncLaunchHackFindings(candidates)
         }
     }
 
@@ -1241,7 +1111,7 @@ struct LaunchHackView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             } else {
-                Label("只读检测，不会自动删除、冻结或上传任何内容", systemImage: "lock.shield")
+                Label("只读检测；识别结果自动同步到 LaunchShield，不修改目标 App", systemImage: "lock.shield")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             }
@@ -1269,12 +1139,12 @@ struct LaunchHackView: View {
             }
             HStack(spacing: 8) {
                 resultMetric("\(model.candidates.count)", "发现项目")
-                resultMetric("\(readyCandidates.count)", "可核验处理")
-                resultMetric("\(unsupportedCandidates.count)", "暂不支持")
+                resultMetric("\(priorityCandidates.count)", "优先核验")
+                resultMetric("\(unsupportedCandidates.count)", "需补充关联")
             }
             Text(model.candidates.isEmpty
                  ? "检测只读取当前应用可访问的资源，不会自动清理、冻结或上传。"
-                 : "展开资源查看预览和说明。只有你确认的图片或视频才会进入治理流程。")
+                 : "扫描结果已自动同步到 LaunchShield 主界面；这里仅负责只读识别，不提供清理、冻结或上传操作。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
