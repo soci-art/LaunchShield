@@ -38,10 +38,111 @@ struct WorkProgress {
     }
 }
 
-/// 证据文本里的 URL 脱敏（去掉 query 与 fragment，避免 token、追踪参数
-/// 随识别数据上传）。原先住在 LaunchHackView.swift，截图流水线重构时被
-/// 误删，上传路径还在用，这里按原实现恢复这两支函数。
+/// 配置文件的内容证据：从偏好/支持目录的配置里读出的 URL 与广告信号，
+/// 只作识别证据，不修改任何文件。
+struct LaunchHackContentEvidence {
+    let sourcePath: String
+    let urls: [String]
+    let hasAdSignals: Bool
+}
+
+/// 配置内容分析与证据 URL 脱敏（去掉 query 与 fragment，避免 token、
+/// 追踪参数随识别数据上传）。原先住在 LaunchHackView.swift，截图流水线
+/// 重构时被误删；数据文件识别线（路径＋内容证据）也靠它，这里按原实现
+/// 完整恢复。
 enum LaunchHackContentAnalyzer {
+    private static let configExtensions: Set<String> = ["plist", "json", "xml"]
+
+    static func isReadableConfig(_ path: String, size: UInt64) -> Bool {
+        let lower = path.lowercased()
+        let ext = (path as NSString).pathExtension.lowercased()
+        let components = lower.split(separator: "/").map(String.init)
+        let adSpecific = ["splash", "adcache", "ad_cache", "advert", "adsdk",
+                          "launchad", "launch_ad", "bootimagebiz", "bootimagedoc"]
+            .contains { marker in components.contains { $0.contains(marker) } }
+        let preferences = lower.contains("/library/preferences/") || lower.hasPrefix("library/preferences/")
+        let applicationSupport = lower.contains("/library/application support/")
+            || lower.hasPrefix("library/application support/")
+        return configExtensions.contains(ext) && size > 0 && size <= 512 * 1024
+            && (preferences || applicationSupport || adSpecific)
+    }
+
+    static func analyze(path: String, relativePath: String, data: Data) -> LaunchHackContentEvidence? {
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        var structuredStrings: [String]?
+
+        if (ext == "plist" || ext == "xml"),
+           let object = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
+            structuredStrings = flattenStrings(object)
+        } else if ext == "json",
+                  let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+            structuredStrings = flattenStrings(object)
+        }
+
+        // Binary plist 不能直接按 UTF-8 扫描；优先使用结构化解析结果。
+        // XML/JSON 文本解析失败时才回退到 UTF-8 原文。
+        let rawText = String(data: data, encoding: .utf8)
+        let searchableText = ((structuredStrings ?? []) + (rawText.map { [$0] } ?? []))
+            .joined(separator: "\n")
+        let urls = extractURLs(searchableText)
+        let lower = searchableText.lowercased()
+        let markers = [
+            "splash", "cold_launch", "coldlaunch", "launch_ad", "startup_ad",
+            "advertisement", "ad_cache", "advertising", "promotion", "campaign",
+            "adsdk", "ad_material", "admob", "gdt", "pangolin", "beizi",
+            "activity_message", "content_url_list", "appopen", "openad"
+        ]
+        let hasSignals = markers.contains { lower.contains($0) }
+        guard !urls.isEmpty || hasSignals else { return nil }
+        return LaunchHackContentEvidence(sourcePath: path, urls: urls, hasAdSignals: hasSignals)
+    }
+
+    static func resourceMatchReasons(_ relativePath: String, evidence: LaunchHackContentEvidence) -> [String] {
+        let name = ((relativePath as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
+        guard !name.isEmpty else { return [] }
+
+        var reasons: [String] = []
+        for url in evidence.urls {
+            if let component = URLComponents(string: url),
+               let last = component.percentEncodedPath.split(separator: "/").last {
+                let encodedName = (String(last) as NSString).deletingPathExtension.lowercased()
+                let decodedName = encodedName.removingPercentEncoding?.lowercased() ?? encodedName
+                if name == encodedName || name == decodedName {
+                    reasons.append("本地文件名与配置 URL 路径文件名一致")
+                }
+            }
+            if LocalADBlockRule.digests(for: url).contains(name) {
+                reasons.append("本地文件名与配置 URL 的 MD5 对应")
+            }
+        }
+        return Array(Set(reasons)).sorted()
+    }
+
+    private static func extractURLs(_ text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: "https?://[^\\s\"'<>]+") else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var seen = Set<String>()
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let matchRange = Range(match.range, in: text) else { return nil }
+            let value = String(text[matchRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,);]"))
+            guard seen.insert(value).inserted else { return nil }
+            return value
+        }
+    }
+
+    private static func flattenStrings(_ value: Any) -> [String] {
+        if let text = value as? String { return [text] }
+        if let dictionary = value as? [String: Any] {
+            return dictionary.keys.sorted().flatMap { key in
+                [key] + flattenStrings(dictionary[key] ?? NSNull())
+            }
+        }
+        if let array = value as? [Any] {
+            return array.flatMap { flattenStrings($0) }
+        }
+        return []
+    }
+
     static func displayURL(_ value: String) -> String {
         guard var components = URLComponents(string: value) else { return value }
         components.query = nil

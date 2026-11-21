@@ -137,6 +137,60 @@ private enum LaunchHackVisualMatcher {
     }
 }
 
+/// 路径证据评分（旧版那套，按原样恢复）：规则目录、关键词、广告特征
+/// 词逐项打分，供数据/配置文件这条线出候选。
+private enum LaunchHackAssessment {
+    static func assess(relativePath: String) -> (score: Int, evidence: [String]) {
+        let path = relativePath.lowercased()
+        let components = path.split(separator: "/").map(String.init)
+        let ext = (path as NSString).pathExtension
+        let media = ["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "m4v"].contains(ext)
+        let config = ["plist", "json", "xml", "db", "sqlite", "sqlite3"].contains(ext)
+        var score = 0
+        var evidence: [String] = []
+
+        for group in RulesStore.groups {
+            for directory in group.directories {
+                let marker = directory.lowercased()
+                if path == marker || path.hasPrefix(marker + "/") {
+                    score = max(score, 95)
+                    evidence.append("[路径推测] 命中已知广告资源目录：\(group.group)")
+                }
+            }
+        }
+
+        if RulesStore.keywords.contains(where: { !$0.isEmpty && path.contains($0.lowercased()) }) {
+            score = max(score, 75)
+            evidence.append("[路径推测] 路径命中广告规则关键词")
+        }
+
+        let adTokens = [
+            "splash", "cold_launch", "coldlaunch", "launch_ad", "startup_ad",
+            "advertisement", "ad_cache", "advertising", "promotion", "campaign",
+            "adsdk", "ad_material", "pangolin", "gdt", "beizi", "admob"
+        ]
+        if adTokens.contains(where: { token in components.contains(where: { $0.contains(token) }) }) {
+            score = max(score, 65)
+            evidence.append("[路径推测] 目录或文件名包含广告/启动资源特征")
+        }
+
+        if media && (path.contains("/caches/") || path.hasPrefix("caches/") || path.hasPrefix("tmp/")) {
+            score = max(score, 42)
+            evidence.append("[路径推测] 位于缓存目录的图片或视频，需与广告画面比对")
+        }
+
+        if config && adTokens.contains(where: { path.contains($0) }) {
+            score = max(score, 58)
+            evidence.append("[路径推测] 疑似广告配置或索引文件")
+        }
+
+        if evidence.isEmpty {
+            evidence.append("[待验证] 通用资源特征，尚无广告直接证据")
+        }
+        return (score, evidence)
+    }
+}
+
 @MainActor
 private final class LaunchHackModel: ObservableObject {
     @Published var candidates: [LaunchHackCandidate] = []
@@ -144,7 +198,7 @@ private final class LaunchHackModel: ObservableObject {
     @Published var visitedFiles = 0
     @Published var checkedMedia = 0
     @Published var totalContainers = 0
-    @Published var status = "导入广告截图后，LaunchHack 会自动检索可访问的应用容器。"
+    @Published var status = "导入广告截图后，LaunchHack 会检索主页所选应用的容器：图片、视频按截图比对，数据文件按路径与内容证据识别。"
     var onLog: ((String, LogLevel) -> Void)?
 
     func syncFromState(_ findings: [LaunchHackCandidate]) {
@@ -165,20 +219,33 @@ private final class LaunchHackModel: ObservableObject {
         }
 
         let referenceText = LaunchHackVisualMatcher.recognizedText(referenceImage)
+        // 只扫主页选中的目标应用（Grace 2026-11-21 定）：它的数据容器
+        // 加关联共享容器，不再全机扫。
+        guard state.targetChosen, !state.target.bundleID.isEmpty else {
+            status = "先在主页选择一个要检测的目标应用，再导入截图。"
+            return
+        }
+        let targetID = state.target.bundleID
+        guard !state.isWhitelisted(targetID) else {
+            status = "当前目标应用已加入排除白名单，不会检测。"
+            onLog?("LaunchHack 跳过：\(state.target.name) 在排除白名单中", .warning)
+            return
+        }
         var targets: [LaunchHackScanTarget] = []
-        let allowedApps = containers.filter { !$0.isGroup && !AppState.isSystemApp($0) }
-        for app in allowedApps where !state.isWhitelisted(app.bundleID) {
-            targets.append(LaunchHackScanTarget(bundleID: app.bundleID, appName: app.name,
-                                                 rootPath: app.path, groupID: nil))
-            for group in state.associatedGroups(for: app.bundleID) where !group.path.isEmpty {
-                targets.append(LaunchHackScanTarget(bundleID: app.bundleID,
-                    appName: app.name + "（共享容器）", rootPath: group.path, groupID: group.bundleID))
-            }
+        if let app = containers.first(where: { !$0.isGroup && $0.bundleID.caseInsensitiveCompare(targetID) == .orderedSame })
+            ?? state.channel.container(for: targetID) {
+            targets.append(LaunchHackScanTarget(bundleID: targetID, appName: state.target.name,
+                                                rootPath: app.path, groupID: nil))
+        }
+        for group in state.associatedGroups(for: targetID) where !group.path.isEmpty {
+            targets.append(LaunchHackScanTarget(bundleID: targetID,
+                appName: state.target.name + "（共享容器）", rootPath: group.path, groupID: group.bundleID))
         }
         var seen = Set<String>()
         targets = targets.filter { seen.insert($0.rootPath).inserted }
         guard !targets.isEmpty else {
-            status = "没有可访问的用户应用容器。请确认签名通道已就绪。"
+            status = "没有找到\(state.target.name)的容器。请确认它已安装并打开过一次。"
+            onLog?("LaunchHack 无法检测：找不到 \(state.target.name) 的容器", .warning)
             return
         }
 
@@ -187,14 +254,16 @@ private final class LaunchHackModel: ObservableObject {
         visitedFiles = 0
         checkedMedia = 0
         totalContainers = targets.count
-        status = "正在分析截图并检索 \(targets.count) 个应用/共享容器…"
-        onLog?("LaunchHack 截图流水线启动：\(targets.count) 个容器，OCR 提取 \(referenceText.count) 个文本词项", .info)
+        status = "正在分析截图并检索 \(state.target.name) 的 \(targets.count) 个容器…"
+        onLog?("LaunchHack 开始检测 \(state.target.name)：\(targets.count) 个容器，OCR 提取 \(referenceText.count) 个文本词项", .info)
         let channel = state.channel
 
         DispatchQueue.global(qos: .userInitiated).async {
             var matches: [LaunchHackCandidate] = []
             var visited = 0
             var mediaCount = 0
+            var visualCount = 0
+            var dataCount = 0
             var hitCap = false
             var failures: [String] = []
             for target in targets {
@@ -210,34 +279,102 @@ private final class LaunchHackModel: ObservableObject {
                                 DispatchQueue.main.async { self.visitedFiles = snapshot }
                             }
                         })
+                    if files.count >= 16000 {
+                        failures.append("\(target.appName)：达到单容器 16,000 文件上限，结果可能不完整")
+                    }
+
+                    // 配置文件先读一遍作内容证据（只读）：每容器最多
+                    // 160 个、总计 24 MB，单文件上限 512 KB（旧版口径）。
+                    var configEvidence: [LaunchHackContentEvidence] = []
+                    var configBytesRead: UInt64 = 0
+                    for config in files where !config.isDirectory && !config.isSymlink
+                        && config.path.hasPrefix(target.rootPath + "/")
+                        && LaunchHackContentAnalyzer.isReadableConfig(config.path, size: config.size) {
+                        if configEvidence.count >= 160 { break }
+                        if configBytesRead + config.size > 24 * 1024 * 1024 { continue }
+                        let relative = String(config.path.dropFirst(target.rootPath.count + 1))
+                        guard let data = try? channel.read(config.path, maxBytes: 512 * 1024) else { continue }
+                        configBytesRead += UInt64(data.count)
+                        guard let evidence = LaunchHackContentAnalyzer.analyze(
+                            path: relative, relativePath: relative, data: data
+                        ) else { continue }
+                        configEvidence.append(evidence)
+                    }
+
                     for file in files where !file.isDirectory && !file.isSymlink
                         && file.path.hasPrefix(target.rootPath + "/")
                         && !PersonalMedia.isPersonal(bundleID: target.bundleID,
                             relativePath: String(file.path.dropFirst(target.rootPath.count + 1))) {
                         let relative = String(file.path.dropFirst(target.rootPath.count + 1))
                         let kind = FileKind.of(relative)
-                        guard kind == .image || kind == .video,
-                              file.size > 0, file.size <= 40 * 1024 * 1024 else { continue }
-                        // 分析上限单列：撞上时要留标记，完成状态必须明说
-                        // 后面的应用没检查，不许静默截断、假装查全了。
-                        if mediaCount >= 320 { hitCap = true; continue }
-                        mediaCount += 1
-                        if mediaCount % 20 == 0 {
-                            let snapshot = mediaCount
-                            DispatchQueue.main.async { self.checkedMedia = snapshot }
+                        if kind == .image || kind == .video {
+                            // 媒体文件走截图视觉比对线。
+                            guard file.size > 0, file.size <= 40 * 1024 * 1024 else { continue }
+                            // 分析上限单列：撞上时要留标记，完成状态必须
+                            // 明说后面的容器没检查，不许静默截断。
+                            if mediaCount >= 320 { hitCap = true; continue }
+                            mediaCount += 1
+                            if mediaCount % 20 == 0 {
+                                let snapshot = mediaCount
+                                DispatchQueue.main.async { self.checkedMedia = snapshot }
+                            }
+                            guard let match = LaunchHackVisualMatcher.inspect(path: file.path,
+                                relativePath: relative, channel: channel,
+                                reference: referenceFeature, referenceText: referenceText),
+                                  match.isStrong else { continue }
+                            let md5 = file.size <= 32 * 1024 * 1024 ? try? channel.md5(file.path) : nil
+                            matches.append(LaunchHackCandidate(bundleID: target.bundleID,
+                                groupID: target.groupID, appName: target.appName,
+                                relativePath: relative, size: file.size, modifiedAt: file.modified,
+                                md5: md5, isFrozen: channel.isImmutable(file.path),
+                                score: match.score, evidence: match.evidence,
+                                mediaDetails: match.mediaDetails, previewData: match.previewData))
+                            visualCount += 1
+                        } else {
+                            // 数据/配置文件走路径＋内容证据线（旧版那套，
+                            // Grace 2026-11-21 定：数据文件一并扫）。
+                            let assessment = LaunchHackAssessment.assess(relativePath: relative)
+                            var score = assessment.score
+                            var evidence = assessment.evidence
+                            if LaunchHackContentAnalyzer.isReadableConfig(relative, size: file.size),
+                               let parsed = configEvidence.first(where: { $0.sourcePath == relative }) {
+                                if parsed.hasAdSignals {
+                                    score = max(score, 62)
+                                    evidence.append("[内容已读取] 配置内容包含广告/开屏字段或关键词")
+                                }
+                                if !parsed.urls.isEmpty {
+                                    score = max(score, 68)
+                                    evidence.append("[内容已读取] 配置中提取到 \(parsed.urls.count) 个 URL")
+                                    evidence.append(contentsOf: parsed.urls.prefix(3).map {
+                                        "[内容已读取] 配置 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
+                                    })
+                                }
+                            }
+                            let matchingConfigs = configEvidence.filter {
+                                !LaunchHackContentAnalyzer.resourceMatchReasons(relative, evidence: $0).isEmpty
+                            }
+                            if !matchingConfigs.isEmpty {
+                                score = max(score, 88)
+                                evidence.append("[关联证据] 资源文件名与配置 URL 的文件名或 URL-MD5 精确对应")
+                                for config in matchingConfigs.prefix(2) {
+                                    evidence.append("[关联配置] \(config.sourcePath)")
+                                    evidence.append(contentsOf: LaunchHackContentAnalyzer.resourceMatchReasons(relative, evidence: config)
+                                        .map { "[关联证据] \($0)" })
+                                    evidence.append(contentsOf: config.urls.prefix(2).map {
+                                        "[内容已读取] 关联 URL：\(LaunchHackContentAnalyzer.displayURL($0))"
+                                    })
+                                }
+                            }
+                            guard score >= 40 else { continue }
+                            let md5 = file.size <= 32 * 1024 * 1024 ? try? channel.md5(file.path) : nil
+                            matches.append(LaunchHackCandidate(bundleID: target.bundleID,
+                                groupID: target.groupID, appName: target.appName,
+                                relativePath: relative, size: file.size, modifiedAt: file.modified,
+                                md5: md5, isFrozen: channel.isImmutable(file.path),
+                                score: min(score, 98), evidence: Array(Set(evidence)).sorted(),
+                                mediaDetails: nil, previewData: nil))
+                            dataCount += 1
                         }
-                        guard let match = LaunchHackVisualMatcher.inspect(path: file.path,
-                            relativePath: relative, channel: channel,
-                            reference: referenceFeature, referenceText: referenceText),
-                              match.isStrong else { continue }
-                        let md5 = file.size <= 32 * 1024 * 1024 ? try? channel.md5(file.path) : nil
-                        let candidate = LaunchHackCandidate(bundleID: target.bundleID,
-                            groupID: target.groupID, appName: target.appName,
-                            relativePath: relative, size: file.size, modifiedAt: file.modified,
-                            md5: md5, isFrozen: channel.isImmutable(file.path),
-                            score: match.score, evidence: match.evidence,
-                            mediaDetails: match.mediaDetails, previewData: match.previewData)
-                        matches.append(candidate)
                     }
                 } catch {
                     failures.append("\(target.appName)：\(error.localizedDescription)")
@@ -253,10 +390,10 @@ private final class LaunchHackModel: ObservableObject {
                 self.checkedMedia = mediaCount
                 self.isRunning = false
                 var statusText = failures.isEmpty
-                    ? "检索完成：分析 \(mediaCount) 个媒体文件，找到 \(ordered.count) 个高置信度匹配。"
+                    ? "检索完成：视觉分析 \(mediaCount) 个媒体文件、命中 \(visualCount) 个；数据文件按证据命中 \(dataCount) 个。"
                     : "检索完成但有 \(failures.count) 个容器未能完整读取；结果可能不完整。"
                 if hitCap {
-                    statusText += "已达到 320 个媒体文件的分析上限，后面的应用没有检查，结果不完整。"
+                    statusText += "已达到 320 个媒体文件的分析上限，后面的容器没有检查，结果不完整。"
                 }
                 self.status = statusText
                 self.onLog?(statusText, (failures.isEmpty && !hitCap) ? .success : .warning)
@@ -340,7 +477,7 @@ struct LaunchHackView: View {
                     Text("截图驱动 · 自动定位 · 自动同步").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
                 }
             }
-            Text("只需导入真实广告界面截图。LaunchHack 自动提取视觉与文字特征，检索可访问的应用资源，并将高置信度匹配结果同步到 LaunchShield。")
+            Text("只需导入真实广告界面截图。LaunchHack 自动提取视觉与文字特征，检索所选应用的资源：媒体按画面比对，数据文件按证据识别，结果同步到 LaunchShield。")
                 .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
         }
         .padding(.vertical, 3)
