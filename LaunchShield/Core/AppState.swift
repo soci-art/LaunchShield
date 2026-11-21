@@ -917,8 +917,14 @@ final class AppState: ObservableObject {
                 let lower = file.path.lowercased()
                 let ext = (file.path as NSString).pathExtension.lowercased()
                 if ["plist", "json", "xml", "cfg", "ini"].contains(ext) { return true }
-                if lower.contains("splash") { return true }
+                if lower.contains("splash") || lower.contains("settings") { return true }
                 if ["sqlite", "db", "data"].contains(ext) {
+                    return markers.contains { lower.contains($0) }
+                }
+                // 没有后缀名的 SDK 文件也要收：穿山甲的真设置
+                // 文件 csj_settings_new（169 KB、无后缀）第一版
+                // 筛选漏了它——路径带 SDK 标记就收。
+                if ext.isEmpty {
                     return markers.contains { lower.contains($0) }
                 }
                 return false

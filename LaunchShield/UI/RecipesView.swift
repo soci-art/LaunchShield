@@ -236,6 +236,32 @@ struct RecipesView: View {
         }
     }
 
+    /// 文件夹守护按应用分组（第 55 条），保持登记顺序。
+    private struct GuardAppGroup: Identifiable {
+        let bundleID: String
+        let appName: String
+        let guards: [DirectoryGuard]
+        var id: String { bundleID }
+    }
+
+    private var guardAppGroups: [GuardAppGroup] {
+        var order: [String] = []
+        var appNames: [String: String] = [:]
+        var grouped: [String: [DirectoryGuard]] = [:]
+        for item in state.directoryGuards {
+            if grouped[item.bundleID] == nil {
+                order.append(item.bundleID)
+                appNames[item.bundleID] = item.appName
+                grouped[item.bundleID] = []
+            }
+            grouped[item.bundleID]?.append(item)
+        }
+        return order.map {
+            GuardAppGroup(bundleID: $0, appName: appNames[$0] ?? $0,
+                          guards: grouped[$0] ?? [])
+        }
+    }
+
     /// 文件夹守护（第 52 条）：清零时按文件夹登记的整夹守护，
     /// 启动巡查会把这些文件夹里新出现的文件一并清掉。
     private var directoryGuardsSection: some View {
@@ -251,33 +277,38 @@ struct RecipesView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(state.directoryGuards) { guardItem in
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "folder")
-                        .foregroundStyle(Color.secondaryText)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(guardItem.appName)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.primaryText)
-                        Text(guardItem.relativePath)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
+            // 第 55 条：按应用归拢——一个应用一组，它的文件夹
+            // 收在应用名下面，不再一条条平铺。
+            ForEach(guardAppGroups) { group in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\(group.appName)（\(group.guards.count) 个文件夹）")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                        .padding(.top, 6)
+                    ForEach(group.guards) { guardItem in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "folder")
+                                .foregroundStyle(Color.secondaryText)
+                            Text(guardItem.relativePath)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer()
+                            Button {
+                                state.removeDirectoryGuard(guardItem)
+                            } label: {
+                                Text("移除")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.red)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.red.opacity(0.10), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.vertical, 4)
                     }
-                    Spacer()
-                    Button {
-                        state.removeDirectoryGuard(guardItem)
-                    } label: {
-                        Text("移除")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.red)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.red.opacity(0.10), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
                 }
-                .padding(.vertical, 4)
             }
         }
         .padding(16)

@@ -368,6 +368,7 @@ private final class LaunchHackModel: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             var matches: [LaunchHackCandidate] = []
             var visited = 0
+            var lastPublishedVisited = 0
             var mediaCount = 0
             var dataCount = 0
             var sniffedMedia = 0
@@ -385,9 +386,15 @@ private final class LaunchHackModel: ObservableObject {
                         skipDirSubstrings: PersonalMedia.personalDirectorySubstrings,
                         skipAccountDirs: true,
                         onVisit: { count in
-                            visited += 1
-                            if visited % 300 == 0 {
-                                let snapshot = visited
+                            // 通道的 onVisit 给的是累计已走条数
+                            // （文件＋目录），直接用它；每多走 100 条
+                            // 刷新一次页面计数。第 54 条：旧写法自己
+                            // +1、满 300 才刷新，通道回调稀疏时计数
+                            // 一直是 0。
+                            visited = count
+                            if count - lastPublishedVisited >= 100 {
+                                lastPublishedVisited = count
+                                let snapshot = count
                                 DispatchQueue.main.async { self.visitedFiles = snapshot }
                             }
                         })
@@ -770,7 +777,7 @@ struct LaunchHackView: View {
                         .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
                 } else {
                     ProgressView()
-                    Text("正在盘点文件…")
+                    Text("正在盘点文件…已访问 \(model.visitedFiles) 个文件")
                         .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
                 }
             }

@@ -24,30 +24,49 @@ struct BackupsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .panel()
                     } else {
-                        HStack {
-                            Text("共 \(state.backups.count) 份，备份里存的是原文件字节；还原后会核对 MD5。")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Color.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer()
-                            Button("全部删除") {
+                        Text("共 \(state.backups.count) 份，备份里存的是原文件字节；还原后会核对 MD5。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        // 第 56 条：三个操作单独一行、各自带框，
+                        // 不再挤在说明文字右边的小字（渲染图已确认）。
+                        HStack(spacing: 10) {
+                            Button {
                                 showDeleteAll = true
+                            } label: {
+                                Text("全部删除")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.red)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 11)
+                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
                             }
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.red)
                             .buttonStyle(.plain)
-                            Button("全部还原") {
+                            Button {
                                 showRestoreAll = true
+                            } label: {
+                                Text("全部还原")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.accentCyan)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 11)
+                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
                             }
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.accentCyan)
                             .buttonStyle(.plain)
-                            Button(selecting ? "完成" : "多选") {
+                            Button {
                                 selecting.toggle()
                                 if !selecting { selectedIDs = [] }
+                            } label: {
+                                Text(selecting ? "完成" : "多选")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.accentCyan)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 11)
+                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
                             }
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.accentCyan)
                             .buttonStyle(.plain)
                         }
                         ForEach(appGroups, id: \.bundleID) { group in
