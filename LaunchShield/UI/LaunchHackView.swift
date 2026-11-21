@@ -560,6 +560,7 @@ private final class LaunchHackModel: ObservableObject {
                 "mediaDetails": candidate.mediaDetails as Any? ?? NSNull()
             ]
         }
+        let uploadedCount = records.count
         let payload: [String: Any] = [
             "schemaVersion": 1,
             "uploadedAt": ISO8601DateFormatter().string(from: Date()),
@@ -578,7 +579,7 @@ private final class LaunchHackModel: ObservableObject {
                                body: data) { success, message in
             self.isUploading = false
             self.uploadMessage = success
-                ? "识别数据上传成功（\(self.candidates.count) 项）。"
+                ? "识别数据上传成功（\(uploadedCount) 项）。"
                 : "识别数据上传失败：\(message)"
         }
     }
@@ -691,6 +692,14 @@ private final class LaunchHackModel: ObservableObject {
                 self.isTracking = false
                 guard !containers.isEmpty else {
                     self.trackingMessage = "没有容器成功完成本次记录，原有追踪数据保持不变。"
+                    return
+                }
+                let incomplete = containers.contains(where: { $0.truncated })
+                    || !failed.isEmpty
+                    || containers.count != targets.count
+                guard !incomplete else {
+                    let truncatedCount = containers.filter { $0.truncated }.count
+                    self.trackingMessage = "本次记录不完整：\(containers.count)/\(targets.count) 个容器成功读取，\(truncatedCount) 个达到扫描上限，\(failed.count) 个读取失败。为避免产生误导性差异，未覆盖原有检查点；请恢复容器访问后重新记录。"
                     return
                 }
                 if stage == .baseline {
@@ -1164,7 +1173,7 @@ struct LaunchHackView: View {
                 .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 15))
             }
             .buttonStyle(.plain)
-            .disabled(model.isScanning || model.isTracking || selectedApps.isEmpty || !state.channel.isAvailable)
+            .disabled(model.isScanning || model.isTracking || model.isUploading || selectedApps.isEmpty || !state.channel.isAvailable)
 
             if model.isScanning {
                 ProgressView(value: Double(model.scannedContainers), total: Double(max(model.totalContainers, 1)))

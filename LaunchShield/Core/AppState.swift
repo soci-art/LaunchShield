@@ -1977,10 +1977,16 @@ final class AppState: ObservableObject {
                     } else {
                         self.store.file.recipes.append(recipe)
                     }
-                    self.store.save()
+                    let recipeSaved = self.store.save()
                     self.recipes = self.store.file.recipes
                     self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
-                    if let freezeFailure {
+                    if !recipeSaved {
+                        let detail = freezeFailure.map { "冻结也未成功：\($0)。" } ?? ""
+                        self.log("LaunchHack 资源已处理，但守护配方未能写入本机：\(relativePath)", .warning)
+                        let message = "原文件已备份并清零。\(frozen ? "文件当前已冻结，但" : detail)守护规则未能保存到本机，重启后可能无法自动复查或维持守护。请检查 LaunchShield 存储空间，并在已守护列表核对该项目。"
+                        if completion == nil { self.alertText = message }
+                        completion?(false, message)
+                    } else if let freezeFailure {
                         self.log("LaunchHack 资源已备份并清零，但冻结失败：\(relativePath)：\(freezeFailure)", .warning)
                         let message = "已备份并清零，配方已同步；但冻结失败：\(freezeFailure)。请在已守护列表重试冻结。"
                         if completion == nil { self.alertText = message }
