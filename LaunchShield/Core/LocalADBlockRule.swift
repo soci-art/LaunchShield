@@ -37,13 +37,13 @@ enum LocalADBlockRule {
         for group in thirdPartyCacheGroups {
             for directory in group.directories {
                 let root = container + "/" + directory
-                guard channel.isDirectory(root) else { continue }
+                guard let item = channel.item(at: root), item.isDirectory, !item.isSymlink else { continue }
                 result.append(directory)
                 collectSubdirectories(container: container, relative: directory, channel: channel, into: &result)
             }
         }
         for relative in erosionMatchedDirectoryPaths(container: container, channel: channel, ownerBundleID: ownerBundleID) {
-            guard channel.isDirectory(container + "/" + relative) else { continue }
+            guard let item = channel.item(at: container + "/" + relative), item.isDirectory, !item.isSymlink else { continue }
             result.append(relative)
             collectSubdirectories(container: container, relative: relative, channel: channel, into: &result)
         }
@@ -65,13 +65,16 @@ enum LocalADBlockRule {
 
     static func resolveSelfSoldSplash(container: String, channel: Channel) -> SplashResolution? {
         let prefsPath = container + "/" + preferencesPath
-        guard channel.exists(prefsPath) else { return nil }
+        guard let prefsItem = channel.item(at: prefsPath),
+              !prefsItem.isDirectory, !prefsItem.isSymlink else { return nil }
         guard let data = try? channel.read(prefsPath, maxBytes: 16 * 1024 * 1024) else { return nil }
         guard let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any] else {
             return nil
         }
         let cacheRoot = container + "/" + splashCacheRoot
-        let cachedFiles = (try? channel.children(of: cacheRoot))?.filter { !$0.isDirectory } ?? []
+        guard let cacheItem = channel.item(at: cacheRoot),
+              cacheItem.isDirectory, !cacheItem.isSymlink else { return nil }
+        let cachedFiles = (try? channel.children(of: cacheRoot))?.filter { !$0.isDirectory && !$0.isSymlink } ?? []
 
         let keys = plist.keys.filter { $0.hasPrefix(splashKeyPrefix) }.sorted()
         var bestPrimary: (resolution: SplashResolution, size: UInt64)?
@@ -409,10 +412,15 @@ enum LocalADBlockRule {
     private static func erosionMatchedDirectoryPaths(container: String, channel: Channel, ownerBundleID: String) -> [String] {
         var paths: [String] = []
         for spec in appSpecificAdPaths[ownerBundleID] ?? [] {
-            if channel.isDirectory(container + "/" + spec.relPath) { paths.append(spec.relPath) }
+            if let item = try? channel.inspectItem(at: container + "/" + spec.relPath), let item, item.isDirectory, !item.isSymlink {
+                paths.append(spec.relPath)
+            }
         }
         func walk(_ directory: String, relative: String, depth: Int) {
-            guard depth <= 2, let items = try? channel.children(of: directory) else { return }
+            guard depth <= 2,
+                  let rootItem = channel.item(at: directory),
+                  rootItem.isDirectory, !rootItem.isSymlink,
+                  let items = try? channel.children(of: directory) else { return }
             for item in items where item.isDirectory && !item.isSymlink {
                 let lower = item.name.lowercased()
                 if lower.hasPrefix(".") || neverTouchOrDescend.contains(lower) { continue }
@@ -441,7 +449,7 @@ enum LocalADBlockRule {
                 for file in files(below: path, channel: channel, depth: 0, limit: 4000) where seen.insert(file.path).inserted {
                     result.append((file, "本地广告规则", spec.zh))
                 }
-            } else if let item = channel.item(at: path), !item.isDirectory, seen.insert(item.path).inserted {
+            } else if let item = channel.item(at: path), !item.isDirectory, !item.isSymlink, seen.insert(item.path).inserted {
                 result.append((item, "本地广告规则", spec.zh))
             }
         }
@@ -484,7 +492,7 @@ enum LocalADBlockRule {
         var seen = Set<String>()
 
         func append(_ item: FileItem, group: String, note: String) {
-            guard !seen.contains(item.path) else { return }
+            guard !item.isSymlink, !item.isDirectory, !seen.contains(item.path) else { return }
             seen.insert(item.path)
             result.append(TargetFile(path: item.path,
                                      relativePath: relativePath(container: container, path: item.path),
@@ -496,7 +504,7 @@ enum LocalADBlockRule {
                                      appName: ownerName))
         }
 
-        if let splash, splash.exists, let item = channel.item(at: splash.path), !item.isDirectory {
+        if let splash, splash.exists, let item = channel.item(at: splash.path), !item.isDirectory, !item.isSymlink {
             append(item,
                    group: "软件自营",
                    note: "按广告记录动态推导")
@@ -526,7 +534,9 @@ enum LocalADBlockRule {
 
     private static func files(below directory: String, channel: Channel, depth: Int, limit: Int,
                               onVisit: (() -> Void)? = nil) -> [FileItem] {
-        guard depth < 6 else { return [] }
+        guard depth < 6,
+              let rootItem = channel.item(at: directory),
+              rootItem.isDirectory, !rootItem.isSymlink else { return [] }
         guard let items = try? channel.children(of: directory) else { return [] }
         var result: [FileItem] = []
         for item in items {
@@ -639,9 +649,9 @@ enum LocalADBlockRule {
     private static func cachedFile(root: String, md5: String, cached: [FileItem], channel: Channel) -> String? {
         for extensionName in ["png", "jpg", "jpeg", "webp", "gif", "mp4", ""] {
             let path = extensionName.isEmpty ? root + "/" + md5 : root + "/" + md5 + "." + extensionName
-            if channel.exists(path) { return path }
+            if let item = channel.item(at: path), !item.isDirectory, !item.isSymlink { return path }
         }
-        for item in cached where !item.isDirectory {
+        for item in cached where !item.isDirectory && !item.isSymlink {
             let stem = (item.name as NSString).deletingPathExtension.lowercased()
             if stem == md5 { return item.path }
         }

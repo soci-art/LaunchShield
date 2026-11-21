@@ -143,21 +143,29 @@ enum RulesStore {
     }
     private static var localRulesCache: [LocalCandidateRule]?
     private static var localRulesDidLoad = false
+    private static var localRulesLoadFailure: String?
 
     private static func loadLocalRulesIfNeeded() {
         lock.lock()
         defer { lock.unlock() }
         guard !localRulesDidLoad else { return }
         localRulesDidLoad = true
-        guard let data = try? Data(contentsOf: localRulesURL),
-              data.count <= 1_048_576,
-              let parsed = try? JSONDecoder().decode([LocalCandidateRule].self, from: data) else {
+        guard FileManager.default.fileExists(atPath: localRulesURL.path) else {
             localRulesCache = []
             return
         }
-        localRulesCache = parsed.filter {
-            !$0.bundleID.isEmpty && isSafeRelativeDirectory($0.relativePath)
-                && (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
+        do {
+            let data = try Data(contentsOf: localRulesURL)
+            guard data.count <= 1_048_576 else { throw CocoaError(.fileReadTooLarge) }
+            let parsed = try JSONDecoder().decode([LocalCandidateRule].self, from: data)
+            localRulesCache = parsed.filter {
+                !$0.bundleID.isEmpty && isSafeRelativeDirectory($0.relativePath)
+                    && (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
+            }
+            localRulesLoadFailure = nil
+        } catch {
+            localRulesCache = []
+            localRulesLoadFailure = error.localizedDescription
         }
     }
 
@@ -185,6 +193,7 @@ enum RulesStore {
         loadLocalRulesIfNeeded()
         lock.lock()
         defer { lock.unlock() }
+        guard localRulesLoadFailure == nil else { return false }
         var records = localRulesCache ?? []
         let record = LocalCandidateRule(bundleID: owner, appName: appName,
                                         relativePath: relativePath, createdAt: Date())

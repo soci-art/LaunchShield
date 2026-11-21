@@ -15,6 +15,7 @@ final class LibraryStore {
     let backupRoot: URL
 
     private var jsonURL: URL { root.appendingPathComponent("library.json") }
+    private(set) var loadFailure: String?
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -29,15 +30,25 @@ final class LibraryStore {
     }
 
     func load() {
-        guard let data = try? Data(contentsOf: jsonURL),
-              let decoded = try? JSONDecoder().decode(LibraryFile.self, from: data) else { return }
-        file = decoded
+        guard FileManager.default.fileExists(atPath: jsonURL.path) else { return }
+        do {
+            let data = try Data(contentsOf: jsonURL)
+            file = try JSONDecoder().decode(LibraryFile.self, from: data)
+            loadFailure = nil
+        } catch {
+            loadFailure = error.localizedDescription
+        }
     }
 
     /// Persist the complete library atomically and verify the bytes on disk.
     /// The throwing form is used before destructive file operations so a
     /// failed index write prevents the target from being truncated.
     func saveOrThrow() throws {
+        if let loadFailure {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [
+                NSLocalizedDescriptionKey: "本机守护库无法读取，为避免覆盖损坏数据，已阻止写入：\(loadFailure)"
+            ])
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted]
         let data = try encoder.encode(file)
@@ -49,6 +60,7 @@ final class LibraryStore {
                 NSLocalizedDescriptionKey: "备份索引写入后校验不一致"
             ])
         }
+        loadFailure = nil
     }
 
     /// Register a backup record durably before its source file is modified.

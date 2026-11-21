@@ -10,6 +10,10 @@ enum SnapshotDiff {
                      limit: Int = 60000,
                      directoryLimit: Int = 120000,
                      onProgress: ((Int) -> Void)? = nil) throws -> ContainerSnapshot {
+        guard let rootItem = channel.item(at: root),
+              rootItem.isDirectory, !rootItem.isSymlink else {
+            throw ChannelFailure("快照容器根目录不可访问或是符号链接")
+        }
         let safeFileLimit = max(1, limit)
         let safeDirectoryLimit = max(1, directoryLimit)
         var entries: [String: ContainerSnapshot.Entry] = [:]

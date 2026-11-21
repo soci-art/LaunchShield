@@ -16,6 +16,13 @@ struct BackupManager {
         guard Self.isSafeRelativePath(relativePath) else {
             throw ChannelFailure("文件相对路径不安全，已取消备份")
         }
+        guard let expectedRoot = channel.rootPath(bundleID: bundleID, groupID: groupID) else {
+            throw ChannelFailure("找不到备份所属容器，已取消备份")
+        }
+        let expectedPath = expectedRoot.hasSuffix("/") ? expectedRoot + relativePath : expectedRoot + "/" + relativePath
+        guard path == expectedPath else {
+            throw ChannelFailure("备份文件路径与所属容器不一致，已取消备份")
+        }
         guard let item = try channel.inspectItem(at: path), !item.isDirectory, !item.isSymlink else {
             throw ChannelFailure("目标不是普通文件（或是符号链接），已取消备份")
         }
@@ -71,6 +78,10 @@ struct BackupManager {
         }
         guard Self.isSafeAbsoluteContainerPath(container) else {
             throw ChannelFailure("目标容器路径不安全，拒绝恢复")
+        }
+        guard let expectedRoot = channel.rootPath(bundleID: record.bundleID, groupID: record.groupID),
+              expectedRoot == container else {
+            throw ChannelFailure("备份记录与目标容器不匹配，拒绝恢复")
         }
 
         let directory = store.backupDirectoryURL(for: record.id)
@@ -144,6 +155,8 @@ struct BackupManager {
         } catch {
             var rollbackResult = "未能确认原文件恢复状态"
             var rollbackCanWrite = true
+            var rollbackContentRestored = false
+            var rollbackLockRestored = !wasImmutable
             if wasImmutable {
                 do {
                     try channel.setImmutable(target, false)
@@ -160,6 +173,7 @@ struct BackupManager {
                         throw ChannelFailure("回滚后的 MD5 不一致")
                     }
                     rollbackResult = "已恢复原文件"
+                    rollbackContentRestored = true
                 } catch {
                     rollbackResult = "自动回滚失败：\(error.localizedDescription)"
                 }
@@ -167,6 +181,7 @@ struct BackupManager {
                 do {
                     if try channel.inspectItem(at: target) != nil { try channel.delete(target) }
                     rollbackResult = "已清理本次创建的残留文件"
+                    rollbackContentRestored = true
                 } catch {
                     rollbackResult = "清理残留文件失败：\(error.localizedDescription)"
                 }
@@ -176,11 +191,16 @@ struct BackupManager {
                     try channel.setImmutable(target, true)
                     guard channel.isImmutable(target) else { throw ChannelFailure("冻结状态校验失败") }
                     rollbackResult += "；原冻结状态已恢复"
+                    rollbackLockRestored = true
                 } catch {
                     rollbackResult += "；警告：原冻结状态恢复失败：\(error.localizedDescription)"
                 }
             }
-            try? FileManager.default.removeItem(at: rollbackDirectory)
+            if rollbackContentRestored && rollbackLockRestored {
+                try? FileManager.default.removeItem(at: rollbackDirectory)
+            } else {
+                rollbackResult += "；回滚快照已保留供手动恢复：\(rollbackDirectory.path)"
+            }
             throw ChannelFailure("恢复失败：\(error.localizedDescription)；\(rollbackResult)")
         }
     }

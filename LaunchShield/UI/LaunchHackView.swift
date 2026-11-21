@@ -27,7 +27,9 @@ private struct LaunchHackCandidate: Codable, Identifiable, Hashable {
     var previewData: Data? = nil
 
     var id: String {
-        (bundleID ?? "group:\(groupID ?? "unknown")") + "|" + relativePath
+        let owner = bundleID ?? "unowned"
+        let container = groupID.map { "group:" + $0 } ?? "app"
+        return owner + "|" + container + "|" + relativePath
     }
 
     var priorityText: String {
@@ -69,17 +71,30 @@ private enum LaunchHackDraftStore {
         return directory.appendingPathComponent("rule-drafts.json")
     }
 
+    private static var loadFailure: String?
+
     static func load() -> [LaunchHackRuleDraft] {
-        guard let data = try? Data(contentsOf: fileURL),
-              let drafts = try? JSONDecoder().decode([LaunchHackRuleDraft].self, from: data) else {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let drafts = try JSONDecoder().decode([LaunchHackRuleDraft].self, from: data)
+            loadFailure = nil
+            return drafts
+        } catch {
+            loadFailure = error.localizedDescription
             return []
         }
-        return drafts
     }
 
-    static func save(_ drafts: [LaunchHackRuleDraft]) {
-        guard let data = try? JSONEncoder().encode(drafts) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+    @discardableResult
+    static func save(_ drafts: [LaunchHackRuleDraft]) -> Bool {
+        guard loadFailure == nil, let data = try? JSONEncoder().encode(drafts) else { return false }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 }
 
@@ -373,7 +388,10 @@ private struct LaunchHackTraceContainer: Codable, Identifiable {
     let truncated: Bool
     let entries: [String: LaunchHackTraceEntry]
 
-    var id: String { (bundleID ?? groupID ?? "unknown") + (bundleID == nil ? ":group" : ":app") }
+    var id: String {
+        if let groupID { return "group:" + groupID }
+        return "app:" + (bundleID ?? "unknown")
+    }
 }
 
 private struct LaunchHackTraceCheckpoint: Codable, Identifiable {
@@ -396,6 +414,7 @@ private struct LaunchHackTraceChange: Identifiable {
 }
 
 private enum LaunchHackTraceStore {
+    private static var loadFailure: String?
     private static var fileURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -405,15 +424,20 @@ private enum LaunchHackTraceStore {
     }
 
     static func load() -> [LaunchHackTraceCheckpoint] {
-        guard let data = try? Data(contentsOf: fileURL),
-              let records = try? JSONDecoder().decode([LaunchHackTraceCheckpoint].self, from: data) else {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let records = try JSONDecoder().decode([LaunchHackTraceCheckpoint].self, from: data)
+            loadFailure = nil
+            return records
+        } catch {
+            loadFailure = error.localizedDescription
             return []
         }
-        return records
     }
 
     static func save(_ records: [LaunchHackTraceCheckpoint]) -> Bool {
-        guard let data = try? JSONEncoder().encode(records) else { return false }
+        guard loadFailure == nil, let data = try? JSONEncoder().encode(records) else { return false }
         do {
             try data.write(to: fileURL, options: .atomic)
             return true
@@ -510,7 +534,7 @@ private final class LaunchHackModel: ObservableObject {
     @Published var isScanning = false
     @Published var isUploading = false
     @Published var uploadMessage = ""
-    @Published var uploadResultUncertain = false
+    @Published var uploadResultUncertain = UserDefaults.standard.bool(forKey: "ls.launchHackUploadResultUncertain")
     @Published var scannedContainers = 0
     @Published var totalContainers = 0
     @Published var visitedFiles = 0
@@ -533,10 +557,13 @@ private final class LaunchHackModel: ObservableObject {
 
     func addDraft(_ candidate: LaunchHackCandidate) {
         guard !drafts.contains(where: { $0.candidate.id == candidate.id }) else { return }
-        let status = candidate.groupID == nil ? "待验证" : "待关联宿主 App"
+        let previous = drafts
+        let status = candidate.bundleID == nil ? "待关联宿主 App" : (candidate.groupID == nil ? "待验证" : "共享容器待验证")
         drafts.insert(LaunchHackRuleDraft(id: UUID(), candidate: candidate,
                                           createdAt: Date(), status: status), at: 0)
-        LaunchHackDraftStore.save(drafts)
+        if !LaunchHackDraftStore.save(drafts) {
+            drafts = previous
+        }
     }
 
     /// 用户主动上传识别结果；仅提交可审计元数据，不上传原始媒体或文件内容。
@@ -580,6 +607,7 @@ private final class LaunchHackModel: ObservableObject {
                                body: data) { success, message in
             self.isUploading = false
             self.uploadResultUncertain = !success
+            UserDefaults.standard.set(!success, forKey: "ls.launchHackUploadResultUncertain")
             self.uploadMessage = success
                 ? "识别数据上传成功（\(uploadedCount) 项）。"
                 : "上传结果未确认：\(message)。服务器可能已经收到数据；为避免重复记录，请先核对服务器，再决定是否重新提交。"
@@ -587,8 +615,11 @@ private final class LaunchHackModel: ObservableObject {
     }
 
     func removeDraft(_ draft: LaunchHackRuleDraft) {
+        let previous = drafts
         drafts.removeAll { $0.id == draft.id }
-        LaunchHackDraftStore.save(drafts)
+        if !LaunchHackDraftStore.save(drafts) {
+            drafts = previous
+        }
     }
 
     func checkpoint(for stage: LaunchHackTraceStage) -> LaunchHackTraceCheckpoint? {
@@ -636,6 +667,10 @@ private final class LaunchHackModel: ObservableObject {
                 }
                 let perContainerLimit = min(12000, remaining)
                 do {
+                    guard let rootItem = channel.item(at: target.rootPath),
+                          rootItem.isDirectory, !rootItem.isSymlink else {
+                        throw ChannelFailure("容器根目录不可访问或是符号链接")
+                    }
                     let files = try channel.walkFiles(
                         at: target.rootPath,
                         limit: perContainerLimit,
@@ -645,10 +680,9 @@ private final class LaunchHackModel: ObservableObject {
                     )
                     totalVisited += files.count
                     var entries: [String: LaunchHackTraceEntry] = [:]
-                    for file in files where !file.isDirectory && !file.isSymlink {
-                        let relative = file.path.hasPrefix(target.rootPath + "/")
-                            ? String(file.path.dropFirst(target.rootPath.count + 1))
-                            : file.name
+                    for file in files where !file.isDirectory && !file.isSymlink
+                        && file.path.hasPrefix(target.rootPath + "/") {
+                        let relative = String(file.path.dropFirst(target.rootPath.count + 1))
                         var digest: String?
                         let ext = (relative as NSString).pathExtension.lowercased()
                         let relevant = FileKind.of(relative) == .image
@@ -704,6 +738,7 @@ private final class LaunchHackModel: ObservableObject {
                     self.trackingMessage = "本次记录不完整：\(containers.count)/\(targets.count) 个容器成功读取，\(truncatedCount) 个达到扫描上限，\(failed.count) 个读取失败。为避免产生误导性差异，未覆盖原有检查点；请恢复容器访问后重新记录。"
                     return
                 }
+                let previous = self.traceCheckpoints
                 if stage == .baseline {
                     self.traceCheckpoints = [checkpoint]
                 } else {
@@ -712,18 +747,27 @@ private final class LaunchHackModel: ObservableObject {
                     self.traceCheckpoints.sort { $0.createdAt < $1.createdAt }
                 }
                 let saved = LaunchHackTraceStore.save(self.traceCheckpoints)
+                if !saved {
+                    self.traceCheckpoints = previous
+                }
                 let count = containers.reduce(0) { $0 + $1.entries.count }
                 let incomplete = containers.filter { $0.truncated }.count
-                self.trackingMessage = "「\(stage.title)」已记录：\(containers.count) 个容器、\(count) 个文件、\(hashedFiles) 个 MD5；\(incomplete) 个容器达到扫描上限，\(failed.count) 个容器未能读取。\(saved ? "已保存到本机" : "本机保存失败，请检查存储空间")。"
+                self.trackingMessage = saved
+                    ? "「\(stage.title)」已记录：\(containers.count) 个容器、\(count) 个文件、\(hashedFiles) 个 MD5；\(incomplete) 个容器达到扫描上限，\(failed.count) 个容器未能读取。已保存到本机。"
+                    : "本机保存失败，已保留上一次追踪记录；请检查存储空间后重试。"
             }
         }
     }
 
     func clearTrace() {
+        let previous = traceCheckpoints
         traceCheckpoints = []
-        trackingMessage = LaunchHackTraceStore.save(traceCheckpoints)
-            ? "本机追踪记录已清空。"
-            : "无法更新本机追踪文件，请检查存储空间。"
+        if LaunchHackTraceStore.save(traceCheckpoints) {
+            trackingMessage = "本机追踪记录已清空。"
+        } else {
+            traceCheckpoints = previous
+            trackingMessage = "无法更新本机追踪文件，已保留原有追踪记录。"
+        }
     }
 
     func scan(targets: [LaunchHackScanTarget], channel: Channel) {
@@ -738,7 +782,6 @@ private final class LaunchHackModel: ObservableObject {
         }
 
         isScanning = true
-        uploadResultUncertain = false
         candidates = []
         scannedContainers = 0
         visitedFiles = 0
@@ -755,6 +798,10 @@ private final class LaunchHackModel: ObservableObject {
 
             for target in targets {
                 do {
+                    guard let rootItem = channel.item(at: target.rootPath),
+                          rootItem.isDirectory, !rootItem.isSymlink else {
+                        throw ChannelFailure("容器根目录不可访问或是符号链接")
+                    }
                     let files = try channel.walkFiles(
                         at: target.rootPath,
                         limit: 12000,
@@ -770,18 +817,21 @@ private final class LaunchHackModel: ObservableObject {
                         }
                     )
 
+                    if files.count >= 12000 {
+                        failures.append("\(target.appName)：达到单容器 12,000 文件上限，结果可能不完整")
+                    }
+
                     // 读取偏好设置、应用支持目录和广告特征配置，建立只读关联索引。
                     // 每容器最多读取 160 个配置、总计 24 MiB；单文件上限 512 KiB。
                     var configEvidence: [LaunchHackContentEvidence] = []
                     var configBytesRead: UInt64 = 0
                     for config in files where !config.isDirectory && !config.isSymlink
+                        && config.path.hasPrefix(target.rootPath + "/")
                         && LaunchHackContentAnalyzer.isReadableConfig(config.path, size: config.size) {
                         if configEvidence.count >= 160 { break }
                         if configBytesRead + config.size > 24 * 1024 * 1024 { continue }
 
-                        let relative = config.path.hasPrefix(target.rootPath + "/")
-                            ? String(config.path.dropFirst(target.rootPath.count + 1))
-                            : config.name
+                        let relative = String(config.path.dropFirst(target.rootPath.count + 1))
                         guard let data = try? channel.read(config.path, maxBytes: 512 * 1024) else { continue }
                         configBytesRead += UInt64(data.count)
                         guard let evidence = LaunchHackContentAnalyzer.analyze(
@@ -790,10 +840,9 @@ private final class LaunchHackModel: ObservableObject {
                         configEvidence.append(evidence)
                     }
 
-                    for file in files where !file.isDirectory && !file.isSymlink {
-                        let relative = file.path.hasPrefix(target.rootPath + "/")
-                            ? String(file.path.dropFirst(target.rootPath.count + 1))
-                            : file.name
+                    for file in files where !file.isDirectory && !file.isSymlink
+                        && file.path.hasPrefix(target.rootPath + "/") {
+                        let relative = String(file.path.dropFirst(target.rootPath.count + 1))
                         let assessment = LaunchHackAssessment.assess(relativePath: relative)
                         var score = assessment.score
                         var evidence = assessment.evidence
@@ -1051,6 +1100,11 @@ struct LaunchHackView: View {
         }
         .confirmationDialog("批量处理已勾选资源？", isPresented: $showBulkGovernanceConfirmation, titleVisibility: .visible) {
             Button("开始串行处理 \(governanceQueue.count) 项", role: .destructive) {
+                guard !state.isBusy, !model.isScanning, !model.isTracking else {
+                    model.scanMessage = "当前有其他任务正在执行，请完成后再开始批量治理。"
+                    governanceQueue = []
+                    return
+                }
                 governanceResults = []
                 governanceIndex = 0
                 isGovernanceRunning = true
@@ -1085,6 +1139,10 @@ struct LaunchHackView: View {
         }
         .confirmationDialog("上传本次识别数据？", isPresented: $showUploadConfirmation, titleVisibility: .visible) {
             Button("仅上传识别元数据") {
+                guard !state.isBusy, !model.isScanning, !isGovernanceRunning, !model.isTracking else {
+                    model.uploadMessage = "当前有扫描、治理或复查任务正在执行，请完成后再上传。"
+                    return
+                }
                 model.uploadRecognitionData()
             }
             Button("取消", role: .cancel) { }
@@ -1298,7 +1356,7 @@ struct LaunchHackView: View {
 
     private var importableCandidates: [LaunchHackCandidate] {
         model.candidates.filter {
-            $0.bundleID != nil &&
+            $0.bundleID != nil && $0.groupID == nil &&
             (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
         }
     }
@@ -1516,6 +1574,10 @@ struct LaunchHackView: View {
     private func effectReviewAction(_ stage: LaunchHackTraceStage, title: String) -> some View {
         let checkpoint = model.checkpoint(for: stage)
         return Button {
+            guard !state.isBusy, !model.isScanning, !isGovernanceRunning else {
+                model.trackingMessage = "当前有扫描或治理任务正在执行，请完成后再记录检查点。"
+                return
+            }
             model.captureCheckpoint(stage: stage, targets: trackingTargets, channel: state.channel)
         } label: {
             VStack(spacing: 4) {
@@ -1692,7 +1754,7 @@ struct LaunchHackView: View {
                                                  rootPath: app.path, groupID: nil))
             // 只纳入 AppState 已按容器标识关联的共享组，不扫描其他 App 的共享容器。
             targets.append(contentsOf: state.associatedGroups(for: app.bundleID).filter { !$0.path.isEmpty }.map {
-                LaunchHackScanTarget(bundleID: nil, appName: "共享容器 · \($0.bundleID)",
+                LaunchHackScanTarget(bundleID: app.bundleID, appName: "共享容器 · \($0.bundleID)",
                                      rootPath: $0.path, groupID: $0.bundleID)
             })
         }
@@ -1837,11 +1899,11 @@ struct LaunchHackView: View {
     }
 
     private func candidateRow(_ candidate: LaunchHackCandidate) -> some View {
-        let canImport = candidate.bundleID != nil
+        let canImport = candidate.bundleID != nil && candidate.groupID == nil
             && (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video)
-        let imported = candidate.bundleID.map {
+        let imported = candidate.groupID == nil ? (candidate.bundleID.map {
             RulesStore.containsLocalCandidate(bundleID: $0, relativePath: candidate.relativePath)
-        } ?? false
+        } ?? false) : false
 
         return DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) {
@@ -2059,7 +2121,8 @@ struct LaunchHackView: View {
                                         relativePath: candidate.relativePath,
                                         expectedSize: candidate.size,
                                         expectedModifiedAt: candidate.modifiedAt,
-                                        expectedMD5: candidate.md5) { success, message in
+                                        expectedMD5: candidate.md5,
+                                        groupID: candidate.groupID) { success, message in
             governanceResults.append((candidate.id, candidate.appName, success, message))
             governanceIndex += 1
             processNextGovernanceCandidate()
@@ -2119,6 +2182,10 @@ struct LaunchHackView: View {
     }
 
     private func beginScan() {
+        guard !state.isBusy, !isGovernanceRunning, !model.isTracking else {
+            model.scanMessage = "当前有治理或复查任务正在执行，请完成后再扫描。"
+            return
+        }
         selectedGovernanceIDs.removeAll()
         let targets = trackingTargets
         guard !selectedApps.isEmpty, !targets.isEmpty else {

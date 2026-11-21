@@ -68,7 +68,13 @@ final class AppState: ObservableObject {
         UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:]
     var whitelistedBundleIDs: Set<String> { Set(appWhitelist.keys.map { $0.lowercased() }) }
     func isWhitelisted(_ bundleID: String) -> Bool {
-        whitelistedBundleIDs.contains(bundleID.lowercased())
+        let normalized = bundleID.lowercased()
+        if whitelistedBundleIDs.contains(normalized) { return true }
+        guard normalized.hasPrefix("group.") else { return false }
+        let groupOwner = String(normalized.dropFirst(6))
+        return whitelistedBundleIDs.contains {
+            groupOwner == $0 || groupOwner.hasPrefix($0 + ".")
+        }
     }
     func whitelistName(for bundleID: String) -> String {
         appWhitelist[bundleID.lowercased()] ?? containers.first(where: { $0.bundleID.caseInsensitiveCompare(bundleID) == .orderedSame })?.name ?? bundleID
@@ -296,6 +302,10 @@ final class AppState: ObservableObject {
 
         recipes = store.file.recipes
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
+        if let loadFailure = store.loadFailure {
+            log("本机守护库读取失败，已阻止覆盖原数据：\(loadFailure)", .warning)
+            alertText = "本机守护库无法读取。为保护原有备份和守护记录，已暂停修改相关数据；请先备份并检查 library.json。"
+        }
         loadMarks()
         runReminderChecks()
         log("LaunchShield \(appVersionText) 已启动", .info)
@@ -866,8 +876,11 @@ final class AppState: ObservableObject {
         known.insert(LocalADBlockRule.splashCacheRoot)
         var result: [String] = []
         for parent in ["Library/Caches", "Library", "tmp", "Library/Application Support"] {
-            guard let items = try? channel.children(of: container + "/" + parent) else { continue }
-            for item in items where item.isDirectory {
+            let parentPath = container + "/" + parent
+            guard let parentItem = channel.item(at: parentPath),
+                  parentItem.isDirectory, !parentItem.isSymlink,
+                  let items = try? channel.children(of: parentItem.path) else { continue }
+            for item in items where item.isDirectory && !item.isSymlink {
                 let relative = parent + "/" + item.name
                 if !known.contains(relative) {
                     result.append(relative)
@@ -898,6 +911,7 @@ final class AppState: ObservableObject {
     }
 
     private func performClear() {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
         guard !scanTargets.isEmpty else {
             alertText = "没有可清零的素材，先扫描一次。"
@@ -931,12 +945,16 @@ final class AppState: ObservableObject {
                     self.log("跳过数据库文件：\(targetFile.relativePath)", .info)
                     continue
                 }
+                let wasImmutable = self.channel.isImmutable(targetFile.path)
                 do {
-                    if self.channel.isImmutable(targetFile.path) {
-                        try self.channel.setImmutable(targetFile.path, false)
-                        self.log("先解冻：\(targetFile.relativePath)", .notice)
+                    let current = try self.channel.inspectItem(at: targetFile.path)
+                    guard let current, !current.isDirectory, !current.isSymlink else {
+                        throw ChannelFailure("目标不存在、不是普通文件或已变成符号链接")
                     }
-                    let size = self.channel.item(at: targetFile.path)?.size ?? 0
+                    guard current.isImmutable == wasImmutable else {
+                        throw ChannelFailure("目标冻结状态在操作前发生变化，请重新扫描")
+                    }
+                    let size = current.size
                     if size == 0 {
                         self.log("已经是 0 字节，跳过：\(targetFile.relativePath)", .info)
                     } else {
@@ -956,6 +974,23 @@ final class AppState: ObservableObject {
                                                                    channel: self.channel)
                         try self.store.registerBackup(record)
                         newBackups.append(record)
+                        let backedUpDigest = try self.channel.md5(targetFile.path)
+                        guard backedUpDigest.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                            throw ChannelFailure("备份后源文件内容发生变化，已取消清零")
+                        }
+                        if wasImmutable {
+                            try self.channel.setImmutable(targetFile.path, false)
+                            self.log("备份登记完成后解冻：\(targetFile.relativePath)", .notice)
+                        }
+                        guard let preWriteItem = try self.channel.inspectItem(at: targetFile.path),
+                              !preWriteItem.isDirectory, !preWriteItem.isSymlink,
+                              preWriteItem.size == record.originalSize else {
+                            throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                        }
+                        let preWriteMD5 = try self.channel.md5(targetFile.path)
+                        guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                            throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                        }
                         try self.channel.truncate(targetFile.path)
                         done += 1
                         self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
@@ -976,6 +1011,8 @@ final class AppState: ObservableObject {
                                                      groupID: located.groupID))
                         }
                     }
+                    // 已经是 0 字节且原本未冻结的文件不做额外冻结，避免制造没有守护记录的锁。
+                    if size > 0 || wasImmutable {
                     // 清零后顺手把每个文件都冻上，广告就写不回这些文件了。
                     // 冻结失败不算清零失败，只记下来在总结里说明。
                     if self.channel.isImmutable(targetFile.path) {
@@ -983,14 +1020,33 @@ final class AppState: ObservableObject {
                     } else {
                         do {
                             try self.channel.setImmutable(targetFile.path, true)
+                            guard self.channel.isImmutable(targetFile.path) else { throw ChannelFailure("冻结状态未能确认") }
                             frozenCount += 1
                             self.log("已冻结：\(targetFile.relativePath)", .success)
                         } catch {
-                            freezeFailureCount += 1
-                            self.log("冻结失败：\(targetFile.relativePath)：\(error.localizedDescription)", .warning)
+                            var finalError = error
+                            if wasImmutable {
+                                do {
+                                    try self.channel.setImmutable(targetFile.path, true)
+                                    guard self.channel.isImmutable(targetFile.path) else { throw ChannelFailure("冻结状态校验失败") }
+                                } catch {
+                                    finalError = error
+                                }
+                            }
+                            if !self.channel.isImmutable(targetFile.path) {
+                                freezeFailureCount += 1
+                                self.log("冻结失败：\(targetFile.relativePath)：\(finalError.localizedDescription)", .warning)
+                            } else {
+                                frozenCount += 1
+                            }
                         }
                     }
+                    }
                 } catch {
+                    if wasImmutable, self.channel.item(at: targetFile.path) != nil {
+                        do { try self.channel.setImmutable(targetFile.path, true) }
+                        catch { self.log("恢复原冻结状态失败：\(targetFile.relativePath)：\(error.localizedDescription)", .warning) }
+                    }
                     // 一个文件清不动就跳过它，其余照清，最后在总结里汇总。
                     failures.append("\(targetFile.relativePath)：\(error.localizedDescription)")
                     self.log("跳过这个文件（清不动）：\(targetFile.relativePath)：\(error.localizedDescription)", .warning)
@@ -1001,24 +1057,29 @@ final class AppState: ObservableObject {
             // 这样它们连新建文件备货都做不到。文件夹冻结失败只警告，不算清零失败。
             var frozenDirCount = 0
             var freezeDirFailureCount = 0
-            if true {
-                let owners = Set(targets.map { $0.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : $0.bundleID })
-                for owner in owners {
-                    guard let root = self.channel.containerPath(for: owner) else { continue }
-                    for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel, ownerBundleID: owner) {
-                        let full = root + "/" + relative
-                        if self.channel.isImmutable(full) {
-                            frozenDirCount += 1
-                            continue
-                        }
-                        do {
-                            try self.channel.setImmutable(full, true)
-                            frozenDirCount += 1
-                            self.log("已冻结文件夹：\(relative)", .success)
-                        } catch {
-                            freezeDirFailureCount += 1
-                            self.log("冻结文件夹失败：\(relative)：\(error.localizedDescription)", .warning)
-                        }
+            var directoryRoots: [String: String] = [:]
+            for file in targets {
+                let owner = file.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : file.bundleID
+                let located = self.locateFile(path: file.path, relativePath: file.relativePath, ownerID: owner)
+                if let root = self.channel.rootPath(bundleID: owner, groupID: located.groupID) {
+                    directoryRoots[root] = owner
+                }
+            }
+            for (root, owner) in directoryRoots {
+                for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel, ownerBundleID: owner) {
+                    let full = root + "/" + relative
+                    if self.channel.isImmutable(full) {
+                        frozenDirCount += 1
+                        continue
+                    }
+                    do {
+                        try self.channel.setImmutable(full, true)
+                        guard self.channel.isImmutable(full) else { throw ChannelFailure("文件夹冻结状态未能确认") }
+                        frozenDirCount += 1
+                        self.log("已冻结文件夹：\(relative)", .success)
+                    } catch {
+                        freezeDirFailureCount += 1
+                        self.log("冻结文件夹失败：\(relative)：\(error.localizedDescription)", .warning)
                     }
                 }
             }
@@ -1032,9 +1093,12 @@ final class AppState: ObservableObject {
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
-                self.store.save()
+                let recipesSaved = self.store.save()
                 self.recipes = self.store.file.recipes
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                if !recipesSaved {
+                    self.log("文件已清零，但守护配方未能保存到本机；重启后可能无法自动复查", .warning)
+                }
 
                 self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
                 if frozenCount > 0 {
@@ -1063,7 +1127,7 @@ final class AppState: ObservableObject {
                 }
                 self.scanTargets = []
                 self.checkRecipes(silent: true)
-                self.presentCompletionAlert(completionText)
+                self.presentCompletionAlert(completionText + (recipesSaved ? "" : " 注意：本机守护记录保存失败，请检查存储空间并复查。"))
             }
         }
     }
@@ -1094,6 +1158,7 @@ final class AppState: ObservableObject {
     }
 
     private func performRestore(_ records: [BackupRecord]) {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         let records = records.filter { !isWhitelisted($0.bundleID) }
         guard !records.isEmpty else {
             alertText = "选中的备份均属于白名单应用，已跳过还原。"
@@ -1108,14 +1173,20 @@ final class AppState: ObservableObject {
             var restored = 0
             var failures: [String] = []
             var skippedDB = 0
-            // 文件夹冻着的话先解开，还原才算全套撤销。
-            for owner in Set(records.map { $0.bundleID }) {
-                guard let root = self.channel.containerPath(for: owner) else { continue }
+            // 文件夹冻着的话先解开，还原才算全套撤销；共享组也按记录里的 groupID 定位。
+            let roots = Set(records.compactMap { self.channel.rootPath(bundleID: $0.bundleID, groupID: $0.groupID) })
+            for root in roots {
+                let owner = records.first(where: { self.channel.rootPath(bundleID: $0.bundleID, groupID: $0.groupID) == root })?.bundleID ?? ""
                 for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel, ownerBundleID: owner) {
                     let full = root + "/" + relative
                     if self.channel.isImmutable(full) {
-                        try? self.channel.setImmutable(full, false)
-                        self.log("已解冻文件夹：\(relative)", .notice)
+                        do {
+                            try self.channel.setImmutable(full, false)
+                            guard !self.channel.isImmutable(full) else { throw ChannelFailure("文件夹解冻状态未能确认") }
+                            self.log("已解冻文件夹：\(relative)", .notice)
+                        } catch {
+                            self.log("文件夹解冻失败：\(relative)：\(error.localizedDescription)", .warning)
+                        }
                     }
                 }
             }
@@ -1168,6 +1239,7 @@ final class AppState: ObservableObject {
     }
 
     func restore(_ record: BackupRecord) {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
         if DatabaseFile.matches(relativePath: record.relativePath) {
             alertText = "这是数据库文件，正被应用占用着，还原不了，已跳过。"
@@ -1230,67 +1302,50 @@ final class AppState: ObservableObject {
     }
 
     func deleteBackup(_ record: BackupRecord) {
-        store.file.backups.removeAll { $0.id == record.id }
-        try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
-        store.save()
-        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
-        log("已删除一份备份：\(record.relativePath)", .info)
-        alertText = "已删除这份备份。"
+        deleteBackups([record])
     }
 
     func deleteAllBackups() {
-        let records = store.file.backups
-        guard !records.isEmpty else {
-            alertText = "还没有备份可以删。"
-            return
-        }
-        for record in records {
-            try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
-        }
-        store.file.backups = []
-        store.save()
-        backups = []
-        log("已清空全部备份：\(records.count) 份", .notice)
-        alertText = "已清空全部备份：\(records.count) 份。"
+        deleteBackups(store.file.backups)
     }
 
-    /// 按应用删除备份：只删这一个应用的全部备份，其他应用的不动。
     func deleteBackups(forApp bundleID: String) {
-        let records = store.file.backups.filter { $0.bundleID == bundleID }
-        guard !records.isEmpty else {
-            alertText = "这个应用没有备份可以删。"
-            return
-        }
-        for record in records {
-            try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
-        }
-        store.file.backups.removeAll { $0.bundleID == bundleID }
-        store.save()
-        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
-        let name = records.first?.appName ?? bundleID
-        log("已删除 \(name) 的全部备份：\(records.count) 份", .notice)
-        alertText = "已删除 \(name) 的全部备份：\(records.count) 份。"
+        deleteBackups(store.file.backups.filter { $0.bundleID == bundleID })
     }
 
-    /// 批量删除选中的备份（多选模式用）：只删选中的，其他备份不动。
     func deleteBackups(_ selected: [BackupRecord]) {
         let ids = Set(selected.map { $0.id })
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         let records = store.file.backups.filter { ids.contains($0.id) }
         guard !records.isEmpty else {
-            alertText = "先勾选要删除的备份。"
+            alertText = "先选择要删除的备份。"
             return
         }
-        for record in records {
-            try? FileManager.default.removeItem(at: store.backupDirectoryURL(for: record.id))
-        }
+        let previous = store.file.backups
         store.file.backups.removeAll { ids.contains($0.id) }
-        store.save()
+        guard store.save() else {
+            store.file.backups = previous
+            log("备份索引保存失败，未删除任何备份文件", .warning)
+            alertText = "备份索引保存失败，已取消删除；原备份仍保留。"
+            return
+        }
+        var failed = 0
+        for record in records {
+            do {
+                let directory = store.backupDirectoryURL(for: record.id)
+                if FileManager.default.fileExists(atPath: directory.path) {
+                    try FileManager.default.removeItem(at: directory)
+                }
+            } catch {
+                failed += 1
+                log("备份目录清理失败：\(record.relativePath)：\(error.localizedDescription)", .warning)
+            }
+        }
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
-        log("已批量删除备份：\(records.count) 份", .notice)
-        alertText = "已删除 \(records.count) 份备份。"
+        let message = "已从备份索引移除 \(records.count) 份备份。\(failed > 0 ? "另有 \(failed) 个孤立目录未能清理。" : "")"
+        log(message, failed == 0 ? .notice : .warning)
+        alertText = message
     }
-
-    // MARK: - Before/after diff
 
     func takeSnapshot(before: Bool) {
         guard requireChannel() else { return }
@@ -1421,6 +1476,7 @@ final class AppState: ObservableObject {
     }
 
     func clearSelectedCandidates() {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
         let selected = candidates.filter { selectedCandidatePaths.contains($0.id) }
         guard !selected.isEmpty else {
@@ -1434,6 +1490,7 @@ final class AppState: ObservableObject {
             var failure: String?
             var skippedDB = 0
             var skippedActiveFiles = 0
+            var freezeFailureCount = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
             for candidate in selected {
@@ -1446,8 +1503,12 @@ final class AppState: ObservableObject {
                 }
                 let appBundleID = candidate.bundleID.isEmpty ? self.target.bundleID : candidate.bundleID
                 let appName = candidate.appName.isEmpty ? self.target.name : candidate.appName
+                guard !self.isWhitelisted(appBundleID) else {
+                    failure = "\(appName)：该应用已加入排除白名单，已跳过"
+                    continue
+                }
                 let parts = candidate.relativePath.split(separator: "/", omittingEmptySubsequences: false)
-                guard !candidate.relativePath.isEmpty, !candidate.relativePath.hasPrefix("/"),
+                guard !candidate.relativePath.isEmpty, candidate.relativePath.count <= 512, !candidate.relativePath.hasPrefix("/"),
                       !candidate.relativePath.contains("\\"), !candidate.relativePath.unicodeScalars.contains(where: { $0.value == 0 }),
                       parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
                     failure = "\(candidate.appName)：候选路径不安全，已跳过"
@@ -1480,7 +1541,6 @@ final class AppState: ObservableObject {
                           abs(current.modified.timeIntervalSince(candidate.modified)) <= 2 else {
                         throw ChannelFailure("文件在第二次快照后发生变化，已取消清零；请重新扫描")
                     }
-                    if wasImmutable { try self.channel.setImmutable(full, false) }
                     let located = self.locateFile(path: full,
                                                   relativePath: candidate.relativePath,
                                                   ownerID: appBundleID)
@@ -1497,7 +1557,38 @@ final class AppState: ObservableObject {
                     guard sourceMD5AfterBackup.caseInsensitiveCompare(record.md5) == .orderedSame else {
                         throw ChannelFailure("备份后源文件内容发生变化，已取消清零")
                     }
+                    if wasImmutable { try self.channel.setImmutable(full, false) }
+                    guard let preWriteItem = try self.channel.inspectItem(at: full),
+                          !preWriteItem.isDirectory, !preWriteItem.isSymlink,
+                          preWriteItem.size == record.originalSize else {
+                        throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                    }
+                    let preWriteMD5 = try self.channel.md5(full)
+                    guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                        throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                    }
                     try self.channel.truncate(full)
+                    var frozen = false
+                    do {
+                        try self.channel.setImmutable(full, true)
+                        guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态未能确认") }
+                        frozen = true
+                    } catch {
+                        var finalError = error
+                        if wasImmutable {
+                            do {
+                                try self.channel.setImmutable(full, true)
+                                guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
+                                frozen = true
+                            } catch {
+                                finalError = error
+                            }
+                        }
+                        if !frozen {
+                            freezeFailureCount += 1
+                            self.log("已清零但冻结失败：\(appName) \(candidate.relativePath)：\(finalError.localizedDescription)", .warning)
+                        }
+                    }
                     done += 1
                     self.unstableClearFailureCounts.removeValue(forKey: changeKey)
                     self.unstableClearFailureTimes.removeValue(forKey: changeKey)
@@ -1510,7 +1601,7 @@ final class AppState: ObservableObject {
                                                  appName: appName,
                                                  relativePath: candidate.relativePath,
                                                  createdAt: Date(),
-                                                 frozen: false,
+                                                 frozen: frozen,
                                                  placeholder: false,
                                                  lastCheckedAt: Date(),
                                                  lastState: RecipeState.normal.rawValue,
@@ -1550,26 +1641,33 @@ final class AppState: ObservableObject {
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
-                self.store.save()
+                let recipesSaved = self.store.save()
                 self.recipes = self.store.file.recipes
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                if !recipesSaved {
+                    self.log("确认素材已清零，但守护配方未能保存到本机", .warning)
+                }
                 let dbNote = skippedDB > 0
                     ? "另有 \(skippedDB) 个数据库文件已跳过（被应用占用着、清不动，也不是广告素材）。"
                     : ""
                 let busyNote = skippedActiveFiles > 0
                     ? "另有 \(skippedActiveFiles) 个文件因持续变化已暂时跳过；请关闭对应应用后再清理。"
                     : ""
+                let freezeNote = freezeFailureCount > 0
+                    ? "另有 \(freezeFailureCount) 个已清零文件未能确认冻结，请复查。"
+                    : ""
                 let completionText: String
                 if let failure {
                     self.log("清零候选没有全部完成，没清成的：\(failure)", .warning)
-                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。" + dbNote + busyNote
+                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。" + dbNote + busyNote + freezeNote
                 } else {
                     self.log("确认的素材已清零：\(done) 个，配方已存入守护列表", .success)
-                    completionText = "已清零 \(done) 个素材，并加入已守护应用。" + dbNote + busyNote
+                    completionText = "已清零 \(done) 个素材，并加入已守护应用。" + dbNote + busyNote + freezeNote
+                        + (recipesSaved ? "" : " 注意：本机守护记录保存失败，请检查存储空间并复查。")
                     self.candidates = []
                     self.selectedCandidatePaths = []
                 }
-                self.alertText = completionText
+                self.alertText = completionText + (recipesSaved ? "" : " 注意：本机守护记录保存失败，请检查存储空间并复查。")
             }
         }
     }
@@ -1610,6 +1708,8 @@ final class AppState: ObservableObject {
         var visited = 0
         var dimsChecked = 0
         func consider(item: FileItem) {
+            guard !item.isDirectory, !item.isSymlink,
+                  item.path.hasPrefix(container + "/") else { return }
             let relative = String(item.path.dropFirst(container.count + 1))
             if relative.hasPrefix("Library/SplashBoard") { return }
             // 个人内容（聊天图、短视频、表情包）不算疑似广告，深扫直接绕开。
@@ -1645,9 +1745,11 @@ final class AppState: ObservableObject {
         }
         for root in ["Library", "tmp", "Documents"] {
             guard visited < 8000, results.count < 300 else { break }
+            guard let rootItem = channel.item(at: container + "/" + root),
+                  rootItem.isDirectory, !rootItem.isSymlink else { continue }
             let base = visited
             let files = (try? channel.walkFiles(
-                at: container + "/" + root,
+                at: rootItem.path,
                 limit: 8000 - base,
                 skipDirNames: PersonalMedia.personalDirectoryNames,
                 skipDirSubstrings: PersonalMedia.personalDirectorySubstrings,
@@ -1670,6 +1772,7 @@ final class AppState: ObservableObject {
     /// 只有这样它重新下载的那一份才会在对比里现形。
     /// 删是真删、不冻结；冻住的文件删不掉，自动跳过并计数。
     func clearCacheBeforeSnapshot() {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
         guard checkedIDs.isEmpty, targetChosen else {
             alertText = "这一步只对单个应用用：先取消一键勾选，只选一个应用。"
@@ -1692,7 +1795,9 @@ final class AppState: ObservableObject {
                     guard let items = try? self.channel.children(of: dir) else { return }
                     for item in items {
                         visited += 1
-                        if item.isDirectory {
+                        if item.isSymlink {
+                            continue
+                        } else if item.isDirectory {
                             walk(dir: item.path)
                         } else {
                             do {
@@ -1704,7 +1809,10 @@ final class AppState: ObservableObject {
                         }
                     }
                 }
-                walk(dir: info.path + "/" + root)
+                if let rootItem = self.channel.item(at: info.path + "/" + root),
+                   rootItem.isDirectory, !rootItem.isSymlink {
+                    walk(dir: rootItem.path)
+                }
             }
             DispatchQueue.main.async {
                 self.isBusy = false
@@ -1734,7 +1842,9 @@ final class AppState: ObservableObject {
                     visited += 1
                     visitedTotal += 1
                     if visitedTotal % 100 == 0 { onVisit?(visitedTotal) }
-                    if item.isDirectory {
+                    if item.isSymlink {
+                        continue
+                    } else if item.isDirectory {
                         walk(dir: item.path)
                     } else if needle.isEmpty || item.name.lowercased().contains(needle) {
                         let relative = String(item.path.dropFirst(container.path.count + 1))
@@ -1872,6 +1982,7 @@ final class AppState: ObservableObject {
     func importLaunchHackCandidate(bundleID: String, appName: String, relativePath: String,
                                    expectedSize: UInt64, expectedModifiedAt: Date,
                                    expectedMD5: String?,
+                                   groupID: String? = nil,
                                    completion: ((Bool, String) -> Void)? = nil) {
         func report(_ success: Bool, _ message: String) {
             DispatchQueue.main.async {
@@ -1884,6 +1995,11 @@ final class AppState: ObservableObject {
             report(false, "目标应用未关联或已加入排除白名单，不能处理。")
             return
         }
+        if let groupID,
+           !associatedGroups(for: ownerID).contains(where: { $0.bundleID.caseInsensitiveCompare(groupID) == .orderedSame }) {
+            report(false, "共享容器与当前宿主 App 的关联未能确认，已拒绝处理。")
+            return
+        }
         guard requireChannel() else {
             report(false, channel.unavailableReason)
             return
@@ -1893,19 +2009,19 @@ final class AppState: ObservableObject {
             return
         }
         let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
-        guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.contains("\\"),
+        guard !relativePath.isEmpty, relativePath.count <= 512, !relativePath.hasPrefix("/"), !relativePath.contains("\\"),
               !relativePath.unicodeScalars.contains(where: { $0.value == 0 }),
               parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
               !DatabaseFile.matches(relativePath: relativePath) else {
             report(false, "目标路径不安全或属于受保护文件类型，已拒绝处理。")
             return
         }
-        guard let root = channel.rootPath(bundleID: ownerID, groupID: nil) else {
+        guard let root = channel.rootPath(bundleID: ownerID, groupID: groupID) else {
             report(false, "找不到目标 App 容器，无法确认资源归属。")
             return
         }
         let recipeExists = recipes.first {
-            $0.bundleID == ownerID && $0.groupID == nil && $0.relativePath == relativePath
+            $0.bundleID == ownerID && $0.groupID == groupID && $0.relativePath == relativePath
         }
         if recipeExists?.frozen == true {
             report(false, "该资源已经在 LaunchShield 守护列表中并处于冻结状态。")
@@ -1936,27 +2052,48 @@ final class AppState: ObservableObject {
                 if let expectedMD5, currentMD5.caseInsensitiveCompare(expectedMD5) != .orderedSame {
                     throw ChannelFailure("资源 MD5 与扫描记录不一致，已取消操作")
                 }
-                if wasImmutable { try self.channel.setImmutable(full, false) }
                 let record = try self.backupManager.backup(path: full,
                                                            relativePath: relativePath,
                                                            bundleID: ownerID,
                                                            appName: appName,
                                                            source: "LaunchHack 精准定位同步",
-                                                           groupID: nil,
+                                                           groupID: groupID,
                                                            channel: self.channel)
                 try self.store.registerBackup(record)
                 guard currentMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
                     throw ChannelFailure("备份校验失败，未清零目标文件")
+                }
+                if wasImmutable { try self.channel.setImmutable(full, false) }
+                guard let preWriteItem = try self.channel.inspectItem(at: full),
+                      !preWriteItem.isDirectory, !preWriteItem.isSymlink,
+                      preWriteItem.size == record.originalSize else {
+                    throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                }
+                let preWriteMD5 = try self.channel.md5(full)
+                guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                    throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
                 }
                 try self.channel.truncate(full)
                 var frozen = false
                 var freezeFailure: String?
                 do {
                     try self.channel.setImmutable(full, true)
+                    guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态未能确认") }
                     frozen = true
                 } catch {
                     freezeFailure = error.localizedDescription
+                    if wasImmutable {
+                        do {
+                            try self.channel.setImmutable(full, true)
+                            guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
+                            frozen = true
+                            freezeFailure = nil
+                        } catch {
+                            freezeFailure = "\(freezeFailure ?? error.localizedDescription)；原冻结状态恢复失败：\(error.localizedDescription)"
+                        }
+                    }
                 }
+                let previousRecipes = self.store.file.recipes
                 let recipe = Recipe(id: recipeExists?.id ?? UUID(),
                                     bundleID: ownerID,
                                     appName: appName,
@@ -1966,12 +2103,12 @@ final class AppState: ObservableObject {
                                     placeholder: false,
                                     lastCheckedAt: Date(),
                                     lastState: RecipeState.normal.rawValue,
-                                    groupID: nil)
+                                    groupID: groupID)
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
                     if let index = self.store.file.recipes.firstIndex(where: {
-                        $0.bundleID == ownerID && $0.groupID == nil && $0.relativePath == relativePath
+                        $0.bundleID == ownerID && $0.groupID == groupID && $0.relativePath == relativePath
                     }) {
                         self.store.file.recipes[index] = recipe
                     } else {
@@ -1981,6 +2118,8 @@ final class AppState: ObservableObject {
                     self.recipes = self.store.file.recipes
                     self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                     if !recipeSaved {
+                        self.store.file.recipes = previousRecipes
+                        self.recipes = previousRecipes
                         let detail = freezeFailure.map { "冻结也未成功：\($0)。" } ?? ""
                         self.log("LaunchHack 资源已处理，但守护配方未能写入本机：\(relativePath)", .warning)
                         let message = "原文件已备份并清零。\(frozen ? "文件当前已冻结，但" : detail)守护规则未能保存到本机，重启后可能无法自动复查或维持守护。请检查 LaunchShield 存储空间，并在已守护列表核对该项目。"
@@ -1999,14 +2138,22 @@ final class AppState: ObservableObject {
                     }
                 }
             } catch {
+                var lockRestoreFailure: String?
                 if wasImmutable, self.channel.item(at: full) != nil {
-                    try? self.channel.setImmutable(full, true)
+                    do {
+                        try self.channel.setImmutable(full, true)
+                        guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
+                    } catch {
+                        lockRestoreFailure = error.localizedDescription
+                        self.log("LaunchHack 失败后的冻结状态恢复失败：\(relativePath)：\(error.localizedDescription)", .warning)
+                    }
                 }
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("LaunchHack 规则同步失败：\(relativePath)：\(error.localizedDescription)", .warning)
-                    let message = "处理失败，目标文件未完成处理：\(error.localizedDescription)"
+                    let lockNote = lockRestoreFailure.map { "；原冻结状态恢复失败：\($0)" } ?? ""
+                    let message = "处理失败，目标文件未完成处理：\(error.localizedDescription)\(lockNote)"
                     if completion == nil { self.alertText = message }
                     completion?(false, message)
                 }
@@ -2015,17 +2162,21 @@ final class AppState: ObservableObject {
     }
 
     func checkRecipes(silent: Bool = false) {
-        let excludedIDs = whitelistedBundleIDs
         let allRecipes = recipes
-        let list = allRecipes.filter { !excludedIDs.contains($0.bundleID.lowercased()) }
+        let list = allRecipes.filter { !isWhitelisted($0.bundleID) }
         guard !list.isEmpty, channel.isAvailable else { return }
         work.async {
             var updated = allRecipes
             var normal = 0
             var recurred = 0
             var other = 0
-            for index in updated.indices where !excludedIDs.contains(updated[index].bundleID.lowercased()) {
+            for index in updated.indices where !self.isWhitelisted(updated[index].bundleID) {
                 updated[index].lastCheckedAt = Date()
+                guard RecipeEngine.isSafeRelativePath(updated[index].relativePath) else {
+                    updated[index].lastState = RecipeState.unknown.rawValue
+                    other += 1
+                    continue
+                }
                 guard let container = self.channel.rootPath(bundleID: updated[index].bundleID, groupID: updated[index].groupID) else {
                     updated[index].lastState = RecipeState.missing.rawValue
                     other += 1
@@ -2035,7 +2186,10 @@ final class AppState: ObservableObject {
                 updated[index].lastState = status.state.rawValue
                 // 冻结标记按磁盘真实状态回写：以前建记录时写了 false 就再没更新，
                 // 「已冻结 N 个」的计数因此一直是 0，其实文件冻得好好的。
-                updated[index].frozen = status.state == .frozen
+                if status.state != .unknown {
+                    updated[index].frozen = status.state == .frozen
+                    updated[index].placeholder = status.state == .placeholder
+                }
                 switch status.state {
                 case .normal, .frozen: normal += 1
                 case .recurred: recurred += 1
@@ -2061,6 +2215,10 @@ final class AppState: ObservableObject {
     }
 
     func replaceRecipe(_ recipe: Recipe) {
+        guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
+            alertText = "守护记录中的路径不安全，已拒绝重新清零。"
+            return
+        }
         guard !isWhitelisted(recipe.bundleID) else {
             alertText = "该应用已加入排除白名单，不能执行重新清零。"
             return
@@ -2137,6 +2295,11 @@ final class AppState: ObservableObject {
     }
 
     func setFrozen(_ recipe: Recipe, frozen: Bool) {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
+        guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
+            alertText = "守护记录中的路径不安全，已拒绝冻结操作。"
+            return
+        }
         guard !isWhitelisted(recipe.bundleID) else {
             alertText = "该应用已加入排除白名单，不能修改冻结状态。"
             return
@@ -2146,12 +2309,26 @@ final class AppState: ObservableObject {
         work.async {
             do {
                 let full = RecipeEngine.fullPath(recipe, container: root)
+                guard let item = try self.channel.inspectItem(at: full), !item.isSymlink else {
+                    throw ChannelFailure("目标不存在或已变成符号链接，拒绝修改冻结状态")
+                }
                 try self.channel.setImmutable(full, frozen)
+                guard self.channel.isImmutable(full) == frozen else {
+                    throw ChannelFailure(frozen ? "冻结状态未能确认" : "解冻状态未能确认")
+                }
                 DispatchQueue.main.async {
+                    let previous = self.recipes
                     if let index = self.recipes.firstIndex(where: { $0.id == recipe.id }) {
                         self.recipes[index].frozen = frozen
                         self.store.file.recipes = self.recipes
-                        self.store.save()
+                        if !self.store.save() {
+                            self.recipes = previous
+                            self.store.file.recipes = previous
+                            self.log("冻结状态已改变，但守护记录保存失败；复查后会重新读取实际状态", .warning)
+                            self.alertText = "文件冻结状态已改变，但本机守护记录保存失败。请检查存储空间并复查。"
+                            self.checkRecipes(silent: true)
+                            return
+                        }
                     }
                     self.log(frozen ? "已冻结：\(recipe.relativePath)" : "已解冻：\(recipe.relativePath)", .success)
                     self.checkRecipes(silent: true)
@@ -2166,21 +2343,33 @@ final class AppState: ObservableObject {
     }
 
     func setPlaceholder(_ recipe: Recipe, enabled: Bool) {
+        guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
+            alertText = "守护记录中的路径不安全，已拒绝占位操作。"
+            return
+        }
         guard !isWhitelisted(recipe.bundleID) else {
             alertText = "该应用已加入排除白名单，不能执行占位操作。"
             return
         }
         guard requireChannel() else { return }
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { return }
         isBusy = true
         busyText = enabled ? "正在做同名文件夹占位…" : "正在取消占位…"
         work.async {
+            let full = RecipeEngine.fullPath(recipe, container: root)
+            var originalWasDeleted = false
+            var originalWasImmutable = false
+            var placeholderWasDeleted = false
+            var placeholderWasImmutable = false
             do {
-                let full = RecipeEngine.fullPath(recipe, container: root)
                 if enabled {
                     if let item = try self.channel.inspectItem(at: full) {
-                        guard !item.isSymlink else { throw ChannelFailure("目标是符号链接，拒绝占位") }
-                        guard !item.isDirectory else { throw ChannelFailure("目标已经是文件夹，无需重复占位") }
+                        guard !item.isSymlink, !item.isDirectory else {
+                            throw ChannelFailure("目标不是可占位的普通文件")
+                        }
+                        originalWasImmutable = item.isImmutable
+                        let originalMD5 = try self.channel.md5(full)
                         if item.size > 0 {
                             let record = try self.backupManager.backup(path: full,
                                                                        relativePath: recipe.relativePath,
@@ -2191,47 +2380,100 @@ final class AppState: ObservableObject {
                                                                        channel: self.channel)
                             try self.store.registerBackup(record)
                         }
-                        let wasImmutable = item.isImmutable
-                        do {
-                            if wasImmutable { try self.channel.setImmutable(full, false) }
-                            try self.channel.delete(full)
-                        } catch {
-                            if wasImmutable { try? self.channel.setImmutable(full, true) }
-                            throw error
+                        if originalWasImmutable {
+                            try self.channel.setImmutable(full, false)
+                            guard !self.channel.isImmutable(full) else { throw ChannelFailure("原文件解冻状态未能确认") }
                         }
+                        guard let preDeleteItem = try self.channel.inspectItem(at: full),
+                              !preDeleteItem.isDirectory, !preDeleteItem.isSymlink,
+                              preDeleteItem.size == item.size else {
+                            throw ChannelFailure("备份后原文件状态发生变化，已取消占位")
+                        }
+                        let preDeleteMD5 = try self.channel.md5(full)
+                        guard preDeleteMD5.caseInsensitiveCompare(originalMD5) == .orderedSame else {
+                            throw ChannelFailure("备份后原文件内容发生变化，已取消占位")
+                        }
+                        try self.channel.delete(full)
+                        originalWasDeleted = true
                     }
                     try self.channel.createDirectory(full)
                 } else {
-                    if self.channel.isDirectory(full) {
-                        let children = try? self.channel.children(of: full)
-                        guard (children?.isEmpty ?? true) else {
+                    if let item = try self.channel.inspectItem(at: full) {
+                        guard item.isDirectory && !item.isSymlink else {
+                            throw ChannelFailure("占位目标已不是普通文件夹")
+                        }
+                        let children = try self.channel.children(of: full)
+                        guard children.isEmpty else {
                             throw ChannelFailure("占位文件夹里还有东西，先手动清空再取消占位")
                         }
+                        placeholderWasImmutable = item.isImmutable
+                        if placeholderWasImmutable {
+                            try self.channel.setImmutable(full, false)
+                            guard !self.channel.isImmutable(full) else { throw ChannelFailure("占位文件夹解冻状态未能确认") }
+                        }
                         try self.channel.delete(full)
+                        placeholderWasDeleted = true
                     }
                     if let record = self.backupManager.originalBackup(bundleID: recipe.bundleID,
                                                                       relativePath: recipe.relativePath,
                                                                       groupID: recipe.groupID) {
-                        guard let targetRoot = self.channel.rootPath(bundleID: record.bundleID, groupID: record.groupID) else {
-                            throw ChannelFailure("找不到目标应用的数据容器")
-                        }
-                        _ = try self.backupManager.restore(record, container: targetRoot, channel: self.channel)
-                    } else {
+                        _ = try self.backupManager.restore(record, container: root, channel: self.channel)
+                    } else if try self.channel.inspectItem(at: full) == nil {
                         try self.channel.write(full, data: Data())
                     }
                 }
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
+                    let previous = self.recipes
                     if let index = self.recipes.firstIndex(where: { $0.id == recipe.id }) {
                         self.recipes[index].placeholder = enabled
                         self.store.file.recipes = self.recipes
-                        self.store.save()
+                        if !self.store.save() {
+                            self.recipes = previous
+                            self.store.file.recipes = previous
+                            self.log("占位文件操作已完成，但本机守护记录保存失败：\(recipe.relativePath)", .warning)
+                            self.alertText = "占位文件操作已完成，但本机记录保存失败；正在按实际文件状态复查。"
+                            self.checkRecipes(silent: true)
+                            return
+                        }
                     }
                     self.log(enabled ? "已做同名文件夹占位：\(recipe.relativePath)" : "已取消占位并写回文件：\(recipe.relativePath)", .success)
                     self.checkRecipes(silent: true)
                 }
             } catch {
+                // If creating the placeholder failed after deleting the source,
+                // restore the backed-up original instead of leaving the path empty.
+                if enabled && originalWasDeleted {
+                    do {
+                        if let item = try self.channel.inspectItem(at: full), item.isDirectory {
+                            let children = try self.channel.children(of: full)
+                            if children.isEmpty { try self.channel.delete(full) }
+                        }
+                        if let record = self.backupManager.originalBackup(bundleID: recipe.bundleID,
+                                                                           relativePath: recipe.relativePath,
+                                                                           groupID: recipe.groupID) {
+                            _ = try self.backupManager.restore(record, container: root, channel: self.channel)
+                        } else if try self.channel.inspectItem(at: full) == nil {
+                            try self.channel.write(full, data: Data())
+                        }
+                        if originalWasImmutable { try self.channel.setImmutable(full, true) }
+                    } catch {
+                        self.log("占位失败后的原文件回滚失败：\(error.localizedDescription)", .warning)
+                    }
+                }
+                // If restoring the original failed after deleting the empty
+                // placeholder, put the placeholder back so its state is retryable.
+                if !enabled && placeholderWasDeleted {
+                    do {
+                        if try self.channel.inspectItem(at: full) == nil {
+                            try self.channel.createDirectory(full)
+                            if placeholderWasImmutable { try self.channel.setImmutable(full, true) }
+                        }
+                    } catch {
+                        self.log("取消占位失败后的文件夹回滚失败：\(error.localizedDescription)", .warning)
+                    }
+                }
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
@@ -2244,74 +2486,95 @@ final class AppState: ObservableObject {
 
     /// 移出守护列表时默认解冻：不能只删名单、把文件还冻在原地没人管。
     func removeRecipe(_ recipe: Recipe) {
-        guard !isWhitelisted(recipe.bundleID) else {
-            alertText = "该应用已加入排除白名单，守护条目保持不变。"
-            return
-        }
-        let finish = {
-            self.recipes.removeAll { $0.id == recipe.id }
-            self.store.file.recipes = self.recipes
-            self.store.save()
-            self.log("已从守护列表移除：\(recipe.relativePath)", .notice)
-        }
-        guard recipe.frozen || recipe.placeholder, let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else {
-            finish()
-            return
-        }
-        work.async {
-            let full = RecipeEngine.fullPath(recipe, container: root)
-            if recipe.frozen {
-                try? self.channel.setImmutable(full, false)
-            }
-            if recipe.placeholder {
-                try? self.channel.delete(full)
-            }
-            DispatchQueue.main.async {
-                if recipe.frozen { self.log("已解冻：\(recipe.relativePath)", .notice) }
-                finish()
-            }
-        }
+        removeRecipes([recipe])
     }
 
     /// 批量移除选中的守护条目（多选模式用）：和逐个移除一个口径——
     /// 冻着的先解冻、占位文件夹删掉，再从名单里拿掉。其他条目不动。
     func removeRecipes(_ selected: [Recipe]) {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         let ids = Set(selected.filter { !isWhitelisted($0.bundleID) }.map { $0.id })
         let targets = recipes.filter { ids.contains($0.id) }
-        guard !targets.isEmpty else {
-            alertText = "先勾选要移除的条目。"
-            return
-        }
-        let finish = {
-            self.recipes.removeAll { ids.contains($0.id) }
-            self.store.file.recipes = self.recipes
-            self.store.save()
-            self.log("已批量移除 \(targets.count) 个守护条目", .notice)
-            self.alertText = "已移除 \(targets.count) 个守护条目，冻着的文件都解冻了。"
-        }
-        let needWork = targets.filter { $0.frozen || $0.placeholder }
-        guard !needWork.isEmpty else {
-            finish()
-            return
-        }
-        guard requireChannel() else { return }
+        guard !targets.isEmpty else { alertText = "先勾选要移除的条目。"; return }
         isBusy = true
-        busyText = "正在移除 \(targets.count) 个守护条目…"
+        busyText = "正在安全移除守护条目…"
         work.async {
-            for recipe in needWork {
-                guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
-                let full = RecipeEngine.fullPath(recipe, container: root)
-                if recipe.frozen {
-                    try? self.channel.setImmutable(full, false)
-                }
-                if recipe.placeholder {
-                    try? self.channel.delete(full)
+            var removed = Set<UUID>()
+            var failures: [String] = []
+            for recipe in targets {
+                var targetPath: String?
+                var wasImmutable = false
+                do {
+                    guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
+                        throw ChannelFailure("守护记录中的相对路径不安全")
+                    }
+                    guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else {
+                        throw ChannelFailure("找不到对应容器")
+                    }
+                    let full = RecipeEngine.fullPath(recipe, container: root)
+                    targetPath = full
+                    if let item = try self.channel.inspectItem(at: full), item.isSymlink {
+                        throw ChannelFailure("目标是符号链接，拒绝移除守护")
+                    }
+                    wasImmutable = self.channel.isImmutable(full)
+                    if wasImmutable {
+                        try self.channel.setImmutable(full, false)
+                        guard !self.channel.isImmutable(full) else { throw ChannelFailure("解冻状态未能确认") }
+                    }
+                    if recipe.placeholder {
+                        if let item = try self.channel.inspectItem(at: full) {
+                            guard item.isDirectory && !item.isSymlink else { throw ChannelFailure("占位目标已不是普通文件夹") }
+                            let children = try self.channel.children(of: full)
+                            guard children.isEmpty else { throw ChannelFailure("占位文件夹非空，已保留守护条目") }
+                            try self.channel.delete(full)
+                        }
+                        if let record = self.backupManager.originalBackup(bundleID: recipe.bundleID,
+                                                                           relativePath: recipe.relativePath,
+                                                                           groupID: recipe.groupID) {
+                            _ = try self.backupManager.restore(record, container: root, channel: self.channel)
+                        } else if try self.channel.inspectItem(at: full) == nil {
+                            try self.channel.write(full, data: Data())
+                        }
+                    }
+                    removed.insert(recipe.id)
+                } catch {
+                    if recipe.placeholder, let targetPath,
+                       (try? self.channel.inspectItem(at: targetPath)) == nil {
+                        try? self.channel.createDirectory(targetPath)
+                    }
+                    if wasImmutable, let targetPath, self.channel.item(at: targetPath) != nil {
+                        do {
+                            try self.channel.setImmutable(targetPath, true)
+                            guard self.channel.isImmutable(targetPath) else { throw ChannelFailure("冻结状态校验失败") }
+                        } catch {
+                            self.log("移除守护失败后的冻结回滚失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
+                        }
+                    }
+                    failures.append("\(recipe.relativePath)：\(error.localizedDescription)")
                 }
             }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                finish()
+                let previous = self.recipes
+                let remaining = previous.filter { !removed.contains($0.id) }
+                self.store.file.recipes = remaining
+                let saved = self.store.save()
+                if saved {
+                    self.recipes = remaining
+                } else {
+                    self.store.file.recipes = previous
+                    self.recipes = previous
+                    failures.append("本机守护索引保存失败")
+                    self.log("守护条目移除后索引保存失败，已保留原列表；请复查文件状态", .warning)
+                }
+                let removedCount = saved ? removed.count : 0
+                self.log("守护条目移除：成功 \(removedCount) 个，失败 \(failures.count) 个", failures.isEmpty ? .success : .warning)
+                if !failures.isEmpty { self.log(failures.joined(separator: "；"), .warning) }
+                self.alertText = failures.isEmpty
+                    ? "已安全移除 \(removedCount) 个守护条目；占位资源已尝试恢复原文件。"
+                    : "已移除 \(removedCount) 个条目，\(failures.count) 个未完成或索引未保存。详情请查看日志。"
+                self.checkRecipes(silent: true)
             }
         }
     }
@@ -2321,9 +2584,11 @@ final class AppState: ObservableObject {
     /// 一键冻结已复发文件：把所有又变大的配方文件重新备份、清零、冻结。
     /// 光冻不清空等于把广告内容锁在里面，所以顺序是先备份、清零、再冻。
     func refreezeRelapsed() {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
         let targets = recipes.filter {
             !isWhitelisted($0.bundleID) &&
+            RecipeEngine.isSafeRelativePath($0.relativePath) &&
             $0.lastState == RecipeState.recurred.rawValue && !$0.placeholder
         }
         guard !targets.isEmpty else {
@@ -2338,7 +2603,7 @@ final class AppState: ObservableObject {
             for recipe in targets {
                 guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
                 let full = RecipeEngine.fullPath(recipe, container: root)
-                guard let item = self.channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
+                guard let item = self.channel.item(at: full), !item.isDirectory, !item.isSymlink, item.size > 0 else { continue }
                 if DatabaseFile.matches(relativePath: recipe.relativePath) { continue }
                 do {
                     let wasImmutable = self.channel.isImmutable(full)
@@ -2353,11 +2618,27 @@ final class AppState: ObservableObject {
                     newBackups.append(record)
                     do {
                         if wasImmutable { try self.channel.setImmutable(full, false) }
+                        guard let preWriteItem = try self.channel.inspectItem(at: full),
+                              !preWriteItem.isDirectory, !preWriteItem.isSymlink,
+                              preWriteItem.size == record.originalSize else {
+                            throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                        }
+                        let preWriteMD5 = try self.channel.md5(full)
+                        guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                            throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                        }
                         try self.channel.truncate(full)
                         try self.channel.setImmutable(full, true)
                         guard self.channel.isImmutable(full) else { throw ChannelFailure("文件已清零，但冻结状态未能确认") }
                     } catch {
-                        if wasImmutable { try? self.channel.setImmutable(full, true) }
+                        if wasImmutable {
+                            do {
+                                try self.channel.setImmutable(full, true)
+                                guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
+                            } catch {
+                                self.log("复发重冻失败后的冻结状态恢复失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
+                            }
+                        }
                         throw error
                     }
                     done += 1
@@ -2382,15 +2663,23 @@ final class AppState: ObservableObject {
     }
 
     func clearMissingRecipes() {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         let missing = recipes.filter { !isWhitelisted($0.bundleID) && $0.lastState == RecipeState.missing.rawValue }
         guard !missing.isEmpty else {
             alertText = "没有「文件不见了」的条目要清。"
             return
         }
+        let previous = recipes
         let missingIDs = Set(missing.map { $0.id })
         recipes.removeAll { missingIDs.contains($0.id) }
         store.file.recipes = recipes
-        store.save()
+        guard store.save() else {
+            recipes = previous
+            store.file.recipes = previous
+            log("清除缺失守护条目失败：本机索引保存失败", .warning)
+            alertText = "本机守护记录保存失败，未清除缺失条目。"
+            return
+        }
         log("已清除 \(missing.count) 个「文件不见了」的守护条目", .notice)
         alertText = "已清除 \(missing.count) 个文件不见了的条目。"
     }
@@ -2404,79 +2693,163 @@ final class AppState: ObservableObject {
             return
         }
         guard requireChannel() else { return }
-        let targets = recipes.filter { $0.bundleID == bundleID }
+        let associatedGroupIDs = Set(associatedGroups(for: bundleID).map { $0.bundleID.lowercased() })
+        let normalizedBundleID = bundleID.lowercased()
+        let targets = recipes.filter {
+            $0.bundleID.lowercased() == normalizedBundleID
+                || associatedGroupIDs.contains(($0.groupID ?? $0.bundleID).lowercased())
+        }
         guard !targets.isEmpty else {
             alertText = "这个应用没有在守护的条目。"
             return
         }
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         let name = targets.first?.appName ?? bundleID
         isBusy = true
         busyText = "正在结束 \(name) 的守护…"
         work.async {
+            var completed = Set<UUID>()
             var unfrozen = 0, dirs = 0, failures = 0
-            if let info = self.channel.container(for: bundleID) {
-                for recipe in targets {
-                    let full = RecipeEngine.fullPath(recipe, container: info.path)
-                    if recipe.frozen {
-                        do {
-                            try self.channel.setImmutable(full, false)
-                            unfrozen += 1
-                        } catch { failures += 1 }
+            var roots = Set<String>()
+            for recipe in targets {
+                var targetPath: String?
+                var wasImmutable = false
+                do {
+                    guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
+                        throw ChannelFailure("守护记录中的相对路径不安全")
+                    }
+                    guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else {
+                        throw ChannelFailure("找不到对应容器")
+                    }
+                    roots.insert(root)
+                    let full = RecipeEngine.fullPath(recipe, container: root)
+                    targetPath = full
+                    if let item = try self.channel.inspectItem(at: full), item.isSymlink {
+                        throw ChannelFailure("目标是符号链接，拒绝结束守护")
+                    }
+                    wasImmutable = self.channel.isImmutable(full)
+                    if wasImmutable {
+                        try self.channel.setImmutable(full, false)
+                        guard !self.channel.isImmutable(full) else { throw ChannelFailure("文件解冻状态未能确认") }
+                        unfrozen += 1
                     }
                     if recipe.placeholder {
-                        try? self.channel.delete(full)
+                        if let item = try self.channel.inspectItem(at: full) {
+                            guard item.isDirectory && !item.isSymlink else { throw ChannelFailure("占位目标已不是普通文件夹") }
+                            let children = try self.channel.children(of: full)
+                            guard children.isEmpty else { throw ChannelFailure("占位文件夹非空，无法结束此条守护") }
+                            try self.channel.delete(full)
+                        }
+                        if let record = self.backupManager.originalBackup(bundleID: recipe.bundleID,
+                                                                           relativePath: recipe.relativePath,
+                                                                           groupID: recipe.groupID) {
+                            _ = try self.backupManager.restore(record, container: root, channel: self.channel)
+                        } else if try self.channel.inspectItem(at: full) == nil {
+                            try self.channel.write(full, data: Data())
+                        }
+                    }
+                    completed.insert(recipe.id)
+                } catch {
+                    if recipe.placeholder, let targetPath,
+                       (try? self.channel.inspectItem(at: targetPath)) == nil {
+                        try? self.channel.createDirectory(targetPath)
+                    }
+                    if wasImmutable, let targetPath, self.channel.item(at: targetPath) != nil {
+                        do {
+                            try self.channel.setImmutable(targetPath, true)
+                            guard self.channel.isImmutable(targetPath) else { throw ChannelFailure("冻结状态校验失败") }
+                        } catch {
+                            self.log("结束守护失败后的冻结回滚失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
+                        }
+                    }
+                    failures += 1
+                    self.log("结束守护失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
+                }
+            }
+            if completed.count == targets.count {
+                for root in roots {
+                    for relative in self.adDirectoryTree(container: root) {
+                        let full = root + "/" + relative
+                        guard self.channel.isImmutable(full) else { continue }
+                        do {
+                            try self.channel.setImmutable(full, false)
+                            guard !self.channel.isImmutable(full) else { throw ChannelFailure("文件夹解冻状态未能确认") }
+                            dirs += 1
+                        } catch { failures += 1 }
                     }
                 }
-                for relative in self.adDirectoryTree(container: info.path) {
-                    let full = info.path + "/" + relative
-                    guard self.channel.isImmutable(full) else { continue }
-                    do {
-                        try self.channel.setImmutable(full, false)
-                        dirs += 1
-                    } catch { failures += 1 }
-                }
+            } else {
+                failures += 1
+                self.log("部分守护条目未能安全解除，保留广告目录冻结状态", .warning)
             }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                self.recipes.removeAll { $0.bundleID == bundleID }
-                self.store.file.recipes = self.recipes
-                self.store.save()
-                self.log("已结束 \(name) 的守护：移除 \(targets.count) 个条目，解冻文件 \(unfrozen) 个、文件夹 \(dirs) 个，失败 \(failures) 个",
+                let previous = self.recipes
+                let remaining = previous.filter { !completed.contains($0.id) }
+                self.store.file.recipes = remaining
+                if self.store.save() {
+                    self.recipes = remaining
+                } else {
+                    self.store.file.recipes = previous
+                    self.recipes = previous
+                    failures += 1
+                }
+                self.log("结束 \(name) 的守护：移除 \(completed.count) 个条目，解冻文件 \(unfrozen) 个、文件夹 \(dirs) 个，失败 \(failures) 项",
                          failures == 0 ? .success : .warning)
-                self.alertText = "已结束 \(name) 的守护：\(targets.count) 个条目已移除，文件和文件夹都解冻了。文件还是 0 字节，应用自己会重新生成。"
+                self.alertText = failures == 0
+                    ? "已结束 \(name) 的守护：文件与文件夹已解冻；占位资源已尝试恢复。"
+                    : "结束守护部分完成：\(completed.count) 个条目已处理，仍有 \(failures) 项失败或索引未保存。请查看日志。"
                 self.checkRecipes(silent: true)
             }
         }
     }
 
-    /// 全部解冻：所有配方文件 + 广告商文件夹一起解，不依赖备份。
-    /// 解完文件仍是 0 字节，应用自己会重新生成。
     func unfreezeAll() {
         guard requireChannel() else { return }
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         let allowedRecipes = recipes.filter { !isWhitelisted($0.bundleID) }
         guard !allowedRecipes.isEmpty else {
             alertText = "白名单应用不会执行解冻操作。"
             return
         }
-        let allowedRecipeIDs = Set(allowedRecipes.map { $0.id })
+        let allowedIDs = Set(allowedRecipes.map { $0.id })
         isBusy = true
         busyText = "正在全部解冻…"
         work.async {
+            var unfrozenIDs = Set<UUID>()
             var files = 0, dirs = 0, failures = 0
-            for bundleID in Set(allowedRecipes.map { $0.bundleID }) {
-                guard let info = self.channel.container(for: bundleID) else { continue }
-                for recipe in allowedRecipes where recipe.bundleID == bundleID && recipe.frozen {
-                    do {
-                        try self.channel.setImmutable(RecipeEngine.fullPath(recipe, container: info.path), false)
-                        files += 1
-                    } catch { failures += 1 }
+            var roots = Set<String>()
+            for recipe in allowedRecipes {
+                guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
+                    failures += 1
+                    continue
                 }
-                for relative in self.adDirectoryTree(container: info.path) {
-                    let full = info.path + "/" + relative
+                guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else {
+                    failures += 1
+                    continue
+                }
+                roots.insert(root)
+                let full = RecipeEngine.fullPath(recipe, container: root)
+                do {
+                    if let item = try self.channel.inspectItem(at: full), item.isSymlink {
+                        throw ChannelFailure("目标是符号链接，拒绝解冻")
+                    }
+                    if self.channel.isImmutable(full) {
+                        try self.channel.setImmutable(full, false)
+                        guard !self.channel.isImmutable(full) else { throw ChannelFailure("文件解冻状态未能确认") }
+                        files += 1
+                    }
+                    unfrozenIDs.insert(recipe.id)
+                } catch { failures += 1 }
+            }
+            for root in roots {
+                for relative in self.adDirectoryTree(container: root) {
+                    let full = root + "/" + relative
                     guard self.channel.isImmutable(full) else { continue }
                     do {
                         try self.channel.setImmutable(full, false)
+                        guard !self.channel.isImmutable(full) else { throw ChannelFailure("文件夹解冻状态未能确认") }
                         dirs += 1
                     } catch { failures += 1 }
                 }
@@ -2484,28 +2857,36 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                for index in self.recipes.indices where allowedRecipeIDs.contains(self.recipes[index].id) {
+                let previous = self.recipes
+                for index in self.recipes.indices where allowedIDs.contains(self.recipes[index].id)
+                    && unfrozenIDs.contains(self.recipes[index].id) {
                     self.recipes[index].frozen = false
                 }
                 self.store.file.recipes = self.recipes
-                self.store.save()
-                self.log("全部解冻完成：文件 \(files) 个、文件夹 \(dirs) 个，失败 \(failures) 个", failures == 0 ? .success : .warning)
-                self.alertText = "已全部解冻：文件 \(files) 个、文件夹 \(dirs) 个。文件还是 0 字节，应用自己会重新生成。"
+                if !self.store.save() {
+                    self.recipes = previous
+                    self.store.file.recipes = previous
+                    failures += 1
+                }
+                self.log("全部解冻：文件 \(files) 个、文件夹 \(dirs) 个，失败 \(failures) 项", failures == 0 ? .success : .warning)
+                self.alertText = failures == 0
+                    ? "已全部解冻：文件 \(files) 个、文件夹 \(dirs) 个。"
+                    : "解冻部分完成：文件 \(files) 个、文件夹 \(dirs) 个，另有 \(failures) 项失败或索引未保存。"
                 self.checkRecipes(silent: true)
             }
         }
     }
 
-    /// 广告商目录树（规则分组目录 + 全部子目录），深的在前。冻结/解冻共用。
     private func adDirectoryTree(container: String) -> [String] {
         var result: [String] = []
         var seen = Set<String>()
         func addTree(_ relative: String) {
             let full = container + "/" + relative
-            guard channel.isDirectory(full) else { return }
+            guard let rootItem = channel.item(at: full),
+                  rootItem.isDirectory, !rootItem.isSymlink else { return }
             if seen.insert(relative).inserted { result.append(relative) }
             if let items = try? channel.children(of: full) {
-                for item in items where item.isDirectory {
+                for item in items where item.isDirectory && !item.isSymlink {
                     addTree(relative + "/" + item.name)
                 }
             }
@@ -2599,7 +2980,9 @@ final class AppState: ObservableObject {
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
-                self.store.save()
+                if !self.store.save() {
+                    self.log("自动清理已完成，但守护配方未能保存到本机；请复查守护列表", .warning)
+                }
                 self.recipes = self.store.file.recipes
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
             }
@@ -2629,8 +3012,9 @@ final class AppState: ObservableObject {
         let wasImmutable = channel.isImmutable(file.path)
         let located = locateFile(path: file.path, relativePath: file.relativePath, ownerID: ownerID)
         do {
-            if channel.isImmutable(file.path) {
-                try channel.setImmutable(file.path, false)
+            let current = try channel.inspectItem(at: file.path)
+            guard let current, !current.isDirectory, !current.isSymlink, current.size > 0 else {
+                throw ChannelFailure("目标不存在、不是普通文件或已经为空")
             }
             let record = try backupManager.backup(path: file.path,
                                                   relativePath: file.relativePath,
@@ -2641,8 +3025,40 @@ final class AppState: ObservableObject {
                                                   channel: channel)
             try store.registerBackup(record)
             newBackups.append(record)
+            let backedUpDigest = try channel.md5(file.path)
+            guard backedUpDigest.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                throw ChannelFailure("备份后源文件内容发生变化，已取消清零")
+            }
+            if wasImmutable { try channel.setImmutable(file.path, false) }
+            guard let preWriteItem = try channel.inspectItem(at: file.path),
+                  !preWriteItem.isDirectory, !preWriteItem.isSymlink,
+                  preWriteItem.size == record.originalSize else {
+                throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+            }
+            let preWriteMD5 = try channel.md5(file.path)
+            guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+            }
             try channel.truncate(file.path)
-            try channel.setImmutable(file.path, true)
+            var frozen = false
+            do {
+                try channel.setImmutable(file.path, true)
+                frozen = channel.isImmutable(file.path)
+            } catch {
+                var finalError = error
+                if wasImmutable {
+                    do {
+                        try channel.setImmutable(file.path, true)
+                        guard channel.isImmutable(file.path) else { throw ChannelFailure("冻结状态校验失败") }
+                        frozen = true
+                    } catch {
+                        finalError = error
+                    }
+                }
+                if !frozen {
+                    log("文件已清零但冻结失败：\(file.relativePath)：\(finalError.localizedDescription)", .warning)
+                }
+            }
             unstableClearFailureCounts.removeValue(forKey: changeKey)
             unstableClearFailureTimes.removeValue(forKey: changeKey)
             UserDefaults.standard.set(unstableClearFailureCounts, forKey: "ls.unstableClearFailureCounts")
@@ -2653,7 +3069,7 @@ final class AppState: ObservableObject {
                                          appName: ownerName,
                                          relativePath: file.relativePath,
                                          createdAt: Date(),
-                                         frozen: true,
+                                         frozen: frozen,
                                          placeholder: false,
                                          lastCheckedAt: Date(),
                                          lastState: RecipeState.normal.rawValue,
@@ -2692,7 +3108,7 @@ final class AppState: ObservableObject {
         func walk(relative: String, depth: Int) {
             guard depth <= 5, visited < 3000, cleared + count < 300 else { return }
             guard let items = try? channel.children(of: info.path + "/" + relative) else { return }
-            for item in items where item.isDirectory {
+            for item in items where item.isDirectory && !item.isSymlink {
                 visited += 1
                 let rel = relative.isEmpty ? item.name : relative + "/" + item.name
                 let lower = item.name.lowercased()
@@ -2705,7 +3121,7 @@ final class AppState: ObservableObject {
             }
         }
         for root in ["Library/Caches", "Library/reshub", "Documents"] {
-            if channel.isDirectory(info.path + "/" + root) {
+            if let item = channel.item(at: info.path + "/" + root), item.isDirectory, !item.isSymlink {
                 walk(relative: root, depth: 1)
             }
         }
@@ -2720,7 +3136,9 @@ final class AppState: ObservableObject {
                 guard let items = try? channel.children(of: current.path) else { continue }
                 for item in items {
                     let rel = current.relative + "/" + item.name
-                    if item.isDirectory {
+                    if item.isSymlink {
+                        continue
+                    } else if item.isDirectory {
                         subdirs.append(item.path)
                         stack.append((path: item.path, relative: rel))
                     } else if item.size > 0, fileBudget < 300, cleared + count < 300 {
@@ -2742,10 +3160,27 @@ final class AppState: ObservableObject {
                 }
             }
             if !skippedActiveInDir {
+                var freezeFailures = 0
                 for sub in subdirs.sorted(by: { $0.count > $1.count }) {
-                    try? channel.setImmutable(sub, true)
+                    do {
+                        try channel.setImmutable(sub, true)
+                        guard channel.isImmutable(sub) else { throw ChannelFailure("冻结状态未能确认") }
+                    } catch {
+                        freezeFailures += 1
+                        log("冷开广告子目录冻结失败：\(sub)：\(error.localizedDescription)", .warning)
+                    }
                 }
-                try? channel.setImmutable(info.path + "/" + dir, true)
+                let directoryPath = info.path + "/" + dir
+                do {
+                    try channel.setImmutable(directoryPath, true)
+                    guard channel.isImmutable(directoryPath) else { throw ChannelFailure("冻结状态未能确认") }
+                } catch {
+                    freezeFailures += 1
+                    log("冷开广告目录冻结失败：\(directoryPath)：\(error.localizedDescription)", .warning)
+                }
+                if freezeFailures > 0 {
+                    log("冷开广告目录已清理，但有 \(freezeFailures) 个目录未能确认冻结", .warning)
+                }
             } else {
                 log("冷开广告目录有文件仍在变化，本轮不冻结目录：\(info.name) \(dir)", .notice)
             }
@@ -2840,7 +3275,9 @@ final class AppState: ObservableObject {
             for item in items {
                 visited += 1
                 let rel = relative.isEmpty ? item.name : relative + "/" + item.name
-                if item.isDirectory {
+                if item.isSymlink {
+                    continue
+                } else if item.isDirectory {
                     if dirs.count < 900 { dirs.append(rel) }
                     walk(rel, depth: depth + 1)
                 } else {
@@ -2885,7 +3322,7 @@ final class AppState: ObservableObject {
             }
         }
         for root in ["Library/Caches", "Library", "tmp", "Documents"] {
-            if channel.isDirectory(info.path + "/" + root) {
+            if let item = channel.item(at: info.path + "/" + root), item.isDirectory, !item.isSymlink {
                 if dirs.count < 900 { dirs.append(root) }
                 walk(root, depth: 1)
             }
