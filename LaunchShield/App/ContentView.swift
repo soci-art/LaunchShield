@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showLogs = false
     @State private var showClearConfirm = false
     @State private var showClearScanConfirm = false
+    @State private var showSingleAppEntryAlert = false
     @State private var showClearCacheConfirm = false
     @State private var showRestoreConfirm = false
     @State private var ipaShareItem: ShareItem?
@@ -94,6 +95,11 @@ struct ContentView: View {
         }
         .sheet(item: $ipaShareItem) { item in
             ShareSheet(items: [item.url])
+        }
+        .alert("请选择单个应用", isPresented: $showSingleAppEntryAlert) {
+            Button("好", role: .cancel) { }
+        } message: {
+            Text("LaunchHack 只对单个应用检测。主页现在选了多个应用，先改成只选一个再来。")
         }
         .confirmationDialog("清除扫描结果？", isPresented: $showClearScanConfirm, titleVisibility: .visible) {
             Button("清除", role: .destructive) {
@@ -443,7 +449,9 @@ struct ContentView: View {
             }
             Divider().overlay(Color.primaryText.opacity(0.07))
             Button {
-                if requireSign() {
+                if state.checkedIDs.count >= 2 {
+                    showSingleAppEntryAlert = true
+                } else if requireSign() {
                     if !state.targetChosen || state.targetPath == nil || state.isWhitelisted(state.target.bundleID) {
                         state.alertText = "请先选择一个可访问、未加入白名单的 App。"
                     } else {

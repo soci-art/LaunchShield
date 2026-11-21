@@ -890,11 +890,7 @@ final class AppState: ObservableObject {
         }
         lastRecognition = []
         lastScanSkippedFrozen = 0
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let galleryURL = base.appendingPathComponent("LaunchShield", isDirectory: true)
-            .appendingPathComponent("launchhack-gallery.json")
-        try? FileManager.default.removeItem(at: galleryURL)
+        deleteLaunchHackGallerySession()
         log("已清除扫描结果：素材 \(targetCount) 项、标记 \(markCount) 个全清（只清结果，未动任何文件）", .notice)
     }
 
@@ -929,7 +925,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 删掉 LaunchHack 图片墙的落盘会话（只存一份，删了就无可恢复）。
+    private func deleteLaunchHackGallerySession() {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let url = base.appendingPathComponent("LaunchShield", isDirectory: true)
+            .appendingPathComponent("launchhack-gallery.json")
+        try? FileManager.default.removeItem(at: url)
+    }
+
     func select(_ container: ContainerInfo) {
+        // 切换到别的应用（清单第 50 条）：上一个应用的图片墙会话
+        // 一并作废，切回来也是空白、重新扫描；不切换、关页面重开
+        // 才按第 36 条恢复。
+        if targetChosen, !target.bundleID.isEmpty,
+           target.bundleID.caseInsensitiveCompare(container.bundleID) != .orderedSame {
+            deleteLaunchHackGallerySession()
+        }
         target = AppTarget(bundleID: container.bundleID, name: container.name)
         targetChosen = true
         launchHackUploadMessage = ""
