@@ -1884,7 +1884,10 @@ final class AppState: ObservableObject {
             report(false, "目标应用未关联或已加入排除白名单，不能处理。")
             return
         }
-        guard requireChannel() else { return }
+        guard requireChannel() else {
+            report(false, channel.unavailableReason)
+            return
+        }
         guard FileKind.of(relativePath) == .image || FileKind.of(relativePath) == .video else {
             report(false, "配置文件只作为定位证据，不直接清零或冻结。请定位到它对应的图片/视频资源。")
             return
