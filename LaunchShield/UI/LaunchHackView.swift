@@ -962,6 +962,7 @@ struct LaunchHackView: View {
                     resultOverviewCard
                     if !model.candidates.isEmpty {
                         candidatePanel
+                        uploadPanel
                     }
                     if !governanceResults.isEmpty || isGovernanceRunning {
                         governanceReportPanel
@@ -1099,12 +1100,12 @@ struct LaunchHackView: View {
                             .padding(.vertical, 4)
                             .background(Color.accentCyan.opacity(0.12), in: Capsule())
                     }
-                    Text("广告检测与治理")
+                    Text("检测 · 核验 · 治理")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                 }
             }
-            Text("从识别广告线索，到规则同步、本地治理和复发复查，在 LaunchShield 内完成整个流程。")
+            Text("先检测并核验资源，再选择上传识别数据或执行本地治理。每一步都由你确认。")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1206,15 +1207,37 @@ struct LaunchHackView: View {
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
+        }
+        .padding(15)
+        .panel()
+    }
+
+    private var uploadPanel: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.up.doc")
+                    .foregroundStyle(Color.accentCyan)
+                Text("提交识别数据")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                Text("可选步骤")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            Text("完成候选核验后，可将识别元数据提交到你的服务器。不会上传图片、视频或其他原始文件。服务器解析和规则整理由服务端完成。")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
             Button {
                 showUploadConfirmation = true
             } label: {
-                Label(model.isUploading ? "正在上传…" : "上传识别数据", systemImage: "arrow.up.circle")
+                Label(model.isUploading ? "正在提交…" : "确认并上传识别数据", systemImage: "arrow.up.circle.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .tint(Color.accentCyan)
-            .disabled(model.candidates.isEmpty || model.isUploading)
+            .disabled(model.candidates.isEmpty || model.isUploading || model.isScanning)
 
             if !model.uploadMessage.isEmpty {
                 Text(model.uploadMessage)
@@ -1222,7 +1245,7 @@ struct LaunchHackView: View {
                     .foregroundStyle(model.uploadMessage.contains("成功") ? Color.green : Color.secondaryText)
             }
         }
-        .padding(15)
+        .padding(14)
         .panel()
     }
 
@@ -1535,7 +1558,7 @@ struct LaunchHackView: View {
     private var candidatePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("资源处理状态")
+                Text("候选资源核验与处理")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Spacer()
