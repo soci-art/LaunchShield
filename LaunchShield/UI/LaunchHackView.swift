@@ -647,10 +647,11 @@ struct LaunchHackView: View {
                     summaryPanel
                     scanPanel
                     gallerySection
+                }
+                .padding(16)
+                .frame(maxWidth: 620)
+                .frame(maxWidth: .infinity)
             }
-            .padding(16)
-            .frame(maxWidth: 620)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.appBackground.ignoresSafeArea())
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
