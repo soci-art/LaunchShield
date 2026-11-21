@@ -65,7 +65,7 @@ private enum LaunchHackDraftStore {
     }
 }
 
-private struct LaunchHackContentEvidence {
+struct LaunchHackContentEvidence {
     let sourcePath: String
     let urls: [String]
     let hasAdSignals: Bool
