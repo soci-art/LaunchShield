@@ -58,13 +58,8 @@ private enum LaunchHackVisualMatcher {
         request.usesLanguageCorrection = true
         try? VNImageRequestHandler(cgImage: image).perform([request])
         let raw = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-        // 汉字区间按 Unicode 码点并进允许集再取反分词：
-        // CharacterSet(charactersIn:) 只收单个字符、拼不出区间，
-        // 旧写法会把中文切成单字再全部过滤掉，文字交集对中文等于失效。
-        var tokenSet = CharacterSet.alphanumerics
-        tokenSet.insert(charactersIn: UnicodeScalar(0x4E00)...UnicodeScalar(0x9FFF))
         let tokens = raw.joined(separator: " ").lowercased()
-            .components(separatedBy: tokenSet.inverted)
+            .components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "一-龥")).inverted)
         return Set(tokens.filter { $0.count >= 2 })
     }
 
