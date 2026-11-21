@@ -859,11 +859,19 @@ final class AppState: ObservableObject {
             mergedUploadMessage = parts.joined(separator: "；")
             log("合并上传识别数据：\(mergedUploadMessage)", failed.isEmpty ? .success : .warning)
         }
+        func runConfigPart() {
+            uploadConfigSnapshot { ok, count in
+                if let ok {
+                    if ok { succeeded.append("配置文件快照（\(count) 个文件）") } else { failed.append("配置文件快照") }
+                }
+                finish()
+            }
+        }
         func runScanPart() {
-            guard hasScan else { finish(); return }
+            guard hasScan else { runConfigPart(); return }
             uploadRecognition(stillSeesAds: false, reportWithAlert: false) { ok in
                 if ok { succeeded.append("扫描识别数据") } else { failed.append("扫描识别数据") }
-                finish()
+                runConfigPart()
             }
         }
         if hasFindings {
@@ -873,6 +881,118 @@ final class AppState: ObservableObject {
             }
         } else {
             runScanPart()
+        }
+    }
+
+    /// 配置文件快照（配置线第一步）：把目标应用容器里的小配置文件
+    /// 原文随识别数据一并上传到收集箱，供离线逐个读、认各家开屏
+    /// 开关。只读不写；只收文本类配置（plist/json/xml/cfg/ini）、
+    /// 名字带 splash 的文件、以及广告 SDK 目录下的小数据库/数据
+    /// 文件；单个 ≤256 KB、最多 400 个、内容合计 ≤4 MB。
+    /// completion 的 Bool 为 nil 表示本轮跳过（没选目标应用，或
+    /// 一个候选文件都没有）；false 是真上传失败。
+    func uploadConfigSnapshot(completion: @escaping (Bool?, Int) -> Void) {
+        guard targetChosen, !target.bundleID.isEmpty else { completion(nil, 0); return }
+        let targetID = target.bundleID
+        let appName = target.name
+        var roots: [(rootPath: String, groupID: String?)] = []
+        if let app = containers.first(where: { !$0.isGroup && $0.bundleID.caseInsensitiveCompare(targetID) == .orderedSame })
+            ?? channel.container(for: targetID) {
+            roots.append((app.path, nil))
+        }
+        for group in associatedGroups(for: targetID) where !group.path.isEmpty {
+            roots.append((group.path, group.bundleID))
+        }
+        var seenRoots = Set<String>()
+        roots = roots.filter { seenRoots.insert($0.rootPath).inserted }
+        guard !roots.isEmpty else { completion(nil, 0); return }
+        let channel = self.channel
+        work.async {
+            let markers = ["splash", "csj", "gdt", "beizi", "qumeng", "nad",
+                           "ubix", "meishu", "buadsdk", "msadsdk", "vungle",
+                           "admob", "config"]
+            func isCandidate(_ file: FileItem) -> Bool {
+                guard !file.isDirectory, !file.isSymlink,
+                      file.size >= 1, file.size <= 262_144 else { return false }
+                let lower = file.path.lowercased()
+                let ext = (file.path as NSString).pathExtension.lowercased()
+                if ["plist", "json", "xml", "cfg", "ini"].contains(ext) { return true }
+                if lower.contains("splash") { return true }
+                if ["sqlite", "db", "data"].contains(ext) {
+                    return markers.contains { lower.contains($0) }
+                }
+                return false
+            }
+            var picked: [(file: FileItem, groupID: String?, root: String)] = []
+            for root in roots {
+                guard let files = try? channel.walkFiles(at: root.rootPath, limit: 16000,
+                    skipDirNames: [".Trash", "Recently Deleted"],
+                    skipDirSubstrings: PersonalMedia.personalDirectorySubstrings,
+                    skipAccountDirs: true) else { continue }
+                for file in files where isCandidate(file) {
+                    picked.append((file, root.groupID, root.rootPath))
+                }
+            }
+            // 带广告标记的路径优先，其次按修改时间倒序——超额时保住
+            // 最相关的那批。
+            func markerHit(_ entry: (file: FileItem, groupID: String?, root: String)) -> Int {
+                let lower = entry.file.path.lowercased()
+                return markers.contains { lower.contains($0) } ? 1 : 0
+            }
+            picked.sort {
+                let aHit = markerHit($0), bHit = markerHit($1)
+                if aHit != bHit { return aHit > bHit }
+                return $0.file.modified > $1.file.modified
+            }
+            var records: [[String: Any]] = []
+            var totalBytes = 0
+            let formatter = ISO8601DateFormatter()
+            for entry in picked {
+                if records.count >= 400 || totalBytes >= 4_000_000 { break }
+                guard let data = try? channel.read(entry.file.path, maxBytes: 262_144) else { continue }
+                totalBytes += data.count
+                let relative = entry.file.path.hasPrefix(entry.root + "/")
+                    ? String(entry.file.path.dropFirst(entry.root.count + 1)) : entry.file.name
+                var record: [String: Any] = [
+                    "relativePath": relative,
+                    "size": data.count,
+                    "modifiedAt": formatter.string(from: entry.file.modified),
+                ]
+                if let groupID = entry.groupID { record["groupID"] = groupID }
+                if let text = String(data: data, encoding: .utf8), !text.contains("\u{0}") {
+                    record["encoding"] = "utf8"
+                    record["content"] = text
+                } else {
+                    record["encoding"] = "base64"
+                    record["content"] = data.base64EncodedString()
+                }
+                records.append(record)
+            }
+            guard !records.isEmpty else {
+                DispatchQueue.main.async { completion(nil, 0) }
+                return
+            }
+            let payload: [String: Any] = [
+                "schemaVersion": 1,
+                "source": "config-snapshot",
+                "appName": appName,
+                "bundleID": targetID,
+                "capturedAt": formatter.string(from: Date()),
+                "files": records,
+            ]
+            guard let body = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+                DispatchQueue.main.async { completion(false, 0) }
+                return
+            }
+            let count = records.count
+            CollectUploader.upload(kind: "config-snapshot", contentType: "application/json", body: body) { success, _ in
+                DispatchQueue.main.async {
+                    if success {
+                        self.log("配置文件快照：\(appName) 的 \(count) 个配置文件原文已上传（供认开屏开关用）", .info)
+                    }
+                    completion(success, count)
+                }
+            }
         }
     }
 
