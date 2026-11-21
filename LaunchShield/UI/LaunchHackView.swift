@@ -1197,12 +1197,12 @@ struct LaunchHackView: View {
             }
             HStack(spacing: 8) {
                 resultMetric("\(model.candidates.count)", "发现项目")
-                resultMetric("\(priorityCandidates.count)", "优先核验")
-                resultMetric("\(reviewCandidates.count)", "需要确认")
+                resultMetric("\(readyCandidates.count)", "可核验处理")
+                resultMetric("\(unsupportedCandidates.count)", "暂不支持")
             }
             Text(model.candidates.isEmpty
-                 ? "检测会只读检查当前应用可访问的资源，不会自动清理或上传。"
-                 : "优先核验表示线索较强，不代表已确认是广告。请查看资源后再决定处理。")
+                 ? "检测只读取当前应用可访问的资源，不会自动清理、冻结或上传。"
+                 : "展开资源查看预览和说明。只有你确认的图片或视频才会进入治理流程。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1669,6 +1669,28 @@ struct LaunchHackView: View {
         .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
     }
 
+    private func candidateStatusText(_ candidate: LaunchHackCandidate) -> String {
+        if candidate.isFrozen { return "已冻结" }
+        if candidate.bundleID == nil { return "未关联宿主" }
+        let kind = FileKind.of(candidate.relativePath)
+        return kind == .image || kind == .video ? "可核验" : "仅供参考"
+    }
+
+    private func candidateStatusColor(_ candidate: LaunchHackCandidate) -> Color {
+        if candidate.isFrozen { return .green }
+        if candidate.bundleID == nil { return .orange }
+        let kind = FileKind.of(candidate.relativePath)
+        return kind == .image || kind == .video ? .accentCyan : .secondaryText
+    }
+
+    private func candidateKindIcon(_ candidate: LaunchHackCandidate) -> String {
+        switch FileKind.of(candidate.relativePath) {
+        case .image: return "photo"
+        case .video: return "video"
+        case .other: return "doc.text"
+        }
+    }
+
     private func candidateRow(_ candidate: LaunchHackCandidate) -> some View {
         let canImport = candidate.bundleID != nil
             && (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video)
@@ -1682,6 +1704,18 @@ struct LaunchHackView: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Color.secondaryText)
                     .textSelection(.enabled)
+
+                Text(candidate.isFrozen
+                     ? "该资源当前已处于冻结状态，无需重复处理。"
+                     : (candidate.bundleID == nil
+                        ? "尚未找到可靠的宿主 App 关联，当前只能作为定位线索。"
+                        : (canImport
+                           ? "这是已关联宿主 App 的图片或视频。请先核对预览和路径，再决定是否处理。"
+                           : "这是配置或其他文件，仅用于辅助定位，不会直接清理或冻结。")))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 HStack(spacing: 8) {
                     Text(candidate.kindText)
                     Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: candidate.size), countStyle: .file))
@@ -1704,6 +1738,9 @@ struct LaunchHackView: View {
                     }
                 }
                 if isProfessionalMode {
+                    Text("线索评分：\(candidate.score) · \(candidate.priorityText)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
                     ForEach(candidate.evidence, id: \.self) { evidence in
                         Text(evidence)
                             .font(.system(size: 10))
@@ -1749,20 +1786,33 @@ struct LaunchHackView: View {
             }
             .padding(.vertical, 6)
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 9) {
+                Image(systemName: candidateKindIcon(candidate))
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(candidateStatusColor(candidate))
+                    .frame(width: 30, height: 30)
+                    .background(candidateStatusColor(candidate).opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(candidate.appName)
+                    Text((candidate.relativePath as NSString).lastPathComponent)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
-                    Text((candidate.relativePath as NSString).lastPathComponent)
+                        .lineLimit(1)
+                    Text(candidate.appName)
                         .font(.system(size: 10))
                         .foregroundStyle(Color.secondaryText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                Text(candidate.priorityText)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(candidate.score >= 80 ? Color.green : Color.accentCyan)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(candidateStatusText(candidate))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(candidateStatusColor(candidate))
+                    if isProfessionalMode {
+                        Text(candidate.priorityText)
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color.secondaryText)
+                    }
+                }
                 if candidate.bundleID != nil && !candidate.isFrozen &&
                     (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video) {
                     Button {
