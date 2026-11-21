@@ -1043,7 +1043,8 @@ final class AppState: ObservableObject {
                     }
                     }
                 } catch {
-                    if wasImmutable, self.channel.item(at: targetFile.path) != nil {
+                    if wasImmutable, let current = self.channel.item(at: targetFile.path),
+                       !current.isDirectory, !current.isSymlink {
                         do { try self.channel.setImmutable(targetFile.path, true) }
                         catch { self.log("恢复原冻结状态失败：\(targetFile.relativePath)：\(error.localizedDescription)", .warning) }
                     }
@@ -1619,9 +1620,10 @@ final class AppState: ObservableObject {
                             self.log("文件连续 \(count) 次在清零期间发生变化，后续 10 分钟暂时跳过：\(appName) \(candidate.relativePath)", .notice)
                         }
                     }
-                    if wasImmutable {
+                    if wasImmutable, let current = self.channel.item(at: full),
+                       !current.isDirectory, !current.isSymlink {
                         do {
-                            if self.channel.item(at: full) != nil { try self.channel.setImmutable(full, true) }
+                            try self.channel.setImmutable(full, true)
                         } catch {
                             self.log("恢复原冻结状态失败：\(appName) \(candidate.relativePath)：\(error.localizedDescription)", .warning)
                         }
@@ -2139,7 +2141,8 @@ final class AppState: ObservableObject {
                 }
             } catch {
                 var lockRestoreFailure: String?
-                if wasImmutable, self.channel.item(at: full) != nil {
+                if wasImmutable, let current = self.channel.item(at: full),
+                   !current.isDirectory, !current.isSymlink {
                     do {
                         try self.channel.setImmutable(full, true)
                         guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
@@ -2565,7 +2568,9 @@ final class AppState: ObservableObject {
                        (try? self.channel.inspectItem(at: targetPath)) == nil {
                         try? self.channel.createDirectory(targetPath)
                     }
-                    if wasImmutable, let targetPath, self.channel.item(at: targetPath) != nil {
+                    if wasImmutable, let targetPath,
+                       let current = self.channel.item(at: targetPath),
+                       !current.isDirectory, !current.isSymlink {
                         do {
                             try self.channel.setImmutable(targetPath, true)
                             guard self.channel.isImmutable(targetPath) else { throw ChannelFailure("冻结状态校验失败") }
@@ -2777,7 +2782,9 @@ final class AppState: ObservableObject {
                        (try? self.channel.inspectItem(at: targetPath)) == nil {
                         try? self.channel.createDirectory(targetPath)
                     }
-                    if wasImmutable, let targetPath, self.channel.item(at: targetPath) != nil {
+                    if wasImmutable, let targetPath,
+                       let current = self.channel.item(at: targetPath),
+                       !current.isDirectory, !current.isSymlink {
                         do {
                             try self.channel.setImmutable(targetPath, true)
                             guard self.channel.isImmutable(targetPath) else { throw ChannelFailure("冻结状态校验失败") }
@@ -3101,7 +3108,8 @@ final class AppState: ObservableObject {
             return true
         } catch {
             let message = error.localizedDescription
-            if wasImmutable, channel.item(at: file.path) != nil {
+            if wasImmutable, let current = channel.item(at: file.path),
+               !current.isDirectory, !current.isSymlink {
                 do { try channel.setImmutable(file.path, true) }
                 catch { log("恢复原冻结状态失败：\(file.relativePath)：\(error.localizedDescription)", .warning) }
             }
