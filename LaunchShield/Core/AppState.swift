@@ -613,6 +613,29 @@ final class AppState: ObservableObject {
         checkRecipes()
     }
 
+    // MARK: - 前台实时检测复发（第 76 条）
+
+    private var foregroundRecurrenceTimer: Timer?
+
+    /// App 在前台时启动：先静默复查一次，之后每 5 秒复查
+    /// 一次已冻结文件的状态，哪个文件又变大了，复发计数和
+    /// 主页「一键冻结已复发」按钮立刻跟着变，不用重扫、
+    /// 不用重开 App。忙着处理文件时跳过这一轮，不打架。
+    func startForegroundRecurrenceMonitor() {
+        stopForegroundRecurrenceMonitor()
+        checkRecipes(silent: true)
+        let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self, !self.isBusy else { return }
+            self.checkRecipes(silent: true)
+        }
+        foregroundRecurrenceTimer = timer
+    }
+
+    func stopForegroundRecurrenceMonitor() {
+        foregroundRecurrenceTimer?.invalidate()
+        foregroundRecurrenceTimer = nil
+    }
+
     func dismissAlert() {
         alertText = nil
     }
@@ -3007,10 +3030,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 第 76 条：复查在飞标记，防止前台定时复查叠着跑。
+    private var recipeCheckInFlight = false
+
     func checkRecipes(silent: Bool = false) {
         let allRecipes = recipes
         let list = allRecipes.filter { !isWhitelisted($0.bundleID) }
         guard !list.isEmpty, channel.isAvailable else { return }
+        guard !recipeCheckInFlight else { return }
+        recipeCheckInFlight = true
         work.async {
             var updated = allRecipes
             var normal = 0
@@ -3043,6 +3071,7 @@ final class AppState: ObservableObject {
                 }
             }
             DispatchQueue.main.async {
+                self.recipeCheckInFlight = false
                 self.recipes = updated
                 self.store.file.recipes = updated
                 if !self.store.save() {
