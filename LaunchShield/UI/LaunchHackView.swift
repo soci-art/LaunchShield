@@ -63,19 +63,47 @@ private enum LaunchHackVisualMatcher {
         return Set(tokens.filter { $0.count >= 2 })
     }
 
-    static func compare(reference: VNFeaturePrintObservation,
+    /// 一张截图算多份特征：整屏一份，再把主体区域裁出来各一份。
+    /// 广告本体在截图里只占中间一块（上下有状态栏、黑边、工具栏），
+    /// 整屏特征会被这些边角带偏，和光秃的原图怎么都对不上；
+    /// 裁开比对、取最小距离，才对得上（Grace 2026-11-21 令：
+    /// 直接按能对上来修）。
+    static func referencePrints(_ image: CGImage) -> [VNFeaturePrintObservation] {
+        var variants: [CGImage] = [image]
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        let crops: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
+            (0, 0.19, 1, 0.62),       // 中间主体带（图在看图界面里的位置）
+            (0.06, 0.10, 0.88, 0.80), // 去掉状态栏与底部栏的内裁
+            (0, 0.30, 1, 0.40)        // 正中核心带
+        ]
+        for (fx, fy, fw, fh) in crops {
+            let rect = CGRect(x: fx * w, y: fy * h, width: fw * w, height: fh * h)
+            if let cropped = image.cropping(to: rect) { variants.append(cropped) }
+        }
+        return variants.compactMap { try? featurePrint($0) }
+    }
+
+    static func compare(references: [VNFeaturePrintObservation],
                         referenceText: Set<String>,
                         candidate: CGImage) -> (Float, Int)? {
         guard let candidateFeature = try? featurePrint(candidate) else { return nil }
-        var distance: Float = 1
-        guard (try? reference.computeDistance(&distance, to: candidateFeature)) != nil else { return nil }
+        var best: Float = 1
+        var compared = false
+        for reference in references {
+            var distance: Float = 1
+            if (try? reference.computeDistance(&distance, to: candidateFeature)) != nil {
+                best = min(best, distance)
+                compared = true
+            }
+        }
+        guard compared else { return nil }
         let candidateText = recognizedText(candidate)
         let overlap = referenceText.intersection(candidateText).count
-        return (distance, overlap)
+        return (best, overlap)
     }
 
     static func inspect(path: String, relativePath: String, channel: Channel,
-                        reference: VNFeaturePrintObservation,
+                        references: [VNFeaturePrintObservation],
                         referenceText: Set<String>,
                         kind: FileKind) -> LaunchHackVisualMatch? {
         guard kind == .image || kind == .video else { return nil }
@@ -129,7 +157,7 @@ private enum LaunchHackVisualMatcher {
                 detail = "视频 · \(String(format: "%.1f", duration)) 秒 · 比较 \(frames.count) 个关键帧"
             }
 
-            let comparisons = frames.compactMap { compare(reference: reference, referenceText: referenceText, candidate: $0) }
+            let comparisons = frames.compactMap { compare(references: references, referenceText: referenceText, candidate: $0) }
             guard let best = comparisons.min(by: { $0.0 < $1.0 }) else { return nil }
             let preview = UIImage(cgImage: frames[0]).jpegData(compressionQuality: 0.65)
             let boundedPreview = (preview?.count ?? 0) <= 160 * 1024 ? preview : nil
@@ -249,8 +277,12 @@ private final class LaunchHackModel: ObservableObject {
             onLog?(status, .warning)
             return
         }
-        guard let referenceImage = LaunchHackVisualMatcher.cgImage(from: screenshot),
-              let referenceFeature = try? LaunchHackVisualMatcher.featurePrint(referenceImage) else {
+        guard let referenceImage = LaunchHackVisualMatcher.cgImage(from: screenshot) else {
+            status = "截图无法解析，请重新选择清晰的广告截图。"
+            return
+        }
+        let referenceFeatures = LaunchHackVisualMatcher.referencePrints(referenceImage)
+        guard !referenceFeatures.isEmpty else {
             status = "截图无法解析，请重新选择清晰的广告截图。"
             return
         }
@@ -415,7 +447,7 @@ private final class LaunchHackModel: ObservableObject {
                     }
                     guard let match = LaunchHackVisualMatcher.inspect(path: file.path,
                         relativePath: relative, channel: channel,
-                        reference: referenceFeature, referenceText: referenceText,
+                        references: referenceFeatures, referenceText: referenceText,
                         kind: kindOf[file.path] ?? .other) else { continue }
                     // 没过线也把距离留下来：整轮未命中时，日志报最接近
                     // 的几个，一眼分清图不在还是差一点（Grace 定）。
