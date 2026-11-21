@@ -2215,6 +2215,7 @@ final class AppState: ObservableObject {
     }
 
     func replaceRecipe(_ recipe: Recipe) {
+        guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
             alertText = "守护记录中的路径不安全，已拒绝重新清零。"
             return
@@ -2246,6 +2247,10 @@ final class AppState: ObservableObject {
                       !current.isDirectory, !current.isSymlink else {
                     throw ChannelFailure("目标不存在、不是普通文件或已变成符号链接，未执行重新清零")
                 }
+                guard current.isImmutable == wasImmutable else {
+                    throw ChannelFailure("目标冻结状态在操作前发生变化，请重新复查")
+                }
+                let originalMD5 = try self.channel.md5(full)
                 if current.size > 0 {
                     let record = try self.backupManager.backup(path: full,
                                                                relativePath: recipe.relativePath,
@@ -2255,9 +2260,21 @@ final class AppState: ObservableObject {
                                                                groupID: recipe.groupID,
                                                                channel: self.channel)
                     try self.store.registerBackup(record)
+                    guard originalMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                        throw ChannelFailure("备份后源文件内容发生变化，已取消重新清零")
+                    }
                 }
                 do {
                     if wasImmutable { try self.channel.setImmutable(full, false) }
+                    guard let preWriteItem = try self.channel.inspectItem(at: full),
+                          !preWriteItem.isDirectory, !preWriteItem.isSymlink,
+                          preWriteItem.size == current.size else {
+                        throw ChannelFailure("备份后目标文件状态发生变化，已取消重新清零")
+                    }
+                    let preWriteMD5 = try self.channel.md5(full)
+                    guard preWriteMD5.caseInsensitiveCompare(originalMD5) == .orderedSame else {
+                        throw ChannelFailure("备份后目标文件内容发生变化，已取消重新清零")
+                    }
                     try self.channel.truncate(full)
                     if wasImmutable {
                         try self.channel.setImmutable(full, true)
@@ -2306,17 +2323,21 @@ final class AppState: ObservableObject {
         }
         guard requireChannel() else { return }
         guard let root = channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { return }
+        isBusy = true
+        busyText = frozen ? "正在冻结文件…" : "正在解冻文件…"
         work.async {
             do {
                 let full = RecipeEngine.fullPath(recipe, container: root)
-                guard let item = try self.channel.inspectItem(at: full), !item.isSymlink else {
-                    throw ChannelFailure("目标不存在或已变成符号链接，拒绝修改冻结状态")
+                guard let item = try self.channel.inspectItem(at: full), !item.isDirectory, !item.isSymlink else {
+                    throw ChannelFailure("目标不存在、不是普通文件或已变成符号链接，拒绝修改冻结状态")
                 }
                 try self.channel.setImmutable(full, frozen)
                 guard self.channel.isImmutable(full) == frozen else {
                     throw ChannelFailure(frozen ? "冻结状态未能确认" : "解冻状态未能确认")
                 }
                 DispatchQueue.main.async {
+                    self.isBusy = false
+                    self.busyText = ""
                     let previous = self.recipes
                     if let index = self.recipes.firstIndex(where: { $0.id == recipe.id }) {
                         self.recipes[index].frozen = frozen
@@ -2335,6 +2356,8 @@ final class AppState: ObservableObject {
                 }
             } catch {
                 DispatchQueue.main.async {
+                    self.isBusy = false
+                    self.busyText = ""
                     self.log(frozen ? "冻结失败：\(error.localizedDescription)" : "解冻失败：\(error.localizedDescription)", .warning)
                     self.alertText = "改冻结状态失败：\(error.localizedDescription)"
                 }
