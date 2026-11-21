@@ -99,13 +99,20 @@ private enum LaunchHackVisualMatcher {
             var frames: [CGImage] = []
             var detail = ""
             if kind == .image {
-                guard let source = CGImageSourceCreateWithURL(localURL as CFURL, nil),
-                      let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+                guard let source = CGImageSourceCreateWithURL(localURL as CFURL, nil) else { return nil }
+                // 解码必须和截图那头一致：按方向标记摆正、限尺寸。
+                // 手机拍的照片像素常是躺着存的、靠方向标记摆正显示；
+                // 之前直接拿原始像素比对，等于躺着的图和站着的图比，
+                // 距离必然爆掉（阳性对照实验 2026-11-21 坐实）。
+                let options: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 900
+                ]
+                guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+                        ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
                 frames = [image]
-                let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-                let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? image.width
-                let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? image.height
-                detail = "图片 · \(width) × \(height)"
+                detail = "图片 · \(image.width) × \(image.height)"
             } else {
                 let asset = AVURLAsset(url: localURL)
                 let duration = asset.duration.seconds
