@@ -1057,6 +1057,17 @@ private final class LaunchHackModel: ObservableObject {
         persistSession()
         onLog?("LaunchHack 已标记：\(item.relativePath)", .success)
     }
+
+    /// 第 82 条：取消标记。把确认状态撤掉、让 AppState 把
+    /// 标记记录删掉（主页素材清单同步撤），详情页不关、
+    /// 当场翻回未标记状态，还能重新标。
+    func unconfirmGalleryItem(_ item: LaunchHackGalleryItem, state: AppState) {
+        guard confirmedGalleryIDs.contains(item.id) else { return }
+        confirmedGalleryIDs.remove(item.id)
+        state.removeLaunchHackMark(bundleID: item.bundleID, groupID: item.groupID, relativePath: item.relativePath)
+        persistSession()
+        onLog?("LaunchHack 已取消标记：\(item.relativePath)", .info)
+    }
 }
 
 struct LaunchHackView: View {
@@ -1397,6 +1408,18 @@ struct LaunchHackView: View {
                     if model.confirmedGalleryIDs.contains(item.id) {
                         Label("已标记，会同步到主页素材清单，在那里处理它。", systemImage: "checkmark.circle.fill")
                             .font(.system(size: 13, weight: .medium)).foregroundStyle(.green)
+                        Button {
+                            model.unconfirmGalleryItem(item, state: state)
+                        } label: {
+                            HStack {
+                                Image(systemName: "xmark.circle")
+                                Text("取消标记")
+                            }
+                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(.red)
+                            .frame(maxWidth: .infinity).frame(height: 48)
+                            .background(Color.panel, in: RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.red, lineWidth: 1.5))
+                        }
                     } else {
                         Button {
                             model.confirmGalleryItem(item, state: state)

@@ -855,6 +855,23 @@ final class AppState: ObservableObject {
         log("LaunchHack 手动标记已收集：\(candidate.appName) \(candidate.relativePath)", .success)
     }
 
+    /// 第 82 条：取消标记。按应用＋容器＋相对路径把这条标记
+    /// 从收集里删掉、落盘，再按剩下的标记重建素材清单——
+    /// 主页那边同步的那条随之撤掉。成套标记存的是文件夹
+    /// 路径，删掉它整套展开的目标一并消失。
+    func removeLaunchHackMark(bundleID: String?, groupID: String?, relativePath: String) {
+        let before = launchHackMarks.count
+        launchHackMarks.removeAll {
+            $0.bundleID?.caseInsensitiveCompare(bundleID ?? "") == .orderedSame
+                && $0.groupID?.caseInsensitiveCompare(groupID ?? "") == .orderedSame
+                && $0.relativePath == relativePath
+        }
+        guard launchHackMarks.count != before else { return }
+        persistLaunchHackMarks()
+        refreshLaunchHackTargets()
+        log("LaunchHack 已取消标记：\(relativePath)", .info)
+    }
+
     /// 识别数据上传由 LaunchHack 页发起（主页入口已随广告检测结果
     /// 整块移除）；上传内容为机器候选与手动标记的合并。
     func uploadLaunchHackRecognition(completion: ((Bool) -> Void)? = nil) {
