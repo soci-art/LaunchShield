@@ -63,7 +63,18 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             // 回到前台时补查一次更新提醒（节流在 AppState 里）：
             // 发版时应用正开着的情况，靠这次补查才不会漏弹。
-            if phase == .active { state.recheckRemindersIfStale() }
+            if phase == .active {
+                state.recheckRemindersIfStale()
+                // 第 76 条：前台期间实时检测复发。
+                state.startForegroundRecurrenceMonitor()
+            } else if phase == .background {
+                state.stopForegroundRecurrenceMonitor()
+            }
+        }
+        .onAppear {
+            // 第 76 条：刚打开 App 时 scenePhase 不一定触发
+            // onChange，这里直接启动前台实时检测。
+            state.startForegroundRecurrenceMonitor()
         }
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
