@@ -87,6 +87,9 @@ jobs:
           test -n "$APP_PATH"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEXT_VERSION" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT_BUILD" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Delete :LSUpdateChannel" "$APP_PATH/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :LSUpdateChannel string prerelease" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :LSUpdateChannel' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist"

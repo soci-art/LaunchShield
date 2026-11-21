@@ -661,8 +661,10 @@ struct ContentView: View {
                                                                             appName: candidate.appName,
                                                                             relativePath: candidate.relativePath) {
                                                 savedLocalRuleIDs.insert(candidate.id)
+                                                state.log("LaunchHack 已存为本地规则：\(candidate.appName)（\(ownerID)）\(candidate.relativePath)", .success)
                                             } else {
                                                 state.alertText = "没能存为本地规则：路径不安全，或本机规则库异常。"
+                                                state.log("LaunchHack 存为本地规则失败：\(candidate.appName)（\(ownerID)）\(candidate.relativePath)", .warning)
                                             }
                                         }
                                         .font(.system(size: 12, weight: .semibold))
@@ -817,6 +819,9 @@ struct ContentView: View {
             sourceRow(name: "AdMob", symbol: "globe", tint: .pink, group: "AdMob")
             rowDivider
             sourceRow(name: "其他广告", symbol: "ellipsis.circle", tint: .gray, group: "其他广告")
+            if state.targetCount(for: AppState.launchHackTargetGroup) > 0 {
+                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", tint: .cyan, group: AppState.launchHackTargetGroup)
+            }
         }
         .padding(.horizontal, 15)
         .panel()

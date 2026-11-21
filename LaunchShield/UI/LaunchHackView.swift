@@ -284,11 +284,21 @@ private enum LaunchHackAssessment {
 private final class LaunchHackModel: ObservableObject {
     @Published var apps: [ContainerInfo] = []
     @Published var candidates: [LaunchHackCandidate] = []
+    /// 关键过程回写应用日志（清单第 34 条）：由视图接上 AppState.log，
+    /// 日志页和诊断日志都能看到 LaunchHack 的扫描与失败。
+    var onLog: ((String, LogLevel) -> Void)?
     @Published var isScanning = false
     @Published var scannedContainers = 0
     @Published var totalContainers = 0
     @Published var visitedFiles = 0
     @Published var scanMessage = "扫描只读取 WQ 当前可访问的容器，不会修改目标 App 文件。"
+
+    /// 主页侧的结果同步进模型（清单第 32 条）：重启恢复的结果、主页处理
+    /// 后标的已冻结、白名单移除，都实时反映到这里，与主页共用同一份数据。
+    /// 内容相同则不动，避免与扫完回推主页形成双向循环。
+    func syncFromState(_ findings: [LaunchHackCandidate]) {
+        if candidates != findings { candidates = findings }
+    }
 
     func setApps(_ containers: [ContainerInfo]) {
         apps = containers
@@ -300,10 +310,12 @@ private final class LaunchHackModel: ObservableObject {
         guard !isScanning else { return }
         guard channel.isAvailable else {
             scanMessage = channel.unavailableReason
+            onLog?("LaunchHack 无法检测：\(channel.unavailableReason)", .warning)
             return
         }
         guard !targets.isEmpty else {
             scanMessage = "没有可扫描的容器。请检查 WQ 通道和应用列表。"
+            onLog?("LaunchHack 无法检测：没有可扫描的容器", .warning)
             return
         }
 
@@ -313,6 +325,7 @@ private final class LaunchHackModel: ObservableObject {
         visitedFiles = 0
         totalContainers = targets.count
         scanMessage = "正在扫描 \(targets.count) 个容器…"
+        onLog?("LaunchHack 开始检测：\(Set(targets.map { $0.appName }).joined(separator: "、"))，共 \(targets.count) 个容器", .info)
 
         DispatchQueue.global(qos: .userInitiated).async {
             var found: [LaunchHackCandidate] = []
@@ -503,6 +516,10 @@ private final class LaunchHackModel: ObservableObject {
                 self.isScanning = false
                 let failureText = failures.isEmpty ? "" : "；\(failures.count) 个容器无法完整读取"
                 self.scanMessage = "扫描完成：访问 \(visitedTotal) 个文件，发现 \(found.count) 个候选资源；媒体分析 \(mediaAnalyzedCount) 项\(failureText)。候选需要人工核验，不会自动冻结。"
+                for failure in failures {
+                    self.onLog?("LaunchHack 容器读取不完整：\(failure)", .warning)
+                }
+                self.onLog?("LaunchHack 检测完成：访问 \(visitedTotal) 个文件，发现 \(found.count) 个候选，媒体分析 \(mediaAnalyzedCount) 项", .success)
             }
         }
     }
@@ -571,12 +588,19 @@ struct LaunchHackView: View {
                 }
             }
         }
-        .onAppear(perform: loadApps)
+        .onAppear {
+            loadApps()
+            model.onLog = { message, level in state.log(message, level) }
+            model.syncFromState(state.launchHackFindings)
+        }
         .onChange(of: state.containers) { _, containers in
             model.setApps(containers)
         }
         .onChange(of: model.candidates) { _, candidates in
             state.syncLaunchHackFindings(candidates)
+        }
+        .onChange(of: state.launchHackFindings) { _, findings in
+            model.syncFromState(findings)
         }
     }
 

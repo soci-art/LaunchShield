@@ -504,16 +504,57 @@ final class AppState: ObservableObject {
         return text
     }
 
+    /// 素材清单里 LaunchHack 结果的分组名（清单第 33 条）。
+    static let launchHackTargetGroup = "LaunchHack 识别"
+
     /// 将 LaunchHack 的扫描结果交回主界面。这里只同步识别证据，不执行文件修改。
+    /// 内容没变时不重复落盘、不重复记日志（主页与 LaunchHack 双向同步防循环）。
     func syncLaunchHackFindings(_ findings: [LaunchHackCandidate]) {
         let filtered = findings.filter { candidate in
             guard let bundleID = candidate.bundleID else { return true }
             return !isWhitelisted(bundleID)
         }
-        launchHackFindings = Array(filtered.prefix(500))
-        persistLaunchHackFindings()
-        if !filtered.isEmpty {
-            log("LaunchHack 识别结果已同步到主界面：\(filtered.count) 项", .success)
+        let newFindings = Array(filtered.prefix(500))
+        if newFindings != launchHackFindings {
+            launchHackFindings = newFindings
+            persistLaunchHackFindings()
+            if !filtered.isEmpty {
+                log("LaunchHack 识别结果已同步到主界面：\(filtered.count) 项", .success)
+            }
+        }
+        refreshLaunchHackTargets()
+    }
+
+    /// 把 LaunchHack 的识别结果同步进素材清单（清单第 33 条）：未冻结、
+    /// 容器还找得到、规则扫描没列过的，转成待处理素材，走主页统一的
+    /// 清零/冻结流程；已冻结的不再列（同规则扫描跳过已冻结的口径）。
+    func refreshLaunchHackTargets() {
+        scanTargets.removeAll { $0.group == Self.launchHackTargetGroup }
+        let existingPaths = Set(scanTargets.map { $0.path })
+        var additions: [TargetFile] = []
+        for candidate in launchHackFindings {
+            guard let bundleID = candidate.bundleID, !candidate.isFrozen else { continue }
+            let root: String?
+            if let groupID = candidate.groupID {
+                root = groupContainers.first { $0.bundleID.caseInsensitiveCompare(groupID) == .orderedSame }?.path
+            } else {
+                root = channel.containerPath(for: bundleID)
+            }
+            guard let root else { continue }
+            let fullPath = root + "/" + candidate.relativePath
+            guard !existingPaths.contains(fullPath) else { continue }
+            guard let item = channel.item(at: fullPath), !item.isDirectory, !item.isSymlink else { continue }
+            additions.append(TargetFile(path: fullPath,
+                                        relativePath: candidate.relativePath,
+                                        group: Self.launchHackTargetGroup,
+                                        note: "LaunchHack 识别（分数 \(candidate.score)）",
+                                        size: item.size,
+                                        isSmallConfig: false,
+                                        bundleID: bundleID,
+                                        appName: candidate.appName))
+        }
+        if !additions.isEmpty {
+            scanTargets.append(contentsOf: additions)
         }
     }
 
@@ -571,6 +612,7 @@ final class AppState: ObservableObject {
                                                         mediaDetails: current.mediaDetails,
                                                         previewData: current.previewData)
         persistLaunchHackFindings()
+        refreshLaunchHackTargets()
     }
 
     /// 识别数据上传由 LaunchShield 主界面发起；LaunchHack 本身只负责扫描和同步。
@@ -647,6 +689,7 @@ final class AppState: ObservableObject {
             if !succeeded.isEmpty { parts.append("已上传：" + succeeded.joined(separator: "、")) }
             if !failed.isEmpty { parts.append("失败：" + failed.joined(separator: "、")) }
             mergedUploadMessage = parts.joined(separator: "；")
+            log("合并上传识别数据：\(mergedUploadMessage)", failed.isEmpty ? .success : .warning)
         }
         func runScanPart() {
             guard hasScan else { finish(); return }
@@ -689,6 +732,8 @@ final class AppState: ObservableObject {
                 if list.isEmpty {
                     self.log("没有读到应用容器列表，可能是系统版本不支持或权限被拒", .warning)
                 }
+                // 容器到位后，把重启恢复的 LaunchHack 结果补进素材清单。
+                self.refreshLaunchHackTargets()
                 completion?()
             }
         }
@@ -996,6 +1041,7 @@ final class AppState: ObservableObject {
                 self.workProgress = nil
                 self.splash = selfSoldSplash
                 self.scanTargets = allTargets
+                self.refreshLaunchHackTargets()
                 self.lastRecognition = recognition
                 self.lastScanSkippedFrozen = skippedFrozen
                 if skippedFrozen > 0 {
@@ -2163,6 +2209,8 @@ final class AppState: ObservableObject {
                                    completion: ((Bool, String) -> Void)? = nil) {
         func report(_ success: Bool, _ message: String) {
             DispatchQueue.main.async {
+                self.log("LaunchHack 处理\(success ? "成功" : "失败")：\(appName)（\(bundleID)）\(relativePath)——\(message)",
+                         success ? .success : .warning)
                 if completion == nil { self.alertText = message }
                 completion?(success, message)
             }
@@ -3715,12 +3763,24 @@ final class AppState: ObservableObject {
         announcementUnread = false
     }
 
+    /// 公告只跟正式版走（清单第 31 条）：本机是预发行时，更新检查查的是
+    /// 预发行，公告另查正式版；本机是正式版时直接用同一份结果，不多发请求。
+    private func handleAnnouncement(from info: GitHubUpdate.VersionInfo) {
+        if GitHubUpdate.isPrereleaseChannel {
+            GitHubUpdate.fetchFormalLatest { [weak self] formalInfo, _ in
+                if let formalInfo { self?.processAnnouncement(formalInfo) }
+            }
+        } else {
+            processAnnouncement(info)
+        }
+    }
+
     private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {
         GitHubUpdate.fetchLatest { [weak self] info, _ in
             guard let self else { completion(); return }
             defer { completion() }
             guard let info else { return }
-            self.processAnnouncement(info)
+            self.handleAnnouncement(from: info)
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
             guard Self.isUpdateAvailable(info, currentVersion: current, currentBuild: self.appBuildNumber) else { return }
             let day = DateFormatter()
@@ -3733,7 +3793,7 @@ final class AppState: ObservableObject {
             self.updateStatus = "有新版本 \(Self.remoteVersionText(info, currentVersion: current))"
             self.presentUpdateAlert(.app)
             let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
-            self.log("检测更新：正式版 \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
+            self.log("检测更新：\(info.isPrerelease ? "预发行" : "正式版") \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
@@ -3749,24 +3809,24 @@ final class AppState: ObservableObject {
                 self.alertText = "检测更新失败：\(message)"
                 return
             }
-            self.processAnnouncement(info)
+            self.handleAnnouncement(from: info)
             let current = self.appVersionText.components(separatedBy: " ").first ?? "0.1.0"
             if Self.isUpdateAvailable(info, currentVersion: current, currentBuild: self.appBuildNumber) {
                 let remoteText = Self.remoteVersionText(info, currentVersion: current)
                 self.updateStatus = "有新版本 \(remoteText)"
                 self.availableVersion = info.version
                 self.availableDownloadURL = info.downloadURL
-                self.alertText = "正式版有新版本：\(remoteText)。点「下载新版」就能下载，下载完分享出去签名。"
+                self.alertText = "\(info.isPrerelease ? "预发行" : "正式版")有新版本：\(remoteText)。点「下载新版」就能下载，下载完分享出去签名。"
             } else {
                 self.updateStatus = "已是最新"
                 self.alertText = "已经是最新版本（\(self.appVersionText)）。"
             }
             let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
-            self.log("检测更新：正式版 \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
+            self.log("检测更新：\(info.isPrerelease ? "预发行" : "正式版") \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
-    /// 下载正式版新版安装包（带进度），下完存在本应用文稿里，等用户分享出去签名。
+    /// 下载新版安装包（带进度），下完存在本应用文稿里，等用户分享出去签名。
     func downloadUpdate() {
         guard availableVersion != nil, let directURL = availableDownloadURL, downloadProgress == nil else { return }
         downloadProgress = 0
