@@ -58,8 +58,13 @@ private enum LaunchHackVisualMatcher {
         request.usesLanguageCorrection = true
         try? VNImageRequestHandler(cgImage: image).perform([request])
         let raw = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        // 汉字区间按 Unicode 码点并进允许集再取反分词：
+        // CharacterSet(charactersIn:) 只收单个字符、拼不出区间，
+        // 旧写法会把中文切成单字再全部过滤掉，文字交集对中文等于失效。
+        var tokenSet = CharacterSet.alphanumerics
+        tokenSet.insert(charactersIn: UnicodeScalar(0x4E00)...UnicodeScalar(0x9FFF))
         let tokens = raw.joined(separator: " ").lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "一-龥")).inverted)
+            .components(separatedBy: tokenSet.inverted)
         return Set(tokens.filter { $0.count >= 2 })
     }
 
@@ -195,6 +200,7 @@ private final class LaunchHackModel: ObservableObject {
             var matches: [LaunchHackCandidate] = []
             var visited = 0
             var mediaCount = 0
+            var hitCap = false
             var failures: [String] = []
             for target in targets {
                 do {
@@ -216,9 +222,15 @@ private final class LaunchHackModel: ObservableObject {
                         let relative = String(file.path.dropFirst(target.rootPath.count + 1))
                         let kind = FileKind.of(relative)
                         guard kind == .image || kind == .video,
-                              file.size > 0, file.size <= 40 * 1024 * 1024,
-                              mediaCount < 320 else { continue }
+                              file.size > 0, file.size <= 40 * 1024 * 1024 else { continue }
+                        // 分析上限单列：撞上时要留标记，完成状态必须明说
+                        // 后面的应用没检查，不许静默截断、假装查全了。
+                        if mediaCount >= 320 { hitCap = true; continue }
                         mediaCount += 1
+                        if mediaCount % 20 == 0 {
+                            let snapshot = mediaCount
+                            DispatchQueue.main.async { self.checkedMedia = snapshot }
+                        }
                         guard let match = LaunchHackVisualMatcher.inspect(path: file.path,
                             relativePath: relative, channel: channel,
                             reference: referenceFeature, referenceText: referenceText),
@@ -245,10 +257,17 @@ private final class LaunchHackModel: ObservableObject {
                 self.visitedFiles = visited
                 self.checkedMedia = mediaCount
                 self.isRunning = false
-                self.status = failures.isEmpty
+                var statusText = failures.isEmpty
                     ? "检索完成：分析 \(mediaCount) 个媒体文件，找到 \(ordered.count) 个高置信度匹配。"
                     : "检索完成但有 \(failures.count) 个容器未能完整读取；结果可能不完整。"
-                self.onLog?(self.status, failures.isEmpty ? .success : .warning)
+                if hitCap {
+                    statusText += "已达到 320 个媒体文件的分析上限，后面的应用没有检查，结果不完整。"
+                }
+                self.status = statusText
+                self.onLog?(statusText, (failures.isEmpty && !hitCap) ? .success : .warning)
+                if hitCap {
+                    self.onLog?("LaunchHack 已达媒体分析上限（320 个），后续应用未检查", .warning)
+                }
                 for failure in failures.prefix(8) { self.onLog?("LaunchHack 容器异常：\(failure)", .warning) }
             }
         }
