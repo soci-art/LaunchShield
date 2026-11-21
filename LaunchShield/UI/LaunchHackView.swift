@@ -967,6 +967,9 @@ struct LaunchHackView: View {
                     if !governanceResults.isEmpty || isGovernanceRunning {
                         governanceReportPanel
                     }
+                    if !model.candidates.isEmpty || model.checkpoint(for: .baseline) != nil {
+                        effectReviewPanel
+                    }
                     professionalModeCard
                     if isProfessionalMode {
                         sourceIntelPanel
@@ -1389,6 +1392,134 @@ struct LaunchHackView: View {
         }
         .padding(16)
         .panel()
+    }
+
+    private var latestTraceStage: LaunchHackTraceStage? {
+        if model.checkpoint(for: .adReappeared) != nil { return .adReappeared }
+        if model.checkpoint(for: .afterRestart) != nil { return .afterRestart }
+        if model.checkpoint(for: .afterFreeze) != nil { return .afterFreeze }
+        return nil
+    }
+
+    private var effectReviewPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("处理效果复查", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                if model.isTracking { ProgressView() }
+            }
+            Text("先在处理前建立基线，再按实际情况记录处理后、重启后或广告再次出现时的状态。这里只比较可访问文件的变化，不会自动判断广告是否消失。")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                model.captureCheckpoint(stage: .baseline, targets: trackingTargets, channel: state.channel)
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.checkpoint(for: .baseline) == nil ? "第 1 步 · 建立处理前基线" : "更新处理前基线")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(model.checkpoint(for: .baseline).map { "已记录 · \($0.createdAt.formatted(date: .abbreviated, time: .shortened))" } ?? "建议在执行治理前记录")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.secondaryText)
+                    }
+                    Spacer()
+                    Image(systemName: model.checkpoint(for: .baseline) == nil ? "flag.checkered" : "checkmark.circle.fill")
+                        .foregroundStyle(model.checkpoint(for: .baseline) == nil ? Color.accentCyan : Color.green)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.isTracking || model.isScanning || !state.channel.isAvailable)
+
+            HStack(spacing: 7) {
+                effectReviewAction(.afterFreeze, title: "处理后")
+                effectReviewAction(.afterRestart, title: "重启后")
+                effectReviewAction(.adReappeared, title: "广告复显")
+            }
+
+            if model.isTracking {
+                Text(model.trackingMessage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.secondaryText)
+            } else if model.checkpoint(for: .baseline) == nil {
+                Text("尚未建立基线。建立后才能比较处理前后的变化。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.secondaryText)
+            } else if let stage = latestTraceStage,
+                      let result = model.traceChanges(for: stage) {
+                let added = result.changes.filter { $0.status.contains("新增") }.count
+                let deleted = result.changes.filter { $0.status.contains("删除") }.count
+                let changed = result.changes.filter {
+                    $0.status.contains("内容替换") || $0.status.contains("文件变化")
+                }.count
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("最近一次复查：\(stage.title)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    HStack(spacing: 12) {
+                        traceMetric("新增", added)
+                        traceMetric("删除", deleted)
+                        traceMetric("内容变化", changed)
+                    }
+                    if result.changes.isEmpty {
+                        Text("未检测到可比较的文件变化；这不等于已确认广告消失。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.secondaryText)
+                    } else {
+                        Text("检测到 \(result.changes.count) 项变化。专业模式可查看具体路径和差异。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.secondaryText)
+                    }
+                    if !result.incomplete.isEmpty {
+                        Text("\(result.incomplete.count) 个容器无法完整对比，结果可能不完整。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.orange)
+                    }
+                }
+                .padding(10)
+                .background(Color.primaryText.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            } else if let baseline = model.checkpoint(for: .baseline) {
+                Text("基线已建立（\(baseline.containers.count) 个容器）。处理后选择上方对应阶段记录复查。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.secondaryText)
+            }
+
+            if !model.trackingMessage.isEmpty && !model.isTracking {
+                Text(model.trackingMessage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.secondaryText)
+                    .lineLimit(3)
+            }
+        }
+        .padding(15)
+        .panel()
+    }
+
+    private func effectReviewAction(_ stage: LaunchHackTraceStage, title: String) -> some View {
+        let checkpoint = model.checkpoint(for: stage)
+        return Button {
+            model.captureCheckpoint(stage: stage, targets: trackingTargets, channel: state.channel)
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: checkpoint == nil ? "circle" : "checkmark.circle.fill")
+                    .foregroundStyle(checkpoint == nil ? Color.accentCyan : Color.green)
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                if let checkpoint {
+                    Text(checkpoint.createdAt.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 8))
+                        .foregroundStyle(Color.secondaryText)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+        }
+        .buttonStyle(.bordered)
+        .disabled(model.isTracking || model.isScanning || model.checkpoint(for: .baseline) == nil || !state.channel.isAvailable)
     }
 
     private var tracePanel: some View {
