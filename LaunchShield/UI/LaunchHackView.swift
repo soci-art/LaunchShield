@@ -1,6 +1,8 @@
 import SwiftUI
 import ImageIO
 import UIKit
+import AVFoundation
+import AVKit
 
 private struct LaunchHackScanTarget: Hashable {
     let bundleID: String
@@ -9,11 +11,31 @@ private struct LaunchHackScanTarget: Hashable {
     let groupID: String?
 }
 
-/// 图片墙的一张图：扫描时按路径证据排队、解码出来的大图，自带
-/// 完整路径身份；用户点确认后按原路径生成候选、同步回主页处理
+/// 素材墙里的一项：静态图、视频、动图，或成套出现的动画/网页
+/// 包（第 69 条）。扫描时按路径证据排队、解码出预览，自带完整
+/// 路径身份；用户点确认后按原路径生成候选、同步回主页处理
 /// （Grace 2026-11-21 定：机器筛、人认图）。
 /// 落盘时不存预览图（体积大），重开页面按路径重新解码补回。
 private struct LaunchHackGalleryItem: Identifiable, Equatable {
+    enum Kind: String {
+        case image
+        case video
+        case animated
+        case lottie
+        case htmlBundle
+
+        var badge: String {
+            switch self {
+            case .image: return ""
+            case .video: return "视频"
+            case .animated: return "动图"
+            case .lottie: return "Lottie 动画"
+            case .htmlBundle: return "网页包"
+            }
+        }
+        var isBundle: Bool { self == .lottie || self == .htmlBundle }
+    }
+
     let bundleID: String
     let groupID: String?
     let appName: String
@@ -25,11 +47,34 @@ private struct LaunchHackGalleryItem: Identifiable, Equatable {
     let pixelHeight: Int
     let pathScore: Int
     var previewData: Data?
+    /// 第 69 条：素材种类，旧落盘没有这个字段、解码默认静态图。
+    var kind: Kind = .image
+    /// 视频时长（秒），只有视频有。
+    var durationSeconds: Double? = nil
+    /// 成套素材的文件数与内容摘要（名字＋大小），只有成套有。
+    var bundleFileCount: Int = 0
+    var bundleContents: [String] = []
+    /// 动图的原始数据（不落盘，重开页面重新探补回），播放用。
+    var animationData: Data? = nil
 
     var id: String { (groupID ?? "app") + "|" + relativePath }
     var folderPath: String { (relativePath as NSString).deletingLastPathComponent }
     var folderName: String {
         folderPath.isEmpty ? "（根目录）" : (folderPath as NSString).lastPathComponent
+    }
+    /// 格子下面的名字：成套素材显示文件夹自己的名字，其余显示
+    /// 所在文件夹名。
+    var tileCaption: String {
+        kind.isBundle ? (relativePath as NSString).lastPathComponent : folderName
+    }
+    /// 标记按钮文案，按种类换词。
+    var markButtonText: String {
+        switch kind {
+        case .image: return "就是这张，标记为广告图"
+        case .video: return "就是这个，标记为广告视频"
+        case .animated: return "就是这个，标记为广告动图"
+        case .lottie, .htmlBundle: return "整个文件夹，标记为广告素材"
+        }
     }
 }
 
@@ -37,6 +82,7 @@ extension LaunchHackGalleryItem: Codable {
     private enum CodingKeys: String, CodingKey {
         case bundleID, groupID, appName, rootPath, relativePath
         case size, modifiedAt, pixelWidth, pixelHeight, pathScore
+        case kind, durationSeconds, bundleFileCount, bundleContents
     }
 
     init(from decoder: Decoder) throws {
@@ -51,7 +97,14 @@ extension LaunchHackGalleryItem: Codable {
         pixelWidth = try box.decode(Int.self, forKey: .pixelWidth)
         pixelHeight = try box.decode(Int.self, forKey: .pixelHeight)
         pathScore = try box.decode(Int.self, forKey: .pathScore)
+        // 第 69 条新增字段：旧落盘没有，一律给默认值（第 53 条
+        // 教训：给持久化结构加字段必须走 decodeIfPresent）。
+        kind = Kind(rawValue: try box.decodeIfPresent(String.self, forKey: .kind) ?? "") ?? .image
+        durationSeconds = try box.decodeIfPresent(Double.self, forKey: .durationSeconds)
+        bundleFileCount = try box.decodeIfPresent(Int.self, forKey: .bundleFileCount) ?? 0
+        bundleContents = try box.decodeIfPresent([String].self, forKey: .bundleContents) ?? []
         previewData = nil
+        animationData = nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -66,6 +119,10 @@ extension LaunchHackGalleryItem: Codable {
         try box.encode(pixelWidth, forKey: .pixelWidth)
         try box.encode(pixelHeight, forKey: .pixelHeight)
         try box.encode(pathScore, forKey: .pathScore)
+        try box.encode(kind.rawValue, forKey: .kind)
+        try box.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
+        try box.encode(bundleFileCount, forKey: .bundleFileCount)
+        try box.encode(bundleContents, forKey: .bundleContents)
     }
 }
 
@@ -88,6 +145,9 @@ private enum LaunchHackImageProbe {
         let pixelHeight: Int
         let previewData: Data?
         let detail: String
+        /// 第 69 条：帧数（动图 >1）与动图原始数据（播放用）。
+        let frameCount: Int
+        let animationData: Data?
     }
 
     static func probe(path: String, relativePath: String, channel: Channel) -> Result? {
@@ -106,6 +166,10 @@ private enum LaunchHackImageProbe {
             let size = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
             guard size > 0, size <= 40 * 1024 * 1024 else { return nil }
             guard let source = CGImageSourceCreateWithURL(localURL as CFURL, nil) else { return nil }
+            let frameCount = CGImageSourceGetCount(source)
+            // 动图把原始数据带回去放着播；太大的不带（只上墙第一帧）。
+            let animationData = (frameCount > 1 && size <= 10 * 1024 * 1024)
+                ? try? Data(contentsOf: localURL) : nil
             // 解码按方向标记摆正、限尺寸（手机照片常躺着存，靠标记
             // 摆正显示；墙上展示与量尺寸都要摆正后的）。
             let options: [CFString: Any] = [
@@ -129,9 +193,160 @@ private enum LaunchHackImageProbe {
             }
             return Result(pixelWidth: image.width, pixelHeight: image.height,
                           previewData: preview,
-                          detail: "图片 · \(image.width) × \(image.height)")
+                          detail: "图片 · \(image.width) × \(image.height)",
+                          frameCount: frameCount,
+                          animationData: animationData)
         } catch {
             return nil
+        }
+    }
+}
+
+/// 第 69 条：视频探测——拷到本地后读时长、画面尺寸，抽一帧当
+/// 墙上的预览图。系统播放器认不出的格式（webm/mkv 等）探测会
+/// 失败，那些视频只走机器数据线、不上墙。
+private enum LaunchHackVideoProbe {
+    struct Result {
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let durationSeconds: Double
+        let previewData: Data?
+    }
+
+    static func probe(path: String, relativePath: String, channel: Channel) -> Result? {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LaunchHackProbe-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let originalExt = (relativePath as NSString).pathExtension.lowercased()
+            let knownExts: Set<String> = ["mp4", "mov", "m4v"]
+            let ext = knownExts.contains(originalExt) ? originalExt : "mp4"
+            let localURL = folder.appendingPathComponent("asset.\(ext)")
+            try channel.copyToLocal(path: path, destination: localURL.path)
+            let asset = AVURLAsset(url: localURL)
+            let duration = CMTimeGetSeconds(asset.duration)
+            guard duration.isFinite, duration > 0,
+                  let track = asset.tracks(withMediaType: .video).first else { return nil }
+            let natural = track.naturalSize.applying(track.preferredTransform)
+            let width = Int(abs(natural.width))
+            let height = Int(abs(natural.height))
+            guard width > 0, height > 0 else { return nil }
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 900, height: 900)
+            let atSeconds = min(1.0, duration / 2)
+            guard let cg = try? generator.copyCGImage(
+                at: CMTime(seconds: atSeconds, preferredTimescale: 600), actualTime: nil) else { return nil }
+            var preview = UIImage(cgImage: cg).jpegData(compressionQuality: 0.65)
+            if (preview?.count ?? 0) > 160 * 1024 {
+                let scale = min(1, 480.0 / CGFloat(max(cg.width, cg.height)))
+                let thumbSize = CGSize(width: CGFloat(cg.width) * scale,
+                                       height: CGFloat(cg.height) * scale)
+                let renderer = UIGraphicsImageRenderer(size: thumbSize)
+                preview = renderer.jpegData(withCompressionQuality: 0.6) { _ in
+                    UIImage(cgImage: cg).draw(in: CGRect(origin: .zero, size: thumbSize))
+                }
+                if (preview?.count ?? 0) > 160 * 1024 { preview = nil }
+            }
+            return Result(pixelWidth: width, pixelHeight: height,
+                          durationSeconds: duration, previewData: preview)
+        } catch {
+            return nil
+        }
+    }
+}
+
+/// 第 69 条：动图播放——把 GIF/动图 WebP 的帧解出来拼成会动的
+/// 图，交给 UIImageView 播。帧数和总时长都封顶，免得长动图吃内存。
+private enum LaunchHackAnimated {
+    static func animatedImage(from data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let count = CGImageSourceGetCount(source)
+        guard count > 1 else { return UIImage(data: data) }
+        var frames: [UIImage] = []
+        var total: TimeInterval = 0
+        for index in 0..<min(count, 90) {
+            guard let cg = CGImageSourceCreateImageAtIndex(source, index, nil) else { continue }
+            frames.append(UIImage(cgImage: cg))
+            let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+            let gif = props?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+            let webp = props?[kCGImagePropertyWebPDictionary] as? [CFString: Any]
+            let delay = (gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
+                ?? (gif?[kCGImagePropertyGIFDelayTime] as? Double)
+                ?? (webp?[kCGImagePropertyWebPUnclampedDelayTime] as? Double)
+                ?? (webp?[kCGImagePropertyWebPDelayTime] as? Double) ?? 0.1
+            total += max(delay, 0.02)
+            if total > 20 { break }
+        }
+        guard frames.count > 1 else { return UIImage(data: data) }
+        return UIImage.animatedImage(with: frames, duration: max(total, 0.1))
+    }
+}
+
+private struct AnimatedImageView: UIViewRepresentable {
+    let data: Data
+
+    func makeUIView(context: Context) -> UIImageView {
+        let view = UIImageView()
+        view.contentMode = .scaleAspectFit
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.image = LaunchHackAnimated.animatedImage(from: data)
+        view.startAnimating()
+        return view
+    }
+
+    func updateUIView(_ uiView: UIImageView, context: Context) {}
+}
+
+/// 第 69 条：视频详情里的播放区——打开详情才把视频拷到本地播，
+/// 关掉就删临时文件。拷不下来或格式不支持时给一句说明，标记
+/// 照样能标。
+private struct LaunchHackVideoPlayerView: View {
+    let item: LaunchHackGalleryItem
+    let channel: Channel
+    @State private var player: AVPlayer?
+    @State private var tempURL: URL?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let player {
+                VideoPlayer(player: player)
+            } else if failed {
+                Text("这个视频在本机播不了（格式不支持或文件读不到），可以照样标记它。")
+                    .font(.system(size: 13)).foregroundStyle(Color.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+            } else {
+                ProgressView()
+            }
+        }
+        .task {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("LaunchHackPlay-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let originalExt = (item.relativePath as NSString).pathExtension.lowercased()
+                let knownExts: Set<String> = ["mp4", "mov", "m4v"]
+                let ext = knownExts.contains(originalExt) ? originalExt : "mp4"
+                let url = folder.appendingPathComponent("video.\(ext)")
+                try channel.copyToLocal(path: item.rootPath + "/" + item.relativePath,
+                                        destination: url.path)
+                tempURL = url
+                let p = AVPlayer(url: url)
+                player = p
+                p.play()
+            } catch {
+                failed = true
+            }
+        }
+        .onDisappear {
+            player?.pause()
+            if let tempURL { try? FileManager.default.removeItem(at: tempURL.deletingLastPathComponent()) }
         }
     }
 }
@@ -236,7 +451,7 @@ private final class LaunchHackModel: ObservableObject {
     @Published var gallery: [LaunchHackGalleryItem] = []
     @Published var confirmedGalleryIDs: Set<String> = []
     @Published var gallerySmallSkipped = 0
-    @Published var status = "点「开始扫描」，把主页所选应用里的大图列出来，认出哪张是广告就标记哪张。"
+    @Published var status = "点「开始扫描」，把主页所选应用里的大图和动态素材列出来，认出哪个是广告就标记哪个。"
     /// 本轮扫描所属的目标应用；图片墙落盘与恢复按它对号。
     private var sessionTargetID = ""
     var onLog: ((String, LogLevel) -> Void)?
@@ -264,7 +479,7 @@ private final class LaunchHackModel: ObservableObject {
         checkedMedia = 0
         totalContainers = 0
         isRunning = false
-        status = "点「开始扫描」，把主页所选应用里的大图列出来，认出哪张是广告就标记哪张。"
+        status = "点「开始扫描」，把主页所选应用里的大图和动态素材列出来，认出哪个是广告就标记哪个。"
         sessionTargetID = ""
         restoreSessionIfNeeded(state: state)
     }
@@ -312,17 +527,34 @@ private final class LaunchHackModel: ObservableObject {
     }
 
     private func refillPreviews(channel: Channel) {
-        let missing = gallery.filter { $0.previewData == nil }
+        // 成套素材没有预览图，天生就是空的，不用补；其余按种类
+        // 各自重新探测（视频抽帧、动图连原始数据一起补回）。
+        let missing = gallery.filter { !$0.kind.isBundle && $0.previewData == nil }
         guard !missing.isEmpty else { return }
         DispatchQueue.global(qos: .utility).async {
             for item in missing {
-                guard let probe = LaunchHackImageProbe.probe(
-                    path: item.rootPath + "/" + item.relativePath,
-                    relativePath: item.relativePath, channel: channel) else { continue }
-                let preview = probe.previewData
-                DispatchQueue.main.async {
-                    if let index = self.gallery.firstIndex(where: { $0.id == item.id }) {
-                        self.gallery[index].previewData = preview
+                let full = item.rootPath + "/" + item.relativePath
+                if item.kind == .video {
+                    guard let probe = LaunchHackVideoProbe.probe(
+                        path: full, relativePath: item.relativePath, channel: channel) else { continue }
+                    let preview = probe.previewData
+                    DispatchQueue.main.async {
+                        if let index = self.gallery.firstIndex(where: { $0.id == item.id }) {
+                            self.gallery[index].previewData = preview
+                        }
+                    }
+                } else {
+                    guard let probe = LaunchHackImageProbe.probe(
+                        path: full, relativePath: item.relativePath, channel: channel) else { continue }
+                    let preview = probe.previewData
+                    let animation = probe.animationData
+                    DispatchQueue.main.async {
+                        if let index = self.gallery.firstIndex(where: { $0.id == item.id }) {
+                            self.gallery[index].previewData = preview
+                            if self.gallery[index].kind == .animated {
+                                self.gallery[index].animationData = animation
+                            }
+                        }
                     }
                 }
             }
@@ -390,6 +622,10 @@ private final class LaunchHackModel: ObservableObject {
             var dataCount = 0
             var sniffedMedia = 0
             var galleryPool: [LaunchHackGalleryItem] = []
+            var dynamicPool: [LaunchHackGalleryItem] = []
+            var videoCount = 0
+            var animatedCount = 0
+            var bundleCount = 0
             var smallSkipped = 0
             var failures: [String] = []
             var cancelled = false
@@ -519,7 +755,23 @@ private final class LaunchHackModel: ObservableObject {
                     // 图片墙：大图（短边 ≥300）按证据顺序收录，小图只
                     // 计数不上墙（Grace 2026-11-21 定：小图没必要显示）。
                     if min(probe.pixelWidth, probe.pixelHeight) >= 300 {
-                        if galleryPool.count < 60, let preview = probe.previewData {
+                        if probe.frameCount > 1 {
+                            // 第 69 条：多帧的是动图，进动态素材那摊，
+                            // 墙上点开能看它动。
+                            if dynamicPool.count < 30, let preview = probe.previewData {
+                                var item = LaunchHackGalleryItem(
+                                    bundleID: target.bundleID, groupID: target.groupID,
+                                    appName: target.appName, rootPath: target.rootPath,
+                                    relativePath: relative, size: file.size,
+                                    modifiedAt: file.modified,
+                                    pixelWidth: probe.pixelWidth, pixelHeight: probe.pixelHeight,
+                                    pathScore: imageEntry.score, previewData: preview)
+                                item.kind = .animated
+                                item.animationData = probe.animationData
+                                dynamicPool.append(item)
+                                animatedCount += 1
+                            }
+                        } else if galleryPool.count < 60, let preview = probe.previewData {
                             galleryPool.append(LaunchHackGalleryItem(
                                 bundleID: target.bundleID, groupID: target.groupID,
                                 appName: target.appName, rootPath: target.rootPath,
@@ -531,6 +783,46 @@ private final class LaunchHackModel: ObservableObject {
                     } else {
                         smallSkipped += 1
                     }
+                }
+
+                // 第 69 条：视频上墙——只收路径证据够的（缓存目录
+                // 里的媒体起步 42 分），免得把应用自己的视频内容
+                // 也堆上墙；顺序同样证据高的、时间新的在前。视频
+                // 同时还留在下面的数据线里，机器数据口径不变。
+                let videoWork = entry.work
+                    .filter { (kindOf[$0.path] ?? .other) == .video }
+                    .map { (file: $0, score: LaunchHackAssessment.assess(relativePath: relativeOf($0)).score) }
+                    .filter { $0.score >= 42 }
+                    .sorted { a, b in
+                        if a.score != b.score { return a.score > b.score }
+                        return a.file.modified > b.file.modified
+                    }
+                for videoEntry in videoWork {
+                    if token.isCancelled { cancelled = true; break }
+                    if dynamicPool.count >= 30 { break }
+                    let file = videoEntry.file
+                    // 进度计数不在这里加：视频文件在下面的数据线里
+                    // 还会再处理一次，那边统一计数，免得进度超 100%。
+                    let relative = relativeOf(file)
+                    guard file.size > 0, file.size <= 256 * 1024 * 1024 else { continue }
+                    mediaCount += 1
+                    if mediaCount % 20 == 0 {
+                        let snapshot = mediaCount
+                        DispatchQueue.main.async { self.checkedMedia = snapshot }
+                    }
+                    guard let probe = LaunchHackVideoProbe.probe(path: file.path,
+                        relativePath: relative, channel: channel) else { continue }
+                    var item = LaunchHackGalleryItem(
+                        bundleID: target.bundleID, groupID: target.groupID,
+                        appName: target.appName, rootPath: target.rootPath,
+                        relativePath: relative, size: file.size,
+                        modifiedAt: file.modified,
+                        pixelWidth: probe.pixelWidth, pixelHeight: probe.pixelHeight,
+                        pathScore: videoEntry.score, previewData: probe.previewData)
+                    item.kind = .video
+                    item.durationSeconds = probe.durationSeconds
+                    dynamicPool.append(item)
+                    videoCount += 1
                 }
 
                 for file in dataWork {
@@ -587,6 +879,76 @@ private final class LaunchHackModel: ObservableObject {
                         mediaDetails: nil, previewData: nil))
                     dataCount += 1
                 }
+
+                // 第 69 条：成套素材上墙——Lottie 动画（json＋图片
+                // 成套）和网页广告包（文件夹里有 html）按整个文件
+                // 夹成组列出，用户认的是整套、标记也按整套走。
+                if dynamicPool.count < 30 {
+                    var byFolder: [String: [FileItem]] = [:]
+                    for file in entry.work {
+                        let relative = relativeOf(file)
+                        let folder = (relative as NSString).deletingLastPathComponent
+                        if !folder.isEmpty { byFolder[folder, default: []].append(file) }
+                    }
+                    var testedBundles = 0
+                    for folder in byFolder.keys.sorted() {
+                        if token.isCancelled { cancelled = true; break }
+                        if dynamicPool.count >= 30 || testedBundles >= 24 { break }
+                        guard let members = byFolder[folder] else { continue }
+                        let folderLower = folder.lowercased()
+                        let jsonFiles = members.filter {
+                            (relativeOf($0) as NSString).pathExtension.lowercased() == "json"
+                                && $0.size > 0 && $0.size <= 512 * 1024
+                        }
+                        let htmlFiles = members.filter {
+                            ["html", "htm"].contains((relativeOf($0) as NSString).pathExtension.lowercased())
+                        }
+                        let hasImage = members.contains { (kindOf[$0.path] ?? .other) == .image }
+                        var bundleKind: LaunchHackGalleryItem.Kind? = nil
+                        if !jsonFiles.isEmpty && (folderLower.contains("lottie") || hasImage) {
+                            testedBundles += 1
+                            if folderLower.contains("lottie") {
+                                bundleKind = .lottie
+                            } else {
+                                for json in jsonFiles.prefix(3) {
+                                    guard let data = try? channel.read(json.path, maxBytes: 64 * 1024),
+                                          let text = String(data: data, encoding: .utf8) else { continue }
+                                    if text.contains("\"layers\"") && text.contains("\"assets\"")
+                                        && text.contains("\"v\"") {
+                                        bundleKind = .lottie
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        if bundleKind == nil && !htmlFiles.isEmpty {
+                            let folderScore = LaunchHackAssessment.assess(relativePath: folder).score
+                            let tokenHit = ["mraid", "omsdk", "splash", "advert", "ad_"]
+                                .contains { folderLower.contains($0) }
+                            if folderScore >= 42 || tokenHit { bundleKind = .htmlBundle }
+                        }
+                        guard let kind = bundleKind else { continue }
+                        let totalSize = members.reduce(UInt64(0)) { $0 + $1.size }
+                        let newest = members.map { $0.modified }.max() ?? Date()
+                        let contents = members
+                            .sorted { relativeOf($0) < relativeOf($1) }
+                            .prefix(10)
+                            .map { "\((relativeOf($0) as NSString).lastPathComponent)（\(ByteCountFormatter.string(fromByteCount: Int64($0.size), countStyle: .file))）" }
+                        var item = LaunchHackGalleryItem(
+                            bundleID: target.bundleID, groupID: target.groupID,
+                            appName: target.appName, rootPath: target.rootPath,
+                            relativePath: folder, size: totalSize,
+                            modifiedAt: newest,
+                            pixelWidth: 0, pixelHeight: 0,
+                            pathScore: LaunchHackAssessment.assess(relativePath: folder).score,
+                            previewData: nil)
+                        item.kind = kind
+                        item.bundleFileCount = members.count
+                        item.bundleContents = Array(contents)
+                        dynamicPool.append(item)
+                        bundleCount += 1
+                    }
+                }
             }
 
             if cancelled {
@@ -604,9 +966,10 @@ private final class LaunchHackModel: ObservableObject {
                 if $0.score != $1.score { return $0.score > $1.score }
                 return $0.modifiedAt > $1.modifiedAt
             }.prefix(500))
+            let dynamicTotal = dynamicPool.count
             DispatchQueue.main.async {
                 self.candidates = ordered
-                self.gallery = galleryPool
+                self.gallery = galleryPool + dynamicPool
                 self.gallerySmallSkipped = smallSkipped
                 self.visitedFiles = visited
                 self.checkedMedia = mediaCount
@@ -615,9 +978,11 @@ private final class LaunchHackModel: ObservableObject {
                 self.scanProgress = 1
                 var statusText: String
                 if !failures.isEmpty {
-                    statusText = "扫描完成但有 \(failures.count) 个容器未能完整读取；图片墙可能不完整。"
+                    statusText = "扫描完成但有 \(failures.count) 个容器未能完整读取；素材墙可能不完整。"
+                } else if dynamicTotal > 0 {
+                    statusText = "扫描完成：素材墙列出 \(galleryPool.count) 张大图、\(dynamicTotal) 项动态素材，点开认出广告就标记它。"
                 } else {
-                    statusText = "扫描完成：图片墙列出 \(galleryPool.count) 张大图，点开认出广告图就标记它。"
+                    statusText = "扫描完成：素材墙列出 \(galleryPool.count) 张大图，点开认出广告图就标记它。"
                 }
                 self.status = statusText
                 self.persistSession()
@@ -625,6 +990,9 @@ private final class LaunchHackModel: ObservableObject {
                 self.onLog?("LaunchHack 机器数据（只上传不展示）：按证据命中 \(dataCount) 项", .info)
                 if !galleryPool.isEmpty || smallSkipped > 0 {
                     self.onLog?("LaunchHack 图片墙收录 \(galleryPool.count) 张大图（短边 ≥300），另略过 \(smallSkipped) 张小图", .info)
+                }
+                if dynamicTotal > 0 {
+                    self.onLog?("LaunchHack 动态素材收录 \(dynamicTotal) 项（视频 \(videoCount)、动图 \(animatedCount)、成套 \(bundleCount)）", .info)
                 }
                 if sniffedMedia > 0 {
                     self.onLog?("LaunchHack 有 \(sniffedMedia) 个文件靠内容认出是图片/视频（后缀认不出）", .info)
@@ -634,24 +1002,46 @@ private final class LaunchHackModel: ObservableObject {
         }
     }
 
-    /// 用户在图片墙里亲手认出一张广告图：按它自带的完整路径生成
-    /// 标记，存进主页的标记收集（跨应用保留、同步素材清单），
-    /// 处理在素材清单那边统一做。
+    /// 用户在素材墙里亲手认出一项广告素材：按它自带的完整路径
+    /// 生成标记，存进主页的标记收集（跨应用保留、同步素材
+    /// 清单），处理在素材清单那边统一做。成套素材的标记路径是
+    /// 文件夹本身，同步时按整夹展开（第 69 条）。
     func confirmGalleryItem(_ item: LaunchHackGalleryItem, state: AppState) {
         guard !confirmedGalleryIDs.contains(item.id) else { return }
         confirmedGalleryIDs.insert(item.id)
+        let confirmLine: String
+        let detailLine: String
+        let mediaDetails: String
+        switch item.kind {
+        case .image:
+            confirmLine = "[用户确认] 在可疑图片墙中亲手认出这张是广告图"
+            detailLine = "[只读分析] 图片 · \(item.pixelWidth) × \(item.pixelHeight)，原文件未被修改"
+            mediaDetails = "图片 · \(item.pixelWidth) × \(item.pixelHeight)"
+        case .video:
+            confirmLine = "[用户确认] 在可疑素材墙中亲手认出这个视频是广告"
+            let seconds = Int((item.durationSeconds ?? 0).rounded())
+            detailLine = "[只读分析] 视频 · \(item.pixelWidth) × \(item.pixelHeight) · \(seconds) 秒，原文件未被修改"
+            mediaDetails = "视频 · \(item.pixelWidth) × \(item.pixelHeight) · \(seconds) 秒"
+        case .animated:
+            confirmLine = "[用户确认] 在可疑素材墙中亲手认出这张动图是广告"
+            detailLine = "[只读分析] 动图 · \(item.pixelWidth) × \(item.pixelHeight)，原文件未被修改"
+            mediaDetails = "动图 · \(item.pixelWidth) × \(item.pixelHeight)"
+        case .lottie, .htmlBundle:
+            confirmLine = "[用户确认] 在可疑素材墙中亲手认出这一整套是广告素材（\(item.kind.badge)）"
+            detailLine = "[只读分析] 整个文件夹共 \(item.bundleFileCount) 个文件，原文件未被修改"
+            mediaDetails = "\(item.kind.badge) · 共 \(item.bundleFileCount) 个文件"
+        }
+        let locationLine = item.kind.isBundle
+            ? "[位置] 文件夹：\(item.relativePath)"
+            : "[位置] 所在文件夹：\(item.folderPath.isEmpty ? "（根目录）" : item.folderPath)"
         let candidate = LaunchHackCandidate(
             bundleID: item.bundleID, groupID: item.groupID, appName: item.appName,
             relativePath: item.relativePath, size: item.size, modifiedAt: item.modifiedAt,
             md5: nil,
             isFrozen: state.channel.isImmutable(item.rootPath + "/" + item.relativePath),
             score: 95,
-            evidence: [
-                "[用户确认] 在可疑图片墙中亲手认出这张是广告图",
-                "[位置] 所在文件夹：\(item.folderPath.isEmpty ? "（根目录）" : item.folderPath)",
-                "[只读分析] 图片 · \(item.pixelWidth) × \(item.pixelHeight)，原文件未被修改"
-            ],
-            mediaDetails: "图片 · \(item.pixelWidth) × \(item.pixelHeight)",
+            evidence: [confirmLine, locationLine, detailLine],
+            mediaDetails: mediaDetails,
             previewData: item.previewData)
         state.addLaunchHackMark(candidate)
         persistSession()
@@ -739,10 +1129,10 @@ struct LaunchHackView: View {
                     .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 3) {
                     Text("LaunchHack").font(.system(size: 21, weight: .bold)).foregroundStyle(Color.primaryText)
-                    Text("只列图片 · 手动标记").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
+                    Text("列图片和动态素材 · 手动标记").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
                 }
             }
-            Text("扫描主页所选应用，把大图列出来，你认出哪张是广告就标记哪张。标记会同步到主页素材清单，在那里统一处理；机器按证据查到的数据不展示，上传时默认一并带上。")
+            Text("扫描主页所选应用，把大图、视频、动图和成套的动画/网页包列出来，你认出哪个是广告就标记哪个。标记会同步到主页素材清单，在那里统一处理；机器按证据查到的数据不展示，上传时默认一并带上。")
                 .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
         }
         .padding(.vertical, 3)
@@ -755,7 +1145,7 @@ struct LaunchHackView: View {
                 Text("已标记").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primaryText)
                 Spacer()
                 Text("\(markedCount)").font(.system(size: 26, weight: .bold, design: .rounded)).foregroundStyle(Color.primaryText)
-                Text("张").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
+                Text("项").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
             }
             Button {
                 showUploadConfirm = true
@@ -809,7 +1199,7 @@ struct LaunchHackView: View {
             if model.isRunning {
                 if let progress = model.scanProgress {
                     ProgressView(value: progress)
-                    Text("已访问 \(model.visitedFiles) 个文件，已查看 \(model.checkedMedia) 张图片 · \(Int(progress * 100))%")
+                    Text("已访问 \(model.visitedFiles) 个文件，已查看 \(model.checkedMedia) 个素材 · \(Int(progress * 100))%")
                         .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
                 } else {
                     ProgressView()
@@ -836,12 +1226,12 @@ struct LaunchHackView: View {
             if !model.gallery.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("可疑图片").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primaryText)
+                        Text("可疑素材").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primaryText)
                         Spacer()
-                        Text("\(model.gallery.count) 张大图")
+                        Text("\(model.gallery.count) 项")
                             .font(.system(size: 11, weight: .medium)).foregroundStyle(Color.secondaryText)
                     }
-                    Text("按证据排出的大图，小图已略过。点开看大图，认出是广告就标记它，再回主页素材清单里处理。")
+                    Text("按证据排出的大图和动态素材，小图已略过。点开看：视频能播、动图会动，成套的看整个文件夹。认出是广告就标记它，再回主页素材清单里处理。")
                         .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
                     // 第 62 条：固定三列、每格等大正方形；图片用
                     // overlay 塞进格子并裁切，绝不溢出压到邻格；
@@ -855,8 +1245,38 @@ struct LaunchHackView: View {
                                         .overlay {
                                             if let data = item.previewData, let ui = UIImage(data: data) {
                                                 Image(uiImage: ui).resizable().scaledToFill()
+                                            } else if item.kind.isBundle {
+                                                // 成套素材没有单张预览图：
+                                                // 图标＋种类＋文件数。
+                                                ZStack {
+                                                    Rectangle().fill(Color.accentCyan.opacity(0.10))
+                                                    VStack(spacing: 5) {
+                                                        Image(systemName: item.kind == .lottie ? "play.square.stack" : "globe")
+                                                            .font(.system(size: 22))
+                                                            .foregroundStyle(Color.accentCyan)
+                                                        Text(item.kind.badge)
+                                                            .font(.system(size: 10, weight: .semibold))
+                                                            .foregroundStyle(Color.primaryText)
+                                                        Text("共 \(item.bundleFileCount) 个文件")
+                                                            .font(.system(size: 9))
+                                                            .foregroundStyle(Color.secondaryText)
+                                                    }
+                                                }
                                             } else {
                                                 Rectangle().fill(Color.secondaryText.opacity(0.15))
+                                            }
+                                        }
+                                        .overlay(alignment: .bottomLeading) {
+                                            // 第 69 条：视频/动图在格子左下
+                                            // 角标明种类，视频带时长。
+                                            if item.kind == .video || item.kind == .animated {
+                                                Text(kindBadgeText(item))
+                                                    .font(.system(size: 9, weight: .semibold))
+                                                    .foregroundStyle(.white)
+                                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                                    .background(Color.black.opacity(0.55),
+                                                                in: RoundedRectangle(cornerRadius: 5))
+                                                    .padding(4)
                                             }
                                         }
                                         .overlay(alignment: .topTrailing) {
@@ -869,7 +1289,7 @@ struct LaunchHackView: View {
                                             }
                                         }
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    Text(item.folderName).font(.system(size: 10)).foregroundStyle(Color.secondaryText)
+                                    Text(item.tileCaption).font(.system(size: 10)).foregroundStyle(Color.secondaryText)
                                         .lineLimit(1)
                                 }
                             }
@@ -886,23 +1306,79 @@ struct LaunchHackView: View {
         }
     }
 
+    /// 格子左下角的种类角标：视频带时长，动图就写「动图」。
+    private func kindBadgeText(_ item: LaunchHackGalleryItem) -> String {
+        switch item.kind {
+        case .video:
+            let total = Int((item.durationSeconds ?? 0).rounded())
+            return "视频 \(total / 60):\(String(format: "%02d", total % 60))"
+        case .animated:
+            return "动图"
+        default:
+            return item.kind.badge
+        }
+    }
+
     private func galleryDetail(_ item: LaunchHackGalleryItem) -> some View {
         NavigationStack {
             // 第 63 条：整页不滚动——图片区占满剩余高度、图缩进
             // 框内，下面的路径信息和标记按钮一屏内直接可见。
             VStack(alignment: .leading, spacing: 12) {
                     ZStack {
-                        if let data = item.previewData, let ui = UIImage(data: data) {
-                            Image(uiImage: ui).resizable().scaledToFit()
+                        switch item.kind {
+                        case .video:
+                            LaunchHackVideoPlayerView(item: item, channel: state.channel)
+                        case .animated:
+                            if let data = item.animationData {
+                                AnimatedImageView(data: data)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            } else if let data = item.previewData, let ui = UIImage(data: data) {
+                                Image(uiImage: ui).resizable().scaledToFit()
+                            }
+                        case .lottie, .htmlBundle:
+                            // 成套素材没有单张图可看：列夹里都有
+                            // 什么，用户对着名单认整套。
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label(item.kind.badge, systemImage: item.kind == .lottie ? "play.square.stack" : "globe")
+                                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(Color.primaryText)
+                                Text("整个文件夹共 \(item.bundleFileCount) 个文件：")
+                                    .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                                ForEach(Array(item.bundleContents.prefix(8).enumerated()), id: \.offset) { _, line in
+                                    Text(line).font(.system(size: 11)).foregroundStyle(Color.secondaryText)
+                                        .lineLimit(1)
+                                }
+                                if item.bundleFileCount > 8 {
+                                    Text("还有 \(item.bundleFileCount - 8) 个文件没列出来。")
+                                        .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        case .image:
+                            if let data = item.previewData, let ui = UIImage(data: data) {
+                                Image(uiImage: ui).resizable().scaledToFit()
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Text(item.relativePath)
                         .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
-                    Text("所在文件夹：\(item.folderPath.isEmpty ? "（根目录）" : item.folderPath)")
-                        .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
-                    Text("尺寸 \(item.pixelWidth) × \(item.pixelHeight) · 大小 \(ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file))")
-                        .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                    if item.kind.isBundle {
+                        Text("这是一个文件夹，标记后夹里的文件会一起进素材清单。")
+                            .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                        Text("共 \(item.bundleFileCount) 个文件 · 总大小 \(ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file))")
+                            .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                    } else {
+                        Text("所在文件夹：\(item.folderPath.isEmpty ? "（根目录）" : item.folderPath)")
+                            .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                        if item.kind == .video {
+                            let total = Int((item.durationSeconds ?? 0).rounded())
+                            Text("尺寸 \(item.pixelWidth) × \(item.pixelHeight) · 时长 \(total / 60):\(String(format: "%02d", total % 60)) · 大小 \(ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file))")
+                                .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                        } else {
+                            Text("尺寸 \(item.pixelWidth) × \(item.pixelHeight) · 大小 \(ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file))")
+                                .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                        }
+                    }
                     if model.confirmedGalleryIDs.contains(item.id) {
                         Label("已标记，会同步到主页素材清单，在那里处理它。", systemImage: "checkmark.circle.fill")
                             .font(.system(size: 13, weight: .medium)).foregroundStyle(.green)
@@ -913,7 +1389,7 @@ struct LaunchHackView: View {
                         } label: {
                             HStack {
                                 Image(systemName: "checkmark.circle")
-                                Text("就是这张，标记为广告图")
+                                Text(item.markButtonText)
                             }
                             .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
                             .frame(maxWidth: .infinity).frame(height: 48)

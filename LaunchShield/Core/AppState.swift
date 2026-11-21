@@ -679,8 +679,28 @@ final class AppState: ObservableObject {
             guard let root else { continue }
             let fullPath = root + "/" + candidate.relativePath
             guard !channel.isImmutable(fullPath) else { continue }
+            guard let item = channel.item(at: fullPath), !item.isSymlink else { continue }
+            if item.isDirectory {
+                // 第 69 条：成套素材（Lottie/网页包）的标记指向
+                // 文件夹本身，同步时把夹里的文件逐个展开成待处理
+                // 素材；处理时整夹冻结的口径照旧。
+                guard let walked = try? channel.walkFiles(at: fullPath, limit: 200) else { continue }
+                for sub in walked where !sub.isDirectory && !sub.isSymlink {
+                    guard !existingPaths.contains(sub.path), !channel.isImmutable(sub.path) else { continue }
+                    let suffix = sub.path.hasPrefix(fullPath + "/")
+                        ? String(sub.path.dropFirst(fullPath.count + 1)) : sub.name
+                    additions.append(TargetFile(path: sub.path,
+                                                relativePath: candidate.relativePath + "/" + suffix,
+                                                group: Self.launchHackTargetGroup,
+                                                note: "LaunchHack 手动标记（整套）",
+                                                size: sub.size,
+                                                isSmallConfig: false,
+                                                bundleID: bundleID,
+                                                appName: candidate.appName))
+                }
+                continue
+            }
             guard !existingPaths.contains(fullPath) else { continue }
-            guard let item = channel.item(at: fullPath), !item.isDirectory, !item.isSymlink else { continue }
             additions.append(TargetFile(path: fullPath,
                                         relativePath: candidate.relativePath,
                                         group: Self.launchHackTargetGroup,
