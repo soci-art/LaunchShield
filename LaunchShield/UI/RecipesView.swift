@@ -86,6 +86,15 @@ struct RecipesView: View {
             }
         }
         .appAlert(state)
+        .overlay {
+            if state.isBusy, let progress = state.workProgress {
+                ZStack {
+                    Color.black.opacity(0.45)
+                        .ignoresSafeArea()
+                    WorkProgressOverlay(progress: progress)
+                }
+            }
+        }
         .confirmationDialog("清除文件不见了的条目？", isPresented: $showClearMissing, titleVisibility: .visible) {
             Button("清除 \(missingCount) 个", role: .destructive) {
                 state.clearMissingRecipes()

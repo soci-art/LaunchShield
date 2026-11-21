@@ -49,10 +49,16 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 }
                 if state.isBusy {
-                    if let progress = state.workProgress {
-                        WorkProgressOverlay(progress: progress)
-                    } else {
-                        BusyOverlay(text: state.busyText.isEmpty ? "正在处理…" : state.busyText)
+                    // 第 78 条：忙碌提示统一弹窗形式——背景变暗、
+                    // 居中一张卡；有真进度画进度条，没有就转圈。
+                    ZStack {
+                        Color.black.opacity(0.45)
+                            .ignoresSafeArea()
+                        if let progress = state.workProgress {
+                            WorkProgressOverlay(progress: progress)
+                        } else {
+                            BusyOverlay(text: state.busyText.isEmpty ? "正在处理…" : state.busyText)
+                        }
                     }
                 }
             }
