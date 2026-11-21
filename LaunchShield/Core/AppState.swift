@@ -38,6 +38,32 @@ struct WorkProgress {
     }
 }
 
+/// 证据文本里的 URL 脱敏（去掉 query 与 fragment，避免 token、追踪参数
+/// 随识别数据上传）。原先住在 LaunchHackView.swift，截图流水线重构时被
+/// 误删，上传路径还在用，这里按原实现恢复这两支函数。
+enum LaunchHackContentAnalyzer {
+    static func displayURL(_ value: String) -> String {
+        guard var components = URLComponents(string: value) else { return value }
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? value
+    }
+
+    /// 对证据句子中的 URL 脱敏，避免 query/fragment 携带 token 或追踪参数。
+    static func displayURLs(in text: String) -> String {
+        let pattern = #"https?://[^\s"'<>]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        var result = text
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            let raw = String(result[range]).trimmingCharacters(in: CharacterSet(charactersIn: ".,);]"))
+            result.replaceSubrange(range, with: displayURL(raw))
+        }
+        return result
+    }
+}
+
 final class AppState: ObservableObject {
     /// LaunchShield 自己的 Bundle ID：永远排除在扫描/勾选/守护范围之外。
     /// 备份就存在自己的容器里，扫自己会把存着的别家广告图备份当素材
@@ -623,8 +649,8 @@ final class AppState: ObservableObject {
             completion?(false)
             return
         }
-        let records: [[String: Any]] = launchHackFindings.map { candidate in
-            [
+        let records: [[String: Any]] = launchHackFindings.map { candidate -> [String: Any] in
+            let record: [String: Any] = [
                 "bundleID": candidate.bundleID as Any? ?? NSNull(),
                 "groupID": candidate.groupID as Any? ?? NSNull(),
                 "appName": candidate.appName,
@@ -637,6 +663,7 @@ final class AppState: ObservableObject {
                 "evidence": candidate.evidence.map { LaunchHackContentAnalyzer.displayURLs(in: $0) },
                 "mediaDetails": candidate.mediaDetails as Any? ?? NSNull()
             ]
+            return record
         }
         let payload: [String: Any] = [
             "schemaVersion": 1,
