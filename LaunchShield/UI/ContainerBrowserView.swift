@@ -78,7 +78,7 @@ struct ContainerBrowserView: View {
 
     private func open(_ item: FileItem) {
         guard !item.isSymlink else {
-            state.alertText = "符号链接不会被打开或跟随。"
+            errorText = "符号链接不会被打开或跟随。"
             return
         }
         if item.isDirectory {
