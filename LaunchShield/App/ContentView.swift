@@ -1072,7 +1072,10 @@ private struct AppWhitelistView: View {
     @State private var manualBundleID = ""
 
     private var filteredApps: [ContainerInfo] {
-        let apps = state.containers.filter { !$0.isGroup && $0.bundleID != AppState.ownBundleID }
+        // 第 79 条：和选目标应用一个口径，系统自带应用不显示。
+        let apps = state.containers.filter {
+            !$0.isGroup && $0.bundleID != AppState.ownBundleID && !AppState.isSystemApp($0)
+        }
         guard !query.isEmpty else { return apps }
         return apps.filter {
             $0.name.localizedCaseInsensitiveContains(query) ||
