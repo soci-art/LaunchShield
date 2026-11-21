@@ -892,7 +892,7 @@ struct LaunchHackView: View {
                 .filter { !$0.path.isEmpty }
                 .map {
                     LaunchHackScanTarget(bundleID: app.bundleID,
-                                         appName: "共享容器 · \\($0.bundleID)",
+                                         appName: "共享容器 · \($0.bundleID)",
                                          rootPath: $0.path,
                                          groupID: $0.bundleID)
                 })
@@ -1018,7 +1018,7 @@ struct LaunchHackView: View {
             if model.isScanning {
                 ProgressView(value: Double(model.scannedContainers),
                              total: Double(max(model.totalContainers, 1)))
-                Text("已检查 \\(model.scannedContainers)/\\(model.totalContainers) 个位置，访问 \\(model.visitedFiles) 个文件")
+                Text("已检查 \(model.scannedContainers)/\(model.totalContainers) 个位置，访问 \(model.visitedFiles) 个文件")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             } else {
@@ -1049,9 +1049,9 @@ struct LaunchHackView: View {
                     .foregroundStyle(model.isScanning ? Color.accentCyan : Color.secondaryText)
             }
             HStack(spacing: 8) {
-                resultMetric("\\(model.candidates.count)", "发现线索")
-                resultMetric("\\(model.candidates.filter { $0.score >= 80 }.count)", "优先核验")
-                resultMetric("\\(model.candidates.filter { $0.bundleID == nil }.count)", "待关联")
+                resultMetric("\(model.candidates.count)", "发现线索")
+                resultMetric("\(model.candidates.filter { $0.score >= 80 }.count)", "优先核验")
+                resultMetric("\(model.candidates.filter { $0.bundleID == nil }.count)", "待关联")
             }
             Text(model.candidates.isEmpty
                  ? "扫描完成后这里只显示数量摘要，完整识别结果会出现在 LaunchShield 主界面。"
