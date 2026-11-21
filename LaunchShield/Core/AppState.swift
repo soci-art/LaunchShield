@@ -223,6 +223,8 @@ final class AppState: ObservableObject {
         scanTargets.removeAll { $0.bundleID.lowercased() == key }
         launchHackFindings.removeAll { $0.bundleID?.lowercased() == key }
         persistLaunchHackFindings()
+        launchHackMarks.removeAll { $0.bundleID?.lowercased() == key }
+        persistLaunchHackMarks()
         candidates.removeAll { $0.bundleID.lowercased() == key }
         selectedCandidatePaths = Set(selectedCandidatePaths.filter { path in candidates.contains { $0.id == path } })
         lastRecognition.removeAll { $0.bundleID.lowercased() == key }
@@ -265,8 +267,12 @@ final class AppState: ObservableObject {
     @Published var recipes: [Recipe] = []
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
-    /// LaunchHack 只读扫描后同步到主界面的识别结果；治理操作统一由主界面发起。
+    /// LaunchHack 机器按证据查出的候选：不展示给用户，只作上传数据
+    /// （Grace 2026-11-21 定）；用户手动标记的另存 launchHackMarks。
     @Published var launchHackFindings: [LaunchHackCandidate] = []
+    /// 用户在图片墙里手动标记的收集：跨应用保留、落盘保存，同步进
+    /// 素材清单处理，上传时作规则候选（Grace 2026-11-21 定）。
+    @Published var launchHackMarks: [LaunchHackCandidate] = []
     @Published var launchHackUploadMessage = ""
     @Published var isUploadingLaunchHackFindings = false
     /// 合并上传（扫描识别数据 + LaunchHack 识别数据）的进度与结果提示。
@@ -358,6 +364,7 @@ final class AppState: ObservableObject {
     init() {
         backupManager = BackupManager(store: store)
         loadLaunchHackFindings()
+        loadLaunchHackMarks()
         UserDefaults.standard.removeObject(forKey: "ls.signMethod")
         signMethod = channel.signMethod
         // 实时检测（清单第 12 条）：应用开着时每 30 分钟自动查一次
@@ -652,14 +659,14 @@ final class AppState: ObservableObject {
         refreshLaunchHackTargets()
     }
 
-    /// 把 LaunchHack 的识别结果同步进素材清单（清单第 33 条）：未冻结、
+    /// 把用户手动标记同步进素材清单（清单第 33/42 条）：未冻结、
     /// 容器还找得到、规则扫描没列过的，转成待处理素材，走主页统一的
-    /// 清零/冻结流程；已冻结的不再列（同规则扫描跳过已冻结的口径）。
+    /// 清零/冻结流程；素材清单不随切换应用清零，标记跨应用保留。
     func refreshLaunchHackTargets() {
         scanTargets.removeAll { $0.group == Self.launchHackTargetGroup }
         let existingPaths = Set(scanTargets.map { $0.path })
         var additions: [TargetFile] = []
-        for candidate in launchHackFindings {
+        for candidate in launchHackMarks {
             guard let bundleID = candidate.bundleID, !candidate.isFrozen else { continue }
             let root: String?
             if let groupID = candidate.groupID {
@@ -669,12 +676,13 @@ final class AppState: ObservableObject {
             }
             guard let root else { continue }
             let fullPath = root + "/" + candidate.relativePath
+            guard !channel.isImmutable(fullPath) else { continue }
             guard !existingPaths.contains(fullPath) else { continue }
             guard let item = channel.item(at: fullPath), !item.isDirectory, !item.isSymlink else { continue }
             additions.append(TargetFile(path: fullPath,
                                         relativePath: candidate.relativePath,
                                         group: Self.launchHackTargetGroup,
-                                        note: "LaunchHack 识别（分数 \(candidate.score)）",
+                                        note: "LaunchHack 手动标记",
                                         size: item.size,
                                         isSmallConfig: false,
                                         bundleID: bundleID,
@@ -721,36 +729,65 @@ final class AppState: ObservableObject {
         launchHackFindings = Array(decoded.prefix(500))
     }
 
-    /// 主界面处理成功后，把对应候选当场标为已冻结，列表和计数立即反映。
-    func markLaunchHackFindingFrozen(_ candidate: LaunchHackCandidate) {
-        guard let index = launchHackFindings.firstIndex(where: { $0.id == candidate.id }) else { return }
-        let current = launchHackFindings[index]
-        guard !current.isFrozen else { return }
-        launchHackFindings[index] = LaunchHackCandidate(bundleID: current.bundleID,
-                                                        groupID: current.groupID,
-                                                        appName: current.appName,
-                                                        relativePath: current.relativePath,
-                                                        size: current.size,
-                                                        modifiedAt: current.modifiedAt,
-                                                        md5: current.md5,
-                                                        isFrozen: true,
-                                                        score: current.score,
-                                                        evidence: current.evidence,
-                                                        mediaDetails: current.mediaDetails,
-                                                        previewData: current.previewData)
-        persistLaunchHackFindings()
-        refreshLaunchHackTargets()
+    // MARK: - LaunchHack 手动标记收集（落盘、跨应用保留）
+
+    private var launchHackMarksURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let directory = base.appendingPathComponent("LaunchShield", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("launchhack-marks.json")
     }
 
-    /// 识别数据上传由 LaunchShield 主界面发起；LaunchHack 本身只负责扫描和同步。
+    func persistLaunchHackMarks() {
+        let stored = launchHackMarks.map { candidate in
+            LaunchHackCandidate(bundleID: candidate.bundleID,
+                                groupID: candidate.groupID,
+                                appName: candidate.appName,
+                                relativePath: candidate.relativePath,
+                                size: candidate.size,
+                                modifiedAt: candidate.modifiedAt,
+                                md5: candidate.md5,
+                                isFrozen: candidate.isFrozen,
+                                score: candidate.score,
+                                evidence: candidate.evidence,
+                                mediaDetails: candidate.mediaDetails,
+                                previewData: nil)
+        }
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        try? data.write(to: launchHackMarksURL, options: [.atomic])
+    }
+
+    private func loadLaunchHackMarks() {
+        guard let data = try? Data(contentsOf: launchHackMarksURL),
+              let decoded = try? JSONDecoder().decode([LaunchHackCandidate].self, from: data) else { return }
+        launchHackMarks = Array(decoded.prefix(500))
+    }
+
+    /// 图片墙里新标记一张：收进标记收集、落盘、同步素材清单。
+    func addLaunchHackMark(_ candidate: LaunchHackCandidate) {
+        if let bundleID = candidate.bundleID, isWhitelisted(bundleID) { return }
+        guard !launchHackMarks.contains(where: { $0.id == candidate.id }) else { return }
+        launchHackMarks.append(candidate)
+        persistLaunchHackMarks()
+        refreshLaunchHackTargets()
+        log("LaunchHack 手动标记已收集：\(candidate.appName) \(candidate.relativePath)", .success)
+    }
+
+    /// 识别数据上传由 LaunchHack 页发起（主页入口已随广告检测结果
+    /// 整块移除）；上传内容为机器候选与手动标记的合并。
     func uploadLaunchHackRecognition(completion: ((Bool) -> Void)? = nil) {
         guard !isUploadingLaunchHackFindings else { completion?(false); return }
-        guard !launchHackFindings.isEmpty else {
+        // 上传内容 = 机器识别的（不展示）＋用户手动标记的，去重合并。
+        let uploadCandidates = launchHackFindings + launchHackMarks.filter { mark in
+            !launchHackFindings.contains { $0.id == mark.id }
+        }
+        guard !uploadCandidates.isEmpty else {
             launchHackUploadMessage = "没有可上传的识别数据。"
             completion?(false)
             return
         }
-        let records: [[String: Any]] = launchHackFindings.map { candidate -> [String: Any] in
+        let records: [[String: Any]] = uploadCandidates.map { candidate -> [String: Any] in
             let record: [String: Any] = [
                 "bundleID": candidate.bundleID as Any? ?? NSNull(),
                 "groupID": candidate.groupID as Any? ?? NSNull(),
@@ -801,6 +838,7 @@ final class AppState: ObservableObject {
     func uploadAllRecognitionData() {
         guard !isUploadingMergedRecognition else { return }
         let findingsCount = launchHackFindings.count
+            + launchHackMarks.filter { mark in !launchHackFindings.contains { $0.id == mark.id } }.count
         let hasFindings = findingsCount > 0
         let hasScan = !lastRecognition.isEmpty
         guard hasFindings || hasScan else {
@@ -870,9 +908,6 @@ final class AppState: ObservableObject {
     func select(_ container: ContainerInfo) {
         target = AppTarget(bundleID: container.bundleID, name: container.name)
         targetChosen = true
-        scanTargets = []
-        launchHackFindings = []
-        persistLaunchHackFindings()
         launchHackUploadMessage = ""
         lastScanSkippedFrozen = 0
         splash = nil
