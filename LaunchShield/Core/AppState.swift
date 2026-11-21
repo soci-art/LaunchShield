@@ -265,6 +265,7 @@ final class AppState: ObservableObject {
     @Published var downloadProgress: Double?
     @Published var downloadedIPA: URL?
     @Published var recipes: [Recipe] = []
+    @Published var directoryGuards: [DirectoryGuard] = []
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
     /// LaunchHack 机器按证据查出的候选：不展示给用户，只作上传数据
@@ -446,6 +447,7 @@ final class AppState: ObservableObject {
         didBootstrap = true
 
         recipes = store.file.recipes
+        directoryGuards = store.file.directoryGuards
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
         if let loadFailure = store.loadFailure {
             log("本机守护库读取失败，已阻止覆盖原数据：\(loadFailure)", .warning)
@@ -1030,6 +1032,58 @@ final class AppState: ObservableObject {
         return (nil, false)
     }
 
+    // MARK: - 文件夹守护（第 52 条：优先冻结文件夹）
+
+    /// 这些是容器里的大区根，本身太宽，绝不整夹守护/冻结；
+    /// 要管也是管它们下面的具体文件夹。
+    private static let genericGuardParents: Set<String> = [
+        "Library", "Documents", "tmp", "SystemData",
+        "Library/Caches", "Library/Preferences", "Library/WebKit",
+        "Library/Caches/WebKit", "Library/Caches/WebKit/NetworkCache",
+        "Library/Caches/WebKit/NetworkCache/Version 17",
+        "Library/Caches/WebKit/NetworkCache/Version 17/Records"
+    ]
+
+    /// 一个文件所在的文件夹（容器内相对路径）；在容器根目录、
+    /// 路径不安全或属于大区根时返回 nil，不登记守护。
+    static func guardParentDirectory(of relativePath: String) -> String? {
+        guard let slash = relativePath.lastIndex(of: "/") else { return nil }
+        let parent = String(relativePath[..<slash])
+        guard !parent.isEmpty,
+              RecipeEngine.isSafeRelativePath(parent),
+              !genericGuardParents.contains(parent) else { return nil }
+        // WebKit 的缓存是应用网页内容的命脉，整夹冻容易把应用
+        // 弄坏（清单第 52 条边界：这类单独定口径），不自动守护。
+        if parent.contains("WebKit") { return nil }
+        return parent
+    }
+
+    /// 按一个文件生成它所在文件夹的守护记录；不适合整夹管的返回 nil。
+    func makeDirectoryGuard(bundleID: String, appName: String,
+                            groupID: String?, fileRelativePath: String) -> DirectoryGuard? {
+        guard let parent = AppState.guardParentDirectory(of: fileRelativePath) else { return nil }
+        return DirectoryGuard(id: UUID(), bundleID: bundleID, appName: appName,
+                              groupID: groupID, relativePath: parent, createdAt: Date())
+    }
+
+    /// 删掉一条文件夹守护（只停止今后的巡查和整夹冻结，已经冻结的
+    /// 文件仍按各自的守护记录管理）；顺手把文件夹本身解冻。
+    func removeDirectoryGuard(_ guardItem: DirectoryGuard) {
+        directoryGuards.removeAll { $0.id == guardItem.id }
+        store.file.directoryGuards = directoryGuards
+        if !store.save() {
+            log("文件夹守护删除了，但没能保存到本机", .warning)
+        }
+        if let root = channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) {
+            let full = root + "/" + guardItem.relativePath
+            if channel.isImmutable(full) {
+                do { try channel.setImmutable(full, false) }
+                catch { log("文件夹解冻失败：\(guardItem.relativePath)：\(error.localizedDescription)", .warning) }
+            }
+        }
+        log("已移除文件夹守护：\(guardItem.appName) · \(guardItem.relativePath)", .notice)
+    }
+
     /// Names of apps the latest scan found ad material in (for the find-ad guide).
     var appsWithAds: [String] {
         let fromRecognition = lastRecognition
@@ -1330,6 +1384,41 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 第 52 条：清零按文件夹扩展——某个待清文件所在的文件夹里，
+    /// 其他文件一并纳入这次清零（整夹一起备份、截断、冻结），
+    /// 不再只清被点名的那几个文件。必须在后台队列调用。
+    private func expandedWithFolderSiblings(_ targets: [TargetFile]) -> [TargetFile] {
+        var result = targets
+        var seen = Set(targets.map { $0.path })
+        var walkedDirs = Set<String>()
+        var added = 0
+        for target in targets {
+            guard added < 800,
+                  let parentRelative = AppState.guardParentDirectory(of: target.relativePath),
+                  let slash = target.relativePath.lastIndex(of: "/") else { continue }
+            let fileName = String(target.relativePath[target.relativePath.index(after: slash)...])
+            let parentFull = String(target.path.dropLast(fileName.count + 1))
+            guard walkedDirs.insert(parentFull).inserted,
+                  let items = try? channel.walkFiles(at: parentFull, limit: 2000) else { continue }
+            for item in items where !item.isDirectory && !item.isSymlink && !seen.contains(item.path) {
+                guard added < 800 else { break }
+                let suffix = item.path.hasPrefix(parentFull + "/")
+                    ? String(item.path.dropFirst(parentFull.count + 1)) : item.name
+                seen.insert(item.path)
+                result.append(TargetFile(path: item.path,
+                                         relativePath: parentRelative + "/" + suffix,
+                                         group: target.group, note: "同文件夹整夹处理",
+                                         size: item.size, isSmallConfig: false,
+                                         bundleID: target.bundleID, appName: target.appName))
+                added += 1
+            }
+        }
+        if added > 0 {
+            log("按文件夹整夹处理：同一文件夹里另带出 \(added) 个文件一起清零", .notice)
+        }
+        return result
+    }
+
     private func performClear() {
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
@@ -1348,6 +1437,8 @@ final class AppState: ObservableObject {
         log("开始清零：\(targets.count) 个文件，逐个先备份再截断", .notice)
 
         work.async {
+            // 第 52 条：先按文件夹把同夹文件带进来，整夹一起清。
+            let targets = self.expandedWithFolderSiblings(targets)
             var done = 0
             var frozenCount = 0
             var freezeFailureCount = 0
@@ -1505,6 +1596,35 @@ final class AppState: ObservableObject {
                 }
             }
 
+            // 第 52 条：这次清的文件所在的文件夹，逐个登记守护并
+            // 把文件夹本身冻上。之后新广告落回这些文件夹，启动
+            // 巡查会一并清掉，不再「第三次冷启动又出现」。
+            var newGuards: [DirectoryGuard] = []
+            for file in targets {
+                let owner = file.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : file.bundleID
+                let ownerName = file.appName.isEmpty ? LocalADBlockRule.dynamicSplashDisplayName : file.appName
+                let located = self.locateFile(path: file.path, relativePath: file.relativePath, ownerID: owner)
+                guard located.isKnown,
+                      let guardItem = self.makeDirectoryGuard(bundleID: owner, appName: ownerName,
+                                                              groupID: located.groupID,
+                                                              fileRelativePath: file.relativePath),
+                      !newGuards.contains(where: { $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID })
+                else { continue }
+                newGuards.append(guardItem)
+            }
+            for guardItem in newGuards {
+                guard let root = self.channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) else { continue }
+                let full = root + "/" + guardItem.relativePath
+                guard !self.channel.isImmutable(full) else { continue }
+                do {
+                    try self.channel.setImmutable(full, true)
+                    guard self.channel.isImmutable(full) else { throw ChannelFailure("文件夹冻结状态未能确认") }
+                    self.log("已冻结文件夹（整夹守护）：\(guardItem.relativePath)", .success)
+                } catch {
+                    self.log("冻结文件夹失败：\(guardItem.relativePath)：\(error.localizedDescription)", .warning)
+                }
+            }
+
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
@@ -1514,8 +1634,15 @@ final class AppState: ObservableObject {
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
+                for guardItem in newGuards {
+                    let exists = self.store.file.directoryGuards.contains {
+                        $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID
+                    }
+                    if !exists { self.store.file.directoryGuards.append(guardItem) }
+                }
                 let recipesSaved = self.store.save()
                 self.recipes = self.store.file.recipes
+                self.directoryGuards = self.store.file.directoryGuards
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 if !recipesSaved {
                     self.log("文件已清零，但守护配方未能保存到本机；重启后可能无法自动复查", .warning)
@@ -1914,6 +2041,7 @@ final class AppState: ObservableObject {
             var freezeFailureCount = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
+            var newGuards: [DirectoryGuard] = []
             for candidate in selected {
                 let root = candidate.containerRoot.isEmpty
                     ? (self.channel.containerPath(for: candidate.bundleID) ?? "")
@@ -2027,6 +2155,13 @@ final class AppState: ObservableObject {
                                                  lastCheckedAt: Date(),
                                                  lastState: RecipeState.normal.rawValue,
                                                  groupID: located.groupID))
+                        // 第 52 条：确认素材清零也登记文件夹守护。
+                        if let guardItem = self.makeDirectoryGuard(bundleID: appBundleID, appName: appName,
+                                                                   groupID: located.groupID,
+                                                                   fileRelativePath: candidate.relativePath),
+                           !newGuards.contains(where: { $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID }) {
+                            newGuards.append(guardItem)
+                        }
                     }
                 } catch {
                     let failureMessage = error.localizedDescription
@@ -2054,6 +2189,19 @@ final class AppState: ObservableObject {
                     self.log("清零这个文件失败：\(appName) \(candidate.relativePath)：\(error.localizedDescription)", .warning)
                 }
             }
+            // 第 52 条：登记守护的文件夹本身也冻上（失败只警告）。
+            for guardItem in newGuards {
+                guard let root = self.channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) else { continue }
+                let full = root + "/" + guardItem.relativePath
+                guard !self.channel.isImmutable(full) else { continue }
+                do {
+                    try self.channel.setImmutable(full, true)
+                    guard self.channel.isImmutable(full) else { throw ChannelFailure("文件夹冻结状态未能确认") }
+                    self.log("已冻结文件夹（整夹守护）：\(guardItem.relativePath)", .success)
+                } catch {
+                    self.log("冻结文件夹失败：\(guardItem.relativePath)：\(error.localizedDescription)", .warning)
+                }
+            }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
@@ -2063,8 +2211,15 @@ final class AppState: ObservableObject {
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
+                for guardItem in newGuards {
+                    let exists = self.store.file.directoryGuards.contains {
+                        $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID
+                    }
+                    if !exists { self.store.file.directoryGuards.append(guardItem) }
+                }
                 let recipesSaved = self.store.save()
                 self.recipes = self.store.file.recipes
+                self.directoryGuards = self.store.file.directoryGuards
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 if !recipesSaved {
                     self.log("确认素材已清零，但守护配方未能保存到本机", .warning)
@@ -3392,17 +3547,19 @@ final class AppState: ObservableObject {
 
     /// 目录自动处理：把已知广告目录里新冒出来的非零文件当场备份、清零
     /// 冻结并存入守护列表；名字带冷开/开屏的新目录也一样自动压。
-    /// 范围：有配方的应用＋当前目标＋一键勾选的应用。启动时补扫一遍。
+    /// 范围：有配方的应用＋有文件夹守护的应用＋当前目标＋一键勾选的应用。启动时补扫一遍。
     /// 必须在后台队列调用。
     private func sweepAdDirectories(reason: String) {
         guard channel.isAvailable else { return }
         var bundleIDs = Set(recipes.map { $0.bundleID })
+        bundleIDs.formUnion(directoryGuards.map { $0.bundleID })
         if targetChosen { bundleIDs.insert(target.bundleID) }
         bundleIDs.formUnion(checkedIDs)
         bundleIDs = Set(bundleIDs.filter { !isWhitelisted($0) })
         var cleared = 0
         var newBackups: [BackupRecord] = []
         var newRecipes: [Recipe] = []
+        var newGuards: [DirectoryGuard] = []
         for bundleID in bundleIDs {
             guard cleared < 300, let info = channel.container(for: bundleID) else { continue }
             let files = LocalADBlockRule.targets(container: info.path, channel: channel, splash: nil,
@@ -3411,20 +3568,50 @@ final class AppState: ObservableObject {
                 guard cleared < 300 else { break }
                 // 数据库文件是应用的统计/索引库，常驻占用、清不动，也不是广告素材，跳过。
                 if DatabaseFile.matches(relativePath: file.relativePath) { continue }
-                if autoClearFile(file, source: file.group, newBackups: &newBackups, newRecipes: &newRecipes) {
+                if autoClearFile(file, source: file.group, newBackups: &newBackups, newRecipes: &newRecipes, newGuards: &newGuards) {
                     cleared += 1
                     log("\(reason)清掉新文件：\(info.name) · \(file.relativePath)", .success)
                 }
             }
             cleared += sweepColdLaunchDirs(info: info, cleared: cleared,
-                                           newBackups: &newBackups, newRecipes: &newRecipes)
+                                           newBackups: &newBackups, newRecipes: &newRecipes,
+                                           newGuards: &newGuards)
+            // 第 52 条文件夹守护巡查：守护文件夹里新冒出来的非零
+            // 文件先一并清掉，清完再把文件夹冻回去（顺序反了，
+            // 冻住的文件夹可能挡住清零本身）。
+            for guardItem in directoryGuards where guardItem.bundleID == bundleID {
+                guard cleared < 300,
+                      let root = channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) else { continue }
+                let folderFull = root + "/" + guardItem.relativePath
+                if let items = try? channel.walkFiles(at: folderFull, limit: 2000) {
+                    for item in items where !item.isDirectory && !item.isSymlink && item.size > 0 {
+                        guard cleared < 300 else { break }
+                        let suffix = item.path.hasPrefix(folderFull + "/")
+                            ? String(item.path.dropFirst(folderFull.count + 1)) : item.name
+                        let file = TargetFile(path: item.path,
+                                              relativePath: guardItem.relativePath + "/" + suffix,
+                                              group: "文件夹守护", note: "守护文件夹里新出现的文件",
+                                              size: item.size, isSmallConfig: false,
+                                              bundleID: bundleID, appName: info.name)
+                        if autoClearFile(file, source: "文件夹守护", newBackups: &newBackups, newRecipes: &newRecipes, newGuards: &newGuards) {
+                            cleared += 1
+                            log("文件夹守护清掉新文件：\(info.name) · \(file.relativePath)", .success)
+                        }
+                    }
+                }
+                if !channel.isImmutable(folderFull) {
+                    do { try channel.setImmutable(folderFull, true) }
+                    catch { log("文件夹守护重新冻结失败：\(guardItem.relativePath)：\(error.localizedDescription)", .warning) }
+                }
+            }
         }
         if cleared > 0 {
             log("\(reason)：共清掉 \(cleared) 个新冒出来的广告文件，已备份并冻结", .notice)
         }
-        if !newBackups.isEmpty || !newRecipes.isEmpty {
+        if !newBackups.isEmpty || !newRecipes.isEmpty || !newGuards.isEmpty {
             let backupsToAdd = newBackups
             let recipesToAdd = newRecipes
+            let guardsToAdd = newGuards
             DispatchQueue.main.async {
                 for recipe in recipesToAdd {
                     let exists = self.store.file.recipes.contains {
@@ -3432,10 +3619,17 @@ final class AppState: ObservableObject {
                     }
                     if !exists { self.store.file.recipes.append(recipe) }
                 }
+                for guardItem in guardsToAdd {
+                    let exists = self.store.file.directoryGuards.contains {
+                        $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID
+                    }
+                    if !exists { self.store.file.directoryGuards.append(guardItem) }
+                }
                 if !self.store.save() {
                     self.log("自动清理已完成，但守护配方未能保存到本机；请复查守护列表", .warning)
                 }
                 self.recipes = self.store.file.recipes
+                self.directoryGuards = self.store.file.directoryGuards
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
             }
         } else if cleared > 0 {
@@ -3446,7 +3640,8 @@ final class AppState: ObservableObject {
     /// 自动清一个文件：先备份（备份失败就跳过、不动原文件），再清零
     /// 冻结，并登记成配方。成功返回 true。
     private func autoClearFile(_ file: TargetFile, source: String,
-                               newBackups: inout [BackupRecord], newRecipes: inout [Recipe]) -> Bool {
+                               newBackups: inout [BackupRecord], newRecipes: inout [Recipe],
+                               newGuards: inout [DirectoryGuard]) -> Bool {
         if isWhitelisted(file.bundleID) { return false }
         if DatabaseFile.matches(relativePath: file.relativePath) { return false }
         let ownerID = file.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : file.bundleID
@@ -3526,6 +3721,14 @@ final class AppState: ObservableObject {
                                          lastCheckedAt: Date(),
                                          lastState: RecipeState.normal.rawValue,
                                          groupID: located.groupID))
+                // 第 52 条：自动清掉的文件也把所在文件夹登记守护，
+                // 后来新落进这个文件夹的文件会被巡查一并处理。
+                if let guardItem = makeDirectoryGuard(bundleID: ownerID, appName: ownerName,
+                                                      groupID: located.groupID,
+                                                      fileRelativePath: file.relativePath),
+                   !newGuards.contains(where: { $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID }) {
+                    newGuards.append(guardItem)
+                }
             }
             return true
         } catch {
@@ -3554,7 +3757,8 @@ final class AppState: ObservableObject {
     /// 的目录（系统 SplashBoard 除外），里面的非零文件逐个自动清掉，
     /// 最后把目录本身也冻上，这一档期的包就回不来。返回清掉的文件数。
     private func sweepColdLaunchDirs(info: ContainerInfo, cleared: Int,
-                                     newBackups: inout [BackupRecord], newRecipes: inout [Recipe]) -> Int {
+                                     newBackups: inout [BackupRecord], newRecipes: inout [Recipe],
+                                     newGuards: inout [DirectoryGuard]) -> Int {
         var count = 0
         var visited = 0
         var matched: [String] = []
@@ -3600,7 +3804,7 @@ final class AppState: ObservableObject {
                                               note: "目录名命中冷开/开屏，守护自动压",
                                               size: item.size, isSmallConfig: false,
                                               bundleID: info.bundleID, appName: info.name)
-                        if autoClearFile(file, source: "冷开广告", newBackups: &newBackups, newRecipes: &newRecipes) {
+                        if autoClearFile(file, source: "冷开广告", newBackups: &newBackups, newRecipes: &newRecipes, newGuards: &newGuards) {
                             dirCleared += 1
                             count += 1
                         } else {

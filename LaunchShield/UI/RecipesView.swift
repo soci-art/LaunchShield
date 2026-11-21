@@ -15,7 +15,7 @@ struct RecipesView: View {
         SheetPage("已守护应用") {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if state.recipes.isEmpty {
+                    if state.recipes.isEmpty && state.directoryGuards.isEmpty {
                         emptyCard
                     } else {
                         HStack(spacing: 10) {
@@ -83,6 +83,9 @@ struct RecipesView: View {
                                 .background(Color.accentCyan.opacity(0.10), in: Capsule())
                             }
                             .buttonStyle(.plain)
+                        }
+                        if !state.directoryGuards.isEmpty {
+                            directoryGuardsSection
                         }
                         ForEach(appGroups, id: \.bundleID) { group in
                             appGroupSection(group)
@@ -231,6 +234,55 @@ struct RecipesView: View {
                 }
             }
         }
+    }
+
+    /// 文件夹守护（第 52 条）：清零时按文件夹登记的整夹守护，
+    /// 启动巡查会把这些文件夹里新出现的文件一并清掉。
+    private var directoryGuardsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(Color.accentCyan)
+                Text("文件夹守护")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+            }
+            Text("清零时连文件夹一起冻住的都在这里。以后新广告落回这些文件夹，打开 LaunchShield 时会一并清掉。移除后文件夹会解冻，今后不再巡查这个文件夹。")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(state.directoryGuards) { guardItem in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(Color.secondaryText)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(guardItem.appName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                        Text(guardItem.relativePath)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button {
+                        state.removeDirectoryGuard(guardItem)
+                    } label: {
+                        Text("移除")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.red)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.red.opacity(0.10), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel()
     }
 
     private var emptyCard: some View {

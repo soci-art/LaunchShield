@@ -3,6 +3,7 @@ import Foundation
 struct LibraryFile: Codable {
     var recipes: [Recipe] = []
     var backups: [BackupRecord] = []
+    var directoryGuards: [DirectoryGuard] = []
 }
 
 /// Recipes and the backup index live in Application Support; the original
