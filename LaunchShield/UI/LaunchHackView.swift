@@ -58,6 +58,16 @@ private struct LaunchHackGalleryItem: Identifiable, Equatable {
     var animationData: Data? = nil
 
     var id: String { (groupID ?? "app") + "|" + relativePath }
+
+    /// 第 70 条排序键：像素面积（宽×高），成套素材没有尺寸记 0、排最后。
+    var pixelArea: Int { pixelWidth * pixelHeight }
+
+    static func sortedBySizeDescending(_ items: [LaunchHackGalleryItem]) -> [LaunchHackGalleryItem] {
+        items.sorted {
+            if $0.pixelArea != $1.pixelArea { return $0.pixelArea > $1.pixelArea }
+            return $0.size > $1.size
+        }
+    }
     var folderPath: String { (relativePath as NSString).deletingLastPathComponent }
     var folderName: String {
         folderPath.isEmpty ? "（根目录）" : (folderPath as NSString).lastPathComponent
@@ -519,7 +529,7 @@ private final class LaunchHackModel: ObservableObject {
               session.targetBundleID.caseInsensitiveCompare(state.target.bundleID) == .orderedSame,
               !session.items.isEmpty else { return }
         sessionTargetID = session.targetBundleID
-        gallery = session.items
+        gallery = LaunchHackGalleryItem.sortedBySizeDescending(session.items)
         confirmedGalleryIDs = Set(session.confirmedIDs)
         gallerySmallSkipped = session.smallSkipped
         status = session.status
@@ -969,7 +979,7 @@ private final class LaunchHackModel: ObservableObject {
             let dynamicTotal = dynamicPool.count
             DispatchQueue.main.async {
                 self.candidates = ordered
-                self.gallery = galleryPool + dynamicPool
+                self.gallery = LaunchHackGalleryItem.sortedBySizeDescending(galleryPool + dynamicPool)
                 self.gallerySmallSkipped = smallSkipped
                 self.visitedFiles = visited
                 self.checkedMedia = mediaCount
