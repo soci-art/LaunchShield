@@ -76,8 +76,8 @@ private enum LaunchHackVisualMatcher {
 
     static func inspect(path: String, relativePath: String, channel: Channel,
                         reference: VNFeaturePrintObservation,
-                        referenceText: Set<String>) -> LaunchHackVisualMatch? {
-        let kind = FileKind.of(relativePath)
+                        referenceText: Set<String>,
+                        kind: FileKind) -> LaunchHackVisualMatch? {
         guard kind == .image || kind == .video else { return nil }
 
         let folder = FileManager.default.temporaryDirectory
@@ -85,8 +85,13 @@ private enum LaunchHackVisualMatcher {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
-            let ext = (relativePath as NSString).pathExtension
-            let localURL = folder.appendingPathComponent("asset.\(ext.isEmpty ? "bin" : ext)")
+            // 临时副本的后缀要用系统认得的：原文件靠内容认出来的
+            // （如 .image），原后缀会让解码器认不出格式，按内容给。
+            let originalExt = (relativePath as NSString).pathExtension.lowercased()
+            let knownExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif",
+                                          "bmp", "tiff", "mp4", "mov", "m4v", "avi", "webm", "mkv"]
+            let ext = knownExts.contains(originalExt) ? originalExt : (kind == .image ? "png" : "mp4")
+            let localURL = folder.appendingPathComponent("asset.\(ext)")
             try channel.copyToLocal(path: path, destination: localURL.path)
             let size = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
             guard size > 0, size <= 40 * 1024 * 1024 else { return nil }
@@ -134,6 +139,29 @@ private enum LaunchHackVisualMatcher {
         } catch {
             return nil
         }
+    }
+}
+
+/// 按文件开头字节认图片/视频：SDWebImage 的 .image 缓存、无后缀的
+/// 资源文件靠后缀认不出来，内容才是真的。只读前 16 个字节。
+private enum LaunchHackMediaSniffer {
+    static func sniff(path: String, channel: Channel) -> FileKind? {
+        guard let data = try? channel.read(path, maxBytes: 16), data.count >= 4 else { return nil }
+        let b = [UInt8](data.prefix(12))
+        if b.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return .image }        // PNG
+        if b.starts(with: [0xFF, 0xD8, 0xFF]) { return .image }              // JPEG
+        if b.starts(with: [0x47, 0x49, 0x46, 0x38]) { return .image }        // GIF8
+        if b.starts(with: [0x42, 0x4D]) { return .image }                    // BMP
+        if b.count >= 12, b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46,
+           b[8] == 0x57, b[9] == 0x45, b[10] == 0x42, b[11] == 0x50 {         // RIFF....WEBP
+            return .image
+        }
+        if b.count >= 12, b[4] == 0x66, b[5] == 0x74, b[6] == 0x79, b[7] == 0x70 {  // ....ftyp
+            let brand = String(bytes: b[8..<12], encoding: .ascii) ?? ""
+            if ["heic", "heix", "hevc", "mif1", "msf1", "avif", "avis"].contains(brand) { return .image }
+            if ["isom", "iso2", "iso5", "mp41", "mp42", "avc1", "qt  ", "M4V ", "mmp4", "dash"].contains(brand) { return .video }
+        }
+        return nil
     }
 }
 
@@ -267,6 +295,8 @@ private final class LaunchHackModel: ObservableObject {
             var mediaCount = 0
             var visualCount = 0
             var dataCount = 0
+            var sniffedMedia = 0
+            var closest: [(path: String, distance: Float)] = []
             var failures: [String] = []
 
             // 阶段一：盘点。先把每个容器的文件清单走完，真进度条的
@@ -330,19 +360,34 @@ private final class LaunchHackModel: ObservableObject {
                     configEvidence.append(evidence)
                 }
 
+                // 媒体判定：先看后缀，后缀认不出的再看文件内容
+                // （SDWebImage 的 .image、无后缀缓存靠内容才认得出，
+                // Grace 2026-11-21 定）。
+                var kindOf: [String: FileKind] = [:]
+                for file in entry.work {
+                    let byExt = FileKind.of(relativeOf(file))
+                    if byExt != .other {
+                        kindOf[file.path] = byExt
+                    } else if file.size > 0, file.size <= 40 * 1024 * 1024,
+                              let byContent = LaunchHackMediaSniffer.sniff(path: file.path, channel: channel) {
+                        kindOf[file.path] = byContent
+                        sniffedMedia += 1
+                    } else {
+                        kindOf[file.path] = .other
+                    }
+                }
+
                 // 媒体排队：路径证据分高的、时间新的先比对，真广告
                 // 先冒出来（Grace 2026-11-21 定）；数据文件随后处理。
                 let mediaWork = entry.work
-                    .filter { let kind = FileKind.of(relativeOf($0)); return kind == .image || kind == .video }
+                    .filter { let kind = kindOf[$0.path] ?? .other; return kind == .image || kind == .video }
                     .map { (file: $0, score: LaunchHackAssessment.assess(relativePath: relativeOf($0)).score) }
                     .sorted { a, b in
                         if a.score != b.score { return a.score > b.score }
                         return a.file.modified > b.file.modified
                     }
                     .map { $0.file }
-                let dataWork = entry.work.filter {
-                    let kind = FileKind.of(relativeOf($0)); return kind != .image && kind != .video
-                }
+                let dataWork = entry.work.filter { (kindOf[$0.path] ?? .other) == .other }
 
                 for file in mediaWork {
                     processed += 1
@@ -363,8 +408,12 @@ private final class LaunchHackModel: ObservableObject {
                     }
                     guard let match = LaunchHackVisualMatcher.inspect(path: file.path,
                         relativePath: relative, channel: channel,
-                        reference: referenceFeature, referenceText: referenceText),
-                          match.isStrong else { continue }
+                        reference: referenceFeature, referenceText: referenceText,
+                        kind: kindOf[file.path] ?? .other) else { continue }
+                    // 没过线也把距离留下来：整轮未命中时，日志报最接近
+                    // 的几个，一眼分清图不在还是差一点（Grace 定）。
+                    closest.append((path: relative, distance: match.distance))
+                    guard match.isStrong else { continue }
                     let md5 = file.size <= 32 * 1024 * 1024 ? try? channel.md5(file.path) : nil
                     matches.append(LaunchHackCandidate(bundleID: target.bundleID,
                         groupID: target.groupID, appName: target.appName,
@@ -445,6 +494,15 @@ private final class LaunchHackModel: ObservableObject {
                     : "检索完成但有 \(failures.count) 个容器未能完整读取；结果可能不完整。"
                 self.status = statusText
                 self.onLog?(statusText, failures.isEmpty ? .success : .warning)
+                if sniffedMedia > 0 {
+                    self.onLog?("LaunchHack 有 \(sniffedMedia) 个文件靠内容认出是图片/视频（后缀认不出）", .info)
+                }
+                if visualCount == 0, !closest.isEmpty {
+                    let top = closest.sorted { $0.distance < $1.distance }.prefix(3)
+                        .map { "\($0.path)（距离 \(String(format: "%.4f", $0.distance))）" }
+                        .joined(separator: "；")
+                    self.onLog?("LaunchHack 视觉线未命中，最接近的 \(min(3, closest.count)) 个：\(top)。强匹配线为距离 ≤0.10", .warning)
+                }
                 for failure in failures.prefix(8) { self.onLog?("LaunchHack 容器异常：\(failure)", .warning) }
             }
         }
