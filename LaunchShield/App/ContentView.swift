@@ -571,16 +571,16 @@ struct ContentView: View {
                     SectionHeader(title: "广告检测结果",
                                   subtitle: "已从 LaunchHack 同步；所有处理操作都在这里完成")
                     Spacer()
-                    StatusBadge(text: "\\(state.launchHackFindings.count) 项", tint: .cyan)
+                    StatusBadge(text: "\(state.launchHackFindings.count) 项", tint: .cyan)
                 }
                 HStack(spacing: 8) {
                     SummaryTile(title: "优先核验",
-                                value: "\\(state.launchHackFindings.filter { $0.score >= 80 }.count)",
+                                value: "\(state.launchHackFindings.filter { $0.score >= 80 }.count)",
                                 detail: "高关联线索",
                                 symbol: "exclamationmark.magnifyingglass",
                                 tint: .orange)
                     SummaryTile(title: "其他线索",
-                                value: "\\(state.launchHackFindings.filter { $0.score < 80 }.count)",
+                                value: "\(state.launchHackFindings.filter { $0.score < 80 }.count)",
                                 detail: "需要人工判断",
                                 symbol: "doc.text.magnifyingglass",
                                 tint: .cyan)
@@ -594,10 +594,10 @@ struct ContentView: View {
                                     .foregroundStyle(Color.secondaryText)
                                     .textSelection(.enabled)
                                     .fixedSize(horizontal: false, vertical: true)
-                                Text("\\(candidate.kindText) · \\(Format.bytes(candidate.size)) · \\(Format.date(candidate.modifiedAt))")
+                                Text("\(candidate.kindText) · \(Format.bytes(candidate.size)) · \(Format.date(candidate.modifiedAt))")
                                     .font(.system(size: 10))
                                     .foregroundStyle(Color.secondaryText)
-                                ForEach(Array(candidate.evidence.prefix(3)), id: \\.self) { evidence in
+                                ForEach(Array(candidate.evidence.prefix(3)), id: \.self) { evidence in
                                     Text(evidence)
                                         .font(.system(size: 10))
                                         .foregroundStyle(Color.secondaryText)
@@ -608,8 +608,8 @@ struct ContentView: View {
                                         .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(Color.primaryText)
                                 }
-                                if let bundleID = candidate.bundleID,
-                                   FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video {
+                                if candidate.bundleID != nil &&
+                                   (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video) {
                                     Button("确认后备份、清零并冻结") {
                                         pendingLaunchHackCandidate = candidate
                                     }
@@ -653,7 +653,7 @@ struct ContentView: View {
                 .padding(.horizontal, 13)
                 .panel()
                 if state.launchHackFindings.count > 3 {
-                    Button(showAllLaunchHackFindings ? "收起结果" : "展开全部（\\(state.launchHackFindings.count) 项）") {
+                    Button(showAllLaunchHackFindings ? "收起结果" : "展开全部（\(state.launchHackFindings.count) 项）") {
                         showAllLaunchHackFindings.toggle()
                     }
                     .font(.system(size: 12, weight: .semibold))

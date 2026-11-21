@@ -1047,7 +1047,7 @@ struct LaunchHackView: View {
                         .foregroundStyle(Color.secondaryText)
                 }
             }
-            Text("先检测并核验资源，再选择上传识别数据或执行本地治理。每一步都由你确认。")
+            Text("LaunchHack 只读取目标应用并识别广告线索，结果自动同步到 LaunchShield 主界面；不会清理、冻结或修改任何文件。")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)

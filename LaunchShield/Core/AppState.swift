@@ -507,7 +507,7 @@ final class AppState: ObservableObject {
         }
         launchHackFindings = Array(filtered.prefix(500))
         if !filtered.isEmpty {
-            log("LaunchHack 识别结果已同步到主界面：\\(filtered.count) 项", .success)
+            log("LaunchHack 识别结果已同步到主界面：\(filtered.count) 项", .success)
         }
     }
 
@@ -555,8 +555,8 @@ final class AppState: ObservableObject {
                 self.launchHackUploadResultUncertain = !success
                 UserDefaults.standard.set(!success, forKey: "ls.launchHackUploadResultUncertain")
                 self.launchHackUploadMessage = success
-                    ? "识别数据上传成功（\\(records.count) 项）。"
-                    : "上传结果未确认：\\(message)。服务器可能已经收到数据；请先核对服务器记录，再决定是否重试。"
+                    ? "识别数据上传成功（\(records.count) 项）。"
+                    : "上传结果未确认：\(message)。服务器可能已经收到数据；请先核对服务器记录，再决定是否重试。"
             }
         }
     }
