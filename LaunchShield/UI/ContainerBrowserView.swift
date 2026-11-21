@@ -77,6 +77,10 @@ struct ContainerBrowserView: View {
     }
 
     private func open(_ item: FileItem) {
+        guard !item.isSymlink else {
+            errorText = "符号链接不会被打开或跟随。"
+            return
+        }
         if item.isDirectory {
             path = item.path
             reload()
@@ -251,6 +255,10 @@ struct FilePreviewSheet: View {
     }
 
     private func load() async {
+        guard !item.isSymlink else {
+            failed = true
+            return
+        }
         if item.kind == .video {
             let loaded = await ThumbnailLoader.load(path: item.path, kind: .video)
             image = loaded

@@ -17,6 +17,14 @@ enum RulesStore {
         let keywords: [String]
     }
 
+    struct LocalCandidateRule: Codable, Identifiable, Equatable {
+        let bundleID: String
+        let appName: String
+        let relativePath: String
+        let createdAt: Date
+        var id: String { bundleID.lowercased() + "|" + relativePath }
+    }
+
     // MARK: - 内置保底规则（与服务器 v1 种子一致）
 
     // Built-in local rule data is embedded in LocalADBlockRule and scanned locally.
@@ -125,6 +133,80 @@ enum RulesStore {
         lock.lock()
         defer { lock.unlock() }
         return downloaded?.version ?? 0
+    }
+
+    // MARK: - 用户确认的 LaunchHack 本地规则
+
+    private static var localRulesURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("launchhack-local-rules.json")
+    }
+    private static var localRulesCache: [LocalCandidateRule]?
+    private static var localRulesDidLoad = false
+    private static var localRulesLoadFailure: String?
+
+    private static func loadLocalRulesIfNeeded() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !localRulesDidLoad else { return }
+        localRulesDidLoad = true
+        guard FileManager.default.fileExists(atPath: localRulesURL.path) else {
+            localRulesCache = []
+            return
+        }
+        do {
+            let data = try Data(contentsOf: localRulesURL)
+            guard data.count <= 1_048_576 else { throw CocoaError(.fileReadTooLarge) }
+            let parsed = try JSONDecoder().decode([LocalCandidateRule].self, from: data)
+            localRulesCache = parsed.filter {
+                !$0.bundleID.isEmpty && isSafeRelativeDirectory($0.relativePath)
+                    && !DatabaseFile.matches(relativePath: $0.relativePath)
+            }
+            localRulesLoadFailure = nil
+        } catch {
+            localRulesCache = []
+            localRulesLoadFailure = error.localizedDescription
+        }
+    }
+
+    static var localCandidateRules: [LocalCandidateRule] {
+        loadLocalRulesIfNeeded()
+        lock.lock()
+        defer { lock.unlock() }
+        return localRulesCache ?? []
+    }
+
+    static func localCandidates(for bundleID: String) -> [LocalCandidateRule] {
+        localCandidateRules.filter { $0.bundleID.caseInsensitiveCompare(bundleID) == .orderedSame }
+    }
+
+    static func containsLocalCandidate(bundleID: String, relativePath: String) -> Bool {
+        localCandidates(for: bundleID).contains { $0.relativePath == relativePath }
+    }
+
+    @discardableResult
+    static func addLocalCandidate(bundleID: String, appName: String, relativePath: String) -> Bool {
+        let owner = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard owner.range(of: "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$", options: .regularExpression) != nil,
+              isSafeRelativeDirectory(relativePath),
+              !DatabaseFile.matches(relativePath: relativePath) else { return false }
+        loadLocalRulesIfNeeded()
+        lock.lock()
+        defer { lock.unlock() }
+        guard localRulesLoadFailure == nil else { return false }
+        var records = localRulesCache ?? []
+        let record = LocalCandidateRule(bundleID: owner, appName: appName,
+                                        relativePath: relativePath, createdAt: Date())
+        guard !records.contains(where: { $0.id == record.id }) else { return true }
+        records.append(record)
+        guard let data = try? JSONEncoder().encode(records) else { return false }
+        do {
+            try data.write(to: localRulesURL, options: [.atomic])
+            localRulesCache = records
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: - 更新

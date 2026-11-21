@@ -55,6 +55,40 @@ enum FileKind {
     }
 }
 
+/// LaunchHack 的只读识别结果。这里只承载证据，不包含任何治理动作。
+struct LaunchHackCandidate: Codable, Identifiable, Hashable {
+    let bundleID: String?
+    let groupID: String?
+    let appName: String
+    let relativePath: String
+    let size: UInt64
+    let modifiedAt: Date
+    let md5: String?
+    let isFrozen: Bool
+    let score: Int
+    let evidence: [String]
+    var mediaDetails: String? = nil
+    var previewData: Data? = nil
+
+    var id: String {
+        let owner = bundleID ?? "unowned"
+        let container = groupID.map { "group:" + $0 } ?? "app"
+        return owner + "|" + container + "|" + relativePath
+    }
+
+    var priorityText: String {
+        score >= 80 ? "优先核验" : (score >= 60 ? "建议核验" : "低优先级")
+    }
+
+    var kindText: String {
+        switch FileKind.of(relativePath) {
+        case .image: return "图片"
+        case .video: return "视频"
+        case .other: return "配置或其他文件"
+        }
+    }
+}
+
 struct FileItem: Identifiable, Hashable {
     let name: String
     let path: String
@@ -364,6 +398,21 @@ struct Recipe: Codable, Identifiable, Hashable {
     var lastState: String
     /// 文件在共享组容器里时这里是组标识；应用自己容器里是 nil。
     var groupID: String? = nil
+}
+
+/// 文件夹守护（清单第 52 条，2026-11-21 Grace 定）：处理任何条目
+/// 都优先按文件夹冻结——清零一个文件时，把它所在的文件夹登记
+/// 在这里，启动巡查会把这个文件夹里新冒出来的文件一并清掉，
+/// 治「文件级清零后冷启动第三次必有新广告」。
+struct DirectoryGuard: Codable, Identifiable, Hashable {
+    let id: UUID
+    var bundleID: String
+    var appName: String
+    /// 文件夹所在的容器：应用自己容器为 nil，共享组容器为组标识。
+    var groupID: String? = nil
+    /// 文件夹在容器内的相对路径。
+    var relativePath: String
+    var createdAt: Date
 }
 
 enum RecipeState: String {

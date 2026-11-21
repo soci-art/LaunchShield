@@ -41,43 +41,73 @@ enum GitHubUpdate {
         let downloadURL: URL
         /// 发行版发布日期（yyyy-MM-dd），公告卡上显示用；取不到时为空。
         let publishedAt: String
+        /// 这份发行版是不是预发行（Nightly）。
+        let isPrerelease: Bool
     }
 
     private static let mirrors = ["https://gh.86419753.xyz/", "https://gh-proxy.com/", ""]
     private static let releasesAPI = "https://api.github.com/repos/soci-art/LaunchShield/releases/latest"
+    private static let releasesListAPI = "https://api.github.com/repos/soci-art/LaunchShield/releases?per_page=10"
 
-    /// 查最新正式版：三条线路挨个试，第一条通了就用它。
-    static func fetchLatest(completion: @escaping (VersionInfo?, String) -> Void) {
-        fetchLatest(mirror: 0, completion: completion)
+    /// 更新通道（清单第 31 条）：预发行构建由其工作流往 Info.plist 盖
+    /// LSUpdateChannel=prerelease，只检测预发行更新；没有这个标记的一律
+    /// 按正式版查——正式版工作流不盖标记，预发行代码同步到正式线也不会串线。
+    static var isPrereleaseChannel: Bool {
+        Bundle.main.infoDictionary?["LSUpdateChannel"] as? String == "prerelease"
     }
 
-    private static func fetchLatest(mirror: Int, completion: @escaping (VersionInfo?, String) -> Void) {
+    /// 按本机通道查最新版：三条线路挨个试，第一条通了就用它。
+    static func fetchLatest(completion: @escaping (VersionInfo?, String) -> Void) {
+        fetchLatest(mirror: 0, prerelease: isPrereleaseChannel, completion: completion)
+    }
+
+    /// 公告只跟正式版走：不管本机是哪条线，公告永远查最新正式版。
+    static func fetchFormalLatest(completion: @escaping (VersionInfo?, String) -> Void) {
+        fetchLatest(mirror: 0, prerelease: false, completion: completion)
+    }
+
+    private static func fetchLatest(mirror: Int, prerelease: Bool, completion: @escaping (VersionInfo?, String) -> Void) {
         guard mirror < mirrors.count else {
             completion(nil, "三条线路都没连上 GitHub")
             return
         }
-        guard let url = URL(string: mirrors[mirror] + releasesAPI) else {
-            fetchLatest(mirror: mirror + 1, completion: completion)
+        guard let url = URL(string: mirrors[mirror] + (prerelease ? releasesListAPI : releasesAPI)) else {
+            fetchLatest(mirror: mirror + 1, prerelease: prerelease, completion: completion)
             return
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: request) { data, response, error in
-            let info = data.flatMap { parseLatest($0) }
+            let info = data.flatMap { prerelease ? parsePrereleaseList($0) : parseLatest($0) }
             DispatchQueue.main.async {
                 if info != nil, (response as? HTTPURLResponse)?.statusCode == 200 {
                     completion(info, "")
                 } else {
-                    fetchLatest(mirror: mirror + 1, completion: completion)
+                    fetchLatest(mirror: mirror + 1, prerelease: prerelease, completion: completion)
                 }
             }
         }.resume()
     }
 
     private static func parseLatest(_ data: Data) -> VersionInfo? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tag = object["tag_name"] as? String else { return nil }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return parseRelease(object)
+    }
+
+    /// 预发行没有 /latest 接口：拉最近 10 个发行版，取第一个预发行且非草稿的。
+    private static func parsePrereleaseList(_ data: Data) -> VersionInfo? {
+        guard let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+        for object in list {
+            if (object["prerelease"] as? Bool) == true, (object["draft"] as? Bool) != true {
+                return parseRelease(object)
+            }
+        }
+        return nil
+    }
+
+    private static func parseRelease(_ object: [String: Any]) -> VersionInfo? {
+        guard let tag = object["tag_name"] as? String else { return nil }
         let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
         let assets = object["assets"] as? [[String: Any]] ?? []
         guard let asset = assets.first(where: {
@@ -98,7 +128,8 @@ enum GitHubUpdate {
                            build: parseBuild(from: body),
                            notes: body,
                            downloadURL: url,
-                           publishedAt: published)
+                           publishedAt: published,
+                           isPrerelease: (object["prerelease"] as? Bool) ?? false)
     }
 
     /// 发行说明里工作流写死的一行「构建号：N」：同版本换包靠它认新旧。

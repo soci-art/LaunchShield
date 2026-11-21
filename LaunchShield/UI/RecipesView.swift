@@ -15,7 +15,7 @@ struct RecipesView: View {
         SheetPage("已守护应用") {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if state.recipes.isEmpty {
+                    if state.recipes.isEmpty && state.directoryGuards.isEmpty {
                         emptyCard
                     } else {
                         HStack(spacing: 10) {
@@ -84,7 +84,7 @@ struct RecipesView: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        ForEach(appGroups, id: \.bundleID) { group in
+                        ForEach(appGroups) { group in
                             appGroupSection(group)
                         }
                     }
@@ -160,20 +160,41 @@ struct RecipesView: View {
         state.recipes.filter { $0.lastState == RecipeState.recurred.rawValue }.count
     }
 
-    /// 按应用归并：一个应用一行，点开才看单个文件。
-    private var appGroups: [(bundleID: String, name: String, items: [Recipe])] {
-        Dictionary(grouping: state.recipes, by: { $0.bundleID }).map { bundleID, items in
-            (bundleID: bundleID, name: items.first?.appName ?? bundleID, items: items)
+    /// 一个应用一组的统一分组（第 57 条）：文件配方和文件夹
+    /// 守护都归到同一个应用名下，文件夹守护不再单独成段。
+    private struct GuardedAppGroup: Identifiable {
+        let bundleID: String
+        let name: String
+        let items: [Recipe]
+        let guards: [DirectoryGuard]
+        var id: String { bundleID }
+    }
+
+    private var appGroups: [GuardedAppGroup] {
+        let recipesByApp = Dictionary(grouping: state.recipes, by: { $0.bundleID })
+        var guardsByApp: [String: [DirectoryGuard]] = [:]
+        var names: [String: String] = [:]
+        for item in state.directoryGuards {
+            guardsByApp[item.bundleID, default: []].append(item)
+            if names[item.bundleID] == nil { names[item.bundleID] = item.appName }
+        }
+        for (bundleID, items) in recipesByApp {
+            names[bundleID] = items.first?.appName ?? bundleID
+        }
+        return Set(recipesByApp.keys).union(guardsByApp.keys).map {
+            GuardedAppGroup(bundleID: $0, name: names[$0] ?? $0,
+                            items: recipesByApp[$0] ?? [],
+                            guards: guardsByApp[$0] ?? [])
         }.sorted { $0.name < $1.name }
     }
 
-    private func appGroupSection(_ group: (bundleID: String, name: String, items: [Recipe])) -> some View {
+    private func appGroupSection(_ group: GuardedAppGroup) -> some View {
         let frozen = group.items.filter { $0.frozen }.count
         let recurred = group.items.filter { $0.lastState == RecipeState.recurred.rawValue }.count
         let missing = group.items.filter { $0.lastState == RecipeState.missing.rawValue }.count
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                if selecting {
+                if selecting && !group.items.isEmpty {
                     Button {
                         toggleGroup(group)
                     } label: {
@@ -198,7 +219,7 @@ struct RecipesView: View {
                             Text(group.name)
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(Color.primaryText)
-                            Text("共 \(group.items.count) 个 · 已冻结 \(frozen) 个" + (recurred > 0 ? " · 复发 \(recurred) 个" : "") + (missing > 0 ? " · 不见了 \(missing) 个" : ""))
+                            Text("共 \(group.items.count) 个 · 已冻结 \(frozen) 个" + (recurred > 0 ? " · 复发 \(recurred) 个" : "") + (missing > 0 ? " · 不见了 \(missing) 个" : "") + (group.guards.isEmpty ? "" : " · 文件夹 \(group.guards.count) 个"))
                                 .font(.system(size: 11))
                                 .foregroundStyle(Color.secondaryText)
                         }
@@ -226,6 +247,9 @@ struct RecipesView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .panel()
             if expandedApps.contains(group.bundleID) {
+                if !group.guards.isEmpty {
+                    folderGuardsCard(group)
+                }
                 ForEach(group.items) { recipe in
                     card(recipe)
                 }
@@ -233,12 +257,56 @@ struct RecipesView: View {
         }
     }
 
+    /// 文件夹守护卡（第 57 条）：收进对应应用的折叠展开区，
+    /// 跟它的文件配方放一起，不再单独成段平铺。
+    private func folderGuardsCard(_ group: GuardedAppGroup) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(Color.accentCyan)
+                Text("文件夹守护（\(group.guards.count) 个）")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+            }
+            Text("清零时连文件夹一起冻住的都在这里。新广告落回这些文件夹，打开 LaunchShield 时会一并清掉。移除后文件夹会解冻，今后不再巡查这个文件夹。")
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(group.guards) { guardItem in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(Color.secondaryText)
+                    Text(guardItem.relativePath)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button {
+                        state.removeDirectoryGuard(guardItem)
+                    } label: {
+                        Text("移除")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.red)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.red.opacity(0.10), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel()
+    }
+
     private var emptyCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("还没有配方")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
-            Text("用「找广告」确认素材并清零后，会自动把「Bundle ID ＋ 相对路径」存成配方。软件自营开屏素材清零时也会自动存。")
+            Text("清零广告素材后，会自动把「Bundle ID ＋ 相对路径」存成配方，下次打开时按配方复查。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -356,7 +424,7 @@ struct RecipesView: View {
         }
     }
 
-    private func toggleGroup(_ group: (bundleID: String, name: String, items: [Recipe])) {
+    private func toggleGroup(_ group: GuardedAppGroup) {
         let ids = group.items.map { $0.id }
         if ids.allSatisfy({ selectedIDs.contains($0) }) {
             ids.forEach { selectedIDs.remove($0) }

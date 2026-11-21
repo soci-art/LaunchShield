@@ -3,6 +3,26 @@ import Foundation
 struct LibraryFile: Codable {
     var recipes: [Recipe] = []
     var backups: [BackupRecord] = []
+    var directoryGuards: [DirectoryGuard] = []
+}
+
+extension LibraryFile {
+    private enum CodingKeys: String, CodingKey {
+        case recipes, backups, directoryGuards
+    }
+
+    /// Decode every field as if-present. The synthesized decoder ignores
+    /// the property defaults above and throws keyNotFound for any key a
+    /// library.json written by an older build does not have yet (e.g.
+    /// `directoryGuards`, added in build 23) — and that error's message
+    /// ("couldn't be read because it is missing") latched the store's
+    /// fail-closed lock for the whole session (checklist item 53).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recipes = try container.decodeIfPresent([Recipe].self, forKey: .recipes) ?? []
+        backups = try container.decodeIfPresent([BackupRecord].self, forKey: .backups) ?? []
+        directoryGuards = try container.decodeIfPresent([DirectoryGuard].self, forKey: .directoryGuards) ?? []
+    }
 }
 
 /// Recipes and the backup index live in Application Support; the original
@@ -15,6 +35,7 @@ final class LibraryStore {
     let backupRoot: URL
 
     private var jsonURL: URL { root.appendingPathComponent("library.json") }
+    private(set) var loadFailure: String?
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -29,15 +50,25 @@ final class LibraryStore {
     }
 
     func load() {
-        guard let data = try? Data(contentsOf: jsonURL),
-              let decoded = try? JSONDecoder().decode(LibraryFile.self, from: data) else { return }
-        file = decoded
+        guard FileManager.default.fileExists(atPath: jsonURL.path) else { return }
+        do {
+            let data = try Data(contentsOf: jsonURL)
+            file = try JSONDecoder().decode(LibraryFile.self, from: data)
+            loadFailure = nil
+        } catch {
+            loadFailure = error.localizedDescription
+        }
     }
 
     /// Persist the complete library atomically and verify the bytes on disk.
     /// The throwing form is used before destructive file operations so a
     /// failed index write prevents the target from being truncated.
     func saveOrThrow() throws {
+        if let loadFailure {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [
+                NSLocalizedDescriptionKey: "本机守护库无法读取，为避免覆盖损坏数据，已阻止写入：\(loadFailure)"
+            ])
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted]
         let data = try encoder.encode(file)
@@ -49,6 +80,7 @@ final class LibraryStore {
                 NSLocalizedDescriptionKey: "备份索引写入后校验不一致"
             ])
         }
+        loadFailure = nil
     }
 
     /// Register a backup record durably before its source file is modified.
@@ -62,6 +94,16 @@ final class LibraryStore {
             try saveOrThrow()
         } catch {
             file.backups = previous
+            // If the failed write can be rolled back durably, remove the
+            // unregistered backup bytes as well. If rollback also fails,
+            // preserve the backup directory rather than risk deleting bytes
+            // referenced by an index that may have reached disk.
+            do {
+                try saveOrThrow()
+                try? FileManager.default.removeItem(at: backupDirectoryURL(for: record.id))
+            } catch {
+                // Keep the backup bytes for manual recovery.
+            }
             throw error
         }
     }
