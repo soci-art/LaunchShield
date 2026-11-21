@@ -2108,15 +2108,16 @@ final class AppState: ObservableObject {
                         }
                     }
                 } catch {
+                    let operationError = error
                     if wasImmutable {
                         do {
                             try self.channel.setImmutable(full, true)
                             guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
                         } catch {
-                            throw ChannelFailure("重新清零失败：\(error.localizedDescription)；警告：原冻结状态恢复失败：\(error.localizedDescription)")
+                            throw ChannelFailure("重新清零失败：\(operationError.localizedDescription)；警告：原冻结状态恢复失败：\(error.localizedDescription)")
                         }
                     }
-                    throw error
+                    throw operationError
                 }
                 DispatchQueue.main.async {
                     self.isBusy = false
