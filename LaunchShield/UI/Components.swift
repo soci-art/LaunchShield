@@ -172,6 +172,8 @@ struct BusyOverlay: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
         .padding(22)
         .frame(maxWidth: 240)
@@ -190,6 +192,8 @@ struct WorkProgressOverlay: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let total = progress.total, total > 0 {
                 ProgressView(value: Double(min(progress.done, total)), total: Double(total))
                     .tint(.white)
@@ -200,11 +204,15 @@ struct WorkProgressOverlay: View {
             Text(progress.fractionText)
                 .font(.system(size: 12))
                 .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let detail = progress.detail {
                 Text(detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.75))
                     .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
         .padding(22)
