@@ -1195,17 +1195,23 @@ final class AppState: ObservableObject {
     /// 删掉一条文件夹守护（只停止今后的巡查和整夹冻结，已经冻结的
     /// 文件仍按各自的守护记录管理）；顺手把文件夹本身解冻。
     func removeDirectoryGuard(_ guardItem: DirectoryGuard) {
-        directoryGuards.removeAll { $0.id == guardItem.id }
-        store.file.directoryGuards = directoryGuards
-        if !store.save() {
-            log("文件夹守护删除了，但没能保存到本机", .warning)
-        }
+        // 第 67 条：先解冻、再移除记录。解冻失败就把记录留着，
+        // 不让文件夹冻在原地没人管。
         if let root = channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) {
             let full = root + "/" + guardItem.relativePath
             if channel.isImmutable(full) {
                 do { try channel.setImmutable(full, false) }
-                catch { log("文件夹解冻失败：\(guardItem.relativePath)：\(error.localizedDescription)", .warning) }
+                catch {
+                    log("文件夹解冻失败、守护记录已保留：\(guardItem.relativePath)：\(error.localizedDescription)", .warning)
+                    alertText = "这个文件夹解冻失败，守护记录先留着：\(guardItem.relativePath)"
+                    return
+                }
             }
+        }
+        directoryGuards.removeAll { $0.id == guardItem.id }
+        store.file.directoryGuards = directoryGuards
+        if !store.save() {
+            log("文件夹守护删除了，但没能保存到本机", .warning)
         }
         log("已移除文件夹守护：\(guardItem.appName) · \(guardItem.relativePath)", .notice)
     }
@@ -1501,13 +1507,14 @@ final class AppState: ObservableObject {
     }
 
     func clearAllAfterScan() {
+        // 第 68 条：全部清零只对已扫描到的素材执行。没有扫描
+        // 结果时不再自动先扫一遍（主页按钮已改为弹提醒让用户
+        // 先去扫描）；这里再兜底拦一道，防止别的入口绕过。
         if scanTargets.isEmpty {
-            scanBaidu { [weak self] in
-                self?.performClear()
-            }
-        } else {
-            performClear()
+            alertText = "还没有扫描到素材。全部清零只处理已经扫描到的素材，先去扫描一遍，扫完再回来清零。"
+            return
         }
+        performClear()
     }
 
     /// 第 52 条：清零按文件夹扩展——某个待清文件所在的文件夹里，
@@ -1987,6 +1994,11 @@ final class AppState: ObservableObject {
         deleteBackups(store.file.backups.filter { $0.bundleID == bundleID })
     }
 
+    /// 第 67 条：删除备份默认先恢复再删——先把备份写回文件，
+    /// 恢复成功才删；恢复失败的留着不删并报错。同一文件有多份
+    /// 备份时按原件口径：只写回最早那份，成功后同组一起删。
+    /// 数据库文件还原不了（正被应用占用），这类备份直接删、
+    /// 结果里注明。
     func deleteBackups(_ selected: [BackupRecord]) {
         let ids = Set(selected.map { $0.id })
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
@@ -1995,30 +2007,104 @@ final class AppState: ObservableObject {
             alertText = "先选择要删除的备份。"
             return
         }
-        let previous = store.file.backups
-        store.file.backups.removeAll { ids.contains($0.id) }
-        guard store.save() else {
-            store.file.backups = previous
-            log("备份索引保存失败，未删除任何备份文件", .warning)
-            alertText = "备份索引保存失败，已取消删除；原备份仍保留。"
-            return
-        }
-        var failed = 0
-        for record in records {
-            do {
-                let directory = store.backupDirectoryURL(for: record.id)
-                if FileManager.default.fileExists(atPath: directory.path) {
-                    try FileManager.default.removeItem(at: directory)
+        guard requireChannel() else { return }
+        isBusy = true
+        busyText = "正在先恢复、再删除备份…"
+        workProgress = WorkProgress(label: "正在恢复并删除备份", done: 0, total: records.count, detail: nil)
+        work.async {
+            // 按文件分组：同组只写回最早那份（原件口径，与全部还原一致）。
+            var groups: [String: [BackupRecord]] = [:]
+            for record in records {
+                let key = "\(record.bundleID)|\(record.groupID ?? "")|\(record.relativePath)"
+                groups[key, default: []].append(record)
+            }
+            // 先把涉及容器的广告文件夹解冻（和还原一个口径）。
+            let roots = Set(records.compactMap { self.channel.rootPath(bundleID: $0.bundleID, groupID: $0.groupID) })
+            for root in roots {
+                let owner = records.first(where: { self.channel.rootPath(bundleID: $0.bundleID, groupID: $0.groupID) == root })?.bundleID ?? ""
+                for relative in LocalADBlockRule.freezeDirectories(container: root, channel: self.channel, ownerBundleID: owner) {
+                    let full = root + "/" + relative
+                    if self.channel.isImmutable(full) {
+                        do {
+                            try self.channel.setImmutable(full, false)
+                            self.log("已解冻文件夹：\(relative)", .notice)
+                        } catch {
+                            self.log("文件夹解冻失败：\(relative)：\(error.localizedDescription)", .warning)
+                        }
+                    }
                 }
-            } catch {
-                failed += 1
-                log("备份目录清理失败：\(record.relativePath)：\(error.localizedDescription)", .warning)
+            }
+            var deletableIDs = Set<UUID>()
+            var restoredFiles = 0
+            var dbOnlyFiles = 0
+            var keptFiles: [String] = []
+            var processed = 0
+            for group in groups.values {
+                let sorted = group.sorted { $0.createdAt < $1.createdAt }
+                guard let original = sorted.first else { continue }
+                let doneSnapshot = processed
+                DispatchQueue.main.async {
+                    self.workProgress = WorkProgress(label: "正在恢复并删除备份", done: doneSnapshot,
+                                                     total: records.count,
+                                                     detail: "当前：\((original.relativePath as NSString).lastPathComponent)")
+                }
+                if DatabaseFile.matches(relativePath: original.relativePath) {
+                    dbOnlyFiles += 1
+                    deletableIDs.formUnion(sorted.map { $0.id })
+                    self.log("数据库备份还原不了、直接删除：\(original.relativePath)", .info)
+                } else if let root = self.channel.rootPath(bundleID: original.bundleID, groupID: original.groupID) {
+                    do {
+                        _ = try self.backupManager.restore(original, container: root, channel: self.channel)
+                        restoredFiles += 1
+                        deletableIDs.formUnion(sorted.map { $0.id })
+                        self.log("已先恢复：\(original.relativePath)，这份备份可以删了", .success)
+                    } catch {
+                        keptFiles.append(original.relativePath)
+                        self.log("恢复失败、备份已保留：\(original.relativePath)：\(error.localizedDescription)", .warning)
+                    }
+                } else {
+                    keptFiles.append(original.relativePath)
+                    self.log("找不到容器、备份已保留：\(original.relativePath)", .warning)
+                }
+                processed += group.count
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                self.workProgress = nil
+                let toDelete = self.store.file.backups.filter { deletableIDs.contains($0.id) }
+                if !toDelete.isEmpty {
+                    let previous = self.store.file.backups
+                    self.store.file.backups.removeAll { deletableIDs.contains($0.id) }
+                    if self.store.save() {
+                        var failedDirs = 0
+                        for record in toDelete {
+                            do {
+                                let directory = self.store.backupDirectoryURL(for: record.id)
+                                if FileManager.default.fileExists(atPath: directory.path) {
+                                    try FileManager.default.removeItem(at: directory)
+                                }
+                            } catch { failedDirs += 1 }
+                        }
+                        if failedDirs > 0 {
+                            self.log("另有 \(failedDirs) 个备份目录未能清理。", .warning)
+                        }
+                    } else {
+                        self.store.file.backups = previous
+                        self.log("备份索引保存失败，已取消删除；原备份仍保留（文件已经恢复写回）。", .warning)
+                    }
+                }
+                self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                var parts: [String] = []
+                if restoredFiles > 0 { parts.append("已先恢复再删除：\(restoredFiles) 个文件已写回、对应备份已删除") }
+                if dbOnlyFiles > 0 { parts.append("\(dbOnlyFiles) 个数据库文件还原不了、备份已直接删除") }
+                if !keptFiles.isEmpty { parts.append("\(keptFiles.count) 个文件恢复失败、备份已保留：\(keptFiles.prefix(3).joined(separator: "；"))") }
+                let message = parts.isEmpty ? "没有删掉任何备份。" : parts.joined(separator: "。") + "。"
+                self.log(message, keptFiles.isEmpty ? .notice : .warning)
+                self.alertText = message
+                self.checkRecipes(silent: true)
             }
         }
-        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
-        let message = "已从备份索引移除 \(records.count) 份备份。\(failed > 0 ? "另有 \(failed) 个孤立目录未能清理。" : "")"
-        log(message, failed == 0 ? .notice : .warning)
-        alertText = message
     }
 
     func takeSnapshot(before: Bool) {

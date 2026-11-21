@@ -214,6 +214,15 @@ private enum LaunchHackAssessment {
     }
 }
 
+/// 扫描取消令牌（第 64 条）：界面在主线程置位，后台扫描在
+/// 循环里读，NSLock 保证两边不打架。
+private final class LaunchHackCancelToken {
+    private let lock = NSLock()
+    private var flag = false
+    func cancel() { lock.lock(); flag = true; lock.unlock() }
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+}
+
 @MainActor
 private final class LaunchHackModel: ObservableObject {
     /// 机器按证据查出的候选：只同步给主页作上传数据，不在本页展示。
@@ -231,6 +240,12 @@ private final class LaunchHackModel: ObservableObject {
     /// 本轮扫描所属的目标应用；图片墙落盘与恢复按它对号。
     private var sessionTargetID = ""
     var onLog: ((String, LogLevel) -> Void)?
+    /// 第 64 条：本轮扫描的取消令牌，点「取消扫描」置位。
+    private var cancelToken: LaunchHackCancelToken?
+
+    func cancelScan() {
+        cancelToken?.cancel()
+    }
 
     /// 目标应用变了（清单第 47 条）：扫描状态全部重置——状态
     /// 文案回初始、进度清掉、墙先清空，再按新目标恢复它自己
@@ -364,6 +379,8 @@ private final class LaunchHackModel: ObservableObject {
         status = "正在扫描 \(state.target.name) 的 \(targets.count) 个容器…"
         onLog?("LaunchHack 开始扫描 \(state.target.name)：\(targets.count) 个容器（列图片墙＋机器数据只上传不展示）", .info)
         let channel = state.channel
+        let token = LaunchHackCancelToken()
+        cancelToken = token
 
         DispatchQueue.global(qos: .userInitiated).async {
             var matches: [LaunchHackCandidate] = []
@@ -375,11 +392,13 @@ private final class LaunchHackModel: ObservableObject {
             var galleryPool: [LaunchHackGalleryItem] = []
             var smallSkipped = 0
             var failures: [String] = []
+            var cancelled = false
 
             // 阶段一：盘点。先把每个容器的文件清单走完，真进度条的
             // 分母就有了；盘点期间 scanProgress 保持 nil（页面显示盘点中）。
             var plan: [(target: LaunchHackScanTarget, files: [FileItem], work: [FileItem])] = []
             for target in targets {
+                if token.isCancelled { cancelled = true; break }
                 do {
                     let files = try channel.walkFiles(at: target.rootPath, limit: 16000,
                         skipDirNames: [".Trash", "Recently Deleted"],
@@ -414,12 +433,15 @@ private final class LaunchHackModel: ObservableObject {
             }
             let totalWork = plan.reduce(0) { $0 + $1.work.count }
             var processed = 0
-            DispatchQueue.main.async {
-                self.status = "盘点完成：共 \(totalWork) 个文件，正在逐个查看…"
+            if !cancelled {
+                DispatchQueue.main.async {
+                    self.status = "盘点完成：共 \(totalWork) 个文件，正在逐个查看…"
+                }
             }
 
             // 阶段二：逐个处理，进度 = 已处理 ÷ 总数（真进度）。
             for entry in plan {
+                if token.isCancelled { cancelled = true; break }
                 let target = entry.target
                 let relativeOf: (FileItem) -> String = {
                     String($0.path.dropFirst(target.rootPath.count + 1))
@@ -476,6 +498,7 @@ private final class LaunchHackModel: ObservableObject {
                 }
 
                 for imageEntry in imageWork {
+                    if token.isCancelled { cancelled = true; break }
                     let file = imageEntry.file
                     processed += 1
                     if processed % 20 == 0 {
@@ -511,6 +534,7 @@ private final class LaunchHackModel: ObservableObject {
                 }
 
                 for file in dataWork {
+                    if token.isCancelled { cancelled = true; break }
                     processed += 1
                     if processed % 20 == 0 {
                         let snapshot = processed
@@ -565,6 +589,17 @@ private final class LaunchHackModel: ObservableObject {
                 }
             }
 
+            if cancelled {
+                DispatchQueue.main.async {
+                    self.isRunning = false
+                    self.scanProgress = nil
+                    self.cancelToken = nil
+                    self.status = "扫描已取消，需要时重新点「开始扫描」。"
+                    self.onLog?("LaunchHack 扫描已取消", .notice)
+                }
+                return
+            }
+
             let ordered = Array(matches.sorted {
                 if $0.score != $1.score { return $0.score > $1.score }
                 return $0.modifiedAt > $1.modifiedAt
@@ -576,6 +611,7 @@ private final class LaunchHackModel: ObservableObject {
                 self.visitedFiles = visited
                 self.checkedMedia = mediaCount
                 self.isRunning = false
+                self.cancelToken = nil
                 self.scanProgress = 1
                 var statusText: String
                 if !failures.isEmpty {
@@ -780,6 +816,15 @@ struct LaunchHackView: View {
                     Text("正在盘点文件…已访问 \(model.visitedFiles) 个文件")
                         .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
                 }
+                Button {
+                    model.cancelScan()
+                } label: {
+                    Text("取消扫描")
+                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                        .frame(maxWidth: .infinity).frame(height: 50)
+                        .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
             }
             Text(model.status).font(.system(size: 12)).foregroundStyle(Color.secondaryText)
         }

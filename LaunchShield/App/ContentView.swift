@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var showBackups = false
     @State private var showLogs = false
     @State private var showClearConfirm = false
+    @State private var showNeedScanAlert = false
     @State private var showClearScanConfirm = false
     @State private var showSingleAppEntryAlert = false
     @State private var showClearCacheConfirm = false
@@ -100,6 +101,11 @@ struct ContentView: View {
             Button("好", role: .cancel) { }
         } message: {
             Text("LaunchHack 只对单个应用检测。主页现在选了多个应用，先改成只选一个再来。")
+        }
+        .alert("还没有扫描到素材", isPresented: $showNeedScanAlert) {
+            Button("确定", role: .cancel) { }
+        } message: {
+            Text("全部清零只处理已经扫描到的素材。你还没有扫描，先去扫描一遍，扫完再回来清零。")
         }
         .confirmationDialog("清除扫描结果？", isPresented: $showClearScanConfirm, titleVisibility: .visible) {
             Button("清除", role: .destructive) {
@@ -448,6 +454,12 @@ struct ContentView: View {
                 }
             }
             Divider().overlay(Color.primaryText.opacity(0.07))
+            HStack {
+                smallButton(state.allUserAppsChecked ? "取消批量选择" : "批量选择应用", symbol: "checklist") {
+                    if requireSign() { state.toggleCheckAllUserApps() }
+                }
+                Spacer(minLength: 0)
+            }
             Button {
                 if state.checkedIDs.count >= 2 {
                     showSingleAppEntryAlert = true
@@ -477,12 +489,6 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
 
-            HStack {
-                smallButton(state.allUserAppsChecked ? "取消批量选择" : "批量选择应用", symbol: "checklist") {
-                    if requireSign() { state.toggleCheckAllUserApps() }
-                }
-                Spacer(minLength: 0)
-            }
             HStack(spacing: 10) {
                 Image(systemName: "hand.raised.slash")
                     .font(.system(size: 14, weight: .semibold))
@@ -524,15 +530,15 @@ struct ContentView: View {
         Button(action: action) {
             HStack(spacing: 7) {
                 Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
             }
             .foregroundStyle(Color.accentCyan)
             .frame(maxWidth: .infinity)
-            .frame(height: 42)
+            .frame(height: 52)
             .background(Color.accentCyan.opacity(0.10),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -680,7 +686,13 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "操作", subtitle: "每个文件独立备份与处理")
             Button {
-                if requireSign() { showClearConfirm = true }
+                if requireSign() {
+                    if state.scanTargets.isEmpty {
+                        showNeedScanAlert = true
+                    } else {
+                        showClearConfirm = true
+                    }
+                }
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "eraser.fill")
@@ -780,7 +792,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
             if state.recipes.isEmpty {
-                Text("还没有配方。找广告确认素材后，或清零软件自营开屏素材后，会自动存进来。")
+                Text("还没有配方。清零广告素材后，会自动把清零过的文件存进来，下次打开自动复查。")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.secondaryText)
                     .padding(16)
@@ -798,19 +810,6 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 15)
                 .panel()
-                if state.recipes.contains(where: { $0.frozen }) {
-                    Button {
-                        if requireSign() { state.unfreezeAll() }
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: "sun.max")
-                            Text("全部解冻（文件和文件夹，不用备份）")
-                        }
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.accentCyan)
-                    }
-                    .buttonStyle(.plain)
-                }
             }
         }
     }
@@ -1004,7 +1003,7 @@ private struct AppWhitelistView: View {
             // 整页可滚：已排除名单再长也不会把下面的添加区挤没。
             ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("加入白名单的应用不会被扫描、清理、找广告或守护。规则只按 Bundle ID 匹配。")
+                Text("加入白名单的应用不会被扫描、清理或守护。规则只按 Bundle ID 匹配。")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)

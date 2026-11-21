@@ -306,7 +306,7 @@ struct RecipesView: View {
             Text("还没有配方")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
-            Text("用「找广告」确认素材并清零后，会自动把「Bundle ID ＋ 相对路径」存成配方。软件自营开屏素材清零时也会自动存。")
+            Text("清零广告素材后，会自动把「Bundle ID ＋ 相对路径」存成配方，下次打开时按配方复查。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
