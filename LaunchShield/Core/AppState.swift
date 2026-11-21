@@ -874,15 +874,28 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 清除扫描结果（清单第 46 条）：只清素材清单里规则扫描来的
-    /// 条目和扫描识别数据，不动任何文件、不清零、不解冻；
-    /// LaunchHack 手动标记那一组是手动收集的，不清。
+    /// 清除扫描结果（清单第 46 条提出、第 49 条定稿）：真清——
+    /// 素材清单全部条目、LaunchHack 标记、机器识别数据、扫描
+    /// 识别数据连同图片墙落盘会话（已标记状态）一并清掉，清完
+    /// 要重新扫描、重新标记。不动任何文件、不清零、不解冻。
     func clearScanResults() {
-        let removed = scanTargets.filter { $0.group != Self.launchHackTargetGroup }.count
-        scanTargets.removeAll { $0.group != Self.launchHackTargetGroup }
+        let targetCount = scanTargets.count
+        let markCount = launchHackMarks.count
+        scanTargets.removeAll()
+        launchHackMarks.removeAll()
+        persistLaunchHackMarks()
+        if !launchHackFindings.isEmpty {
+            launchHackFindings = []
+            persistLaunchHackFindings()
+        }
         lastRecognition = []
         lastScanSkippedFrozen = 0
-        log("已清除扫描结果：\(removed) 项（只清列表，未动任何文件）", .notice)
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let galleryURL = base.appendingPathComponent("LaunchShield", isDirectory: true)
+            .appendingPathComponent("launchhack-gallery.json")
+        try? FileManager.default.removeItem(at: galleryURL)
+        log("已清除扫描结果：素材 \(targetCount) 项、标记 \(markCount) 个全清（只清结果，未动任何文件）", .notice)
     }
 
     // MARK: - Containers and target

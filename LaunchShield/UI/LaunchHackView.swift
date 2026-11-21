@@ -232,6 +232,28 @@ private final class LaunchHackModel: ObservableObject {
     private var sessionTargetID = ""
     var onLog: ((String, LogLevel) -> Void)?
 
+    /// 目标应用变了（清单第 47 条）：扫描状态全部重置——状态
+    /// 文案回初始、进度清掉、墙先清空，再按新目标恢复它自己
+    /// 的图片墙（第 36 条落盘按应用对号）。
+    func handleTargetChange(state: AppState) {
+        let newID = state.targetChosen ? state.target.bundleID : ""
+        // 目标没变、且图片墙落盘还在（没被「清除扫描」清掉）就不动；
+        // 落盘被清了说明用户真清过，内存里的墙也要跟着重置。
+        let sessionFileExists = FileManager.default.fileExists(atPath: gallerySessionURL.path)
+        if newID == sessionTargetID && (gallery.isEmpty || sessionFileExists) { return }
+        gallery = []
+        confirmedGalleryIDs = []
+        gallerySmallSkipped = 0
+        scanProgress = nil
+        visitedFiles = 0
+        checkedMedia = 0
+        totalContainers = 0
+        isRunning = false
+        status = "点「开始扫描」，把主页所选应用里的大图列出来，认出哪张是广告就标记哪张。"
+        sessionTargetID = ""
+        restoreSessionIfNeeded(state: state)
+    }
+
     func syncFromState(_ findings: [LaunchHackCandidate]) {
         if candidates != findings { candidates = findings }
     }
@@ -600,6 +622,7 @@ struct LaunchHackView: View {
     @StateObject private var model = LaunchHackModel()
     @State private var selectedGalleryItem: LaunchHackGalleryItem?
     @State private var showUploadConfirm = false
+    @State private var showSingleAppAlert = false
 
     /// 当前目标应用名下已标记的数量（顶部只显示这个数）。
     private var markedCount: Int {
@@ -632,7 +655,15 @@ struct LaunchHackView: View {
         .onAppear {
             model.onLog = { message, level in state.log(message, level) }
             model.syncFromState(state.launchHackFindings)
-            model.restoreSessionIfNeeded(state: state)
+            model.handleTargetChange(state: state)
+        }
+        .onChange(of: state.target.bundleID) { _, _ in
+            model.handleTargetChange(state: state)
+        }
+        .alert("请选择单个应用", isPresented: $showSingleAppAlert) {
+            Button("好", role: .cancel) { }
+        } message: {
+            Text("LaunchHack 只对单个应用检测。主页现在选了多个应用，先改成只选一个再来扫描。")
         }
         .onChange(of: model.candidates) { _, findings in
             state.syncLaunchHackFindings(findings)
@@ -713,7 +744,11 @@ struct LaunchHackView: View {
     private var scanPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
-                runScan()
+                if state.checkedIDs.count >= 2 {
+                    showSingleAppAlert = true
+                } else {
+                    runScan()
+                }
             } label: {
                 HStack {
                     Image(systemName: "magnifyingglass")
@@ -724,6 +759,10 @@ struct LaunchHackView: View {
                 .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14))
             }
             .disabled(model.isRunning)
+            if state.checkedIDs.count >= 2 {
+                Text("主页现在选了多个应用，LaunchHack 只检测单个应用，请先改成只选一个。")
+                    .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+            }
             if model.isRunning {
                 if let progress = model.scanProgress {
                     ProgressView(value: progress)

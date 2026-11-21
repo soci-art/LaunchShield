@@ -101,7 +101,7 @@ struct ContentView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("只清掉素材清单里扫描到的结果，不动任何文件、不清零、不解冻。LaunchHack 手动标记的那一组不清。")
+            Text("会把扫描到的结果和 LaunchHack 标记全部清掉，清完要重新扫描、重新标记。不动任何文件、不清零、不解冻。")
         }
         .confirmationDialog("确定要清零这些素材吗？", isPresented: $showClearConfirm, titleVisibility: .visible) {
             Button("先备份，再全部清零", role: .destructive) {
@@ -584,7 +584,7 @@ struct ContentView: View {
                         .foregroundStyle(Color.accentCyan)
                 }
                 .buttonStyle(.plain)
-                .disabled(!state.scanTargets.contains { $0.group != AppState.launchHackTargetGroup })
+                .disabled(state.scanTargets.isEmpty && state.launchHackMarks.isEmpty && state.launchHackFindings.isEmpty)
                 Button {
                     state.updateRules()
                 } label: {
