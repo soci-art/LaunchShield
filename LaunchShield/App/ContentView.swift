@@ -34,8 +34,8 @@ struct ContentView: View {
                         targetCard
                         fullScanCards
                         summarySection
-                        sourceSection
                         actionsSection
+                        sourceSection
                         recipesSection
                         logSection
                         updateSection
@@ -583,31 +583,6 @@ struct ContentView: View {
                             symbol: "externaldrive",
                             tint: .green)
             }
-            HStack(spacing: 18) {
-                Button {
-                    showClearScanConfirm = true
-                } label: {
-                    Label("清除扫描", systemImage: "trash")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.accentCyan)
-                }
-                .buttonStyle(.plain)
-                .disabled(state.scanTargets.isEmpty && state.launchHackMarks.isEmpty && state.launchHackFindings.isEmpty)
-                Button {
-                    state.updateRules()
-                } label: {
-                    Label("更新规则", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.accentCyan)
-                }
-                .buttonStyle(.plain)
-                Spacer()
-            }
-            if !state.rulesStatus.isEmpty {
-                Text(state.rulesStatus)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
         }
     }
 
@@ -629,6 +604,28 @@ struct ContentView: View {
                     .stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
         }
         .buttonStyle(.plain)
+    }
+
+    /// 第 71 条的操作区并排按钮：跟第 59 条扫描按钮同款（面板
+    /// 底色＋细描边）；不走 requireSign，保持两个按钮原来的行为。
+    private func opsPairButton(title: String, symbol: String, disabled: Bool,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.accentCyan)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(Color.panel,
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
     }
 
     private var sourceSection: some View {
@@ -669,11 +666,19 @@ struct ContentView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(Color.primaryText)
             Spacer()
-            Text(state.scanTargets.isEmpty ? "未扫描" : "\(count) 个")
+            Text(sourceRowStatus(count: count, total: state.vendorTotals[group] ?? 0))
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(state.scanTargets.isEmpty ? Color.secondaryText : Color.accentCyan)
+                .foregroundStyle(state.scanTargets.isEmpty && (state.vendorTotals[group] ?? 0) == 0 ? Color.secondaryText : Color.accentCyan)
         }
         .padding(.vertical, 11)
+    }
+
+    /// 第 72 条：广告商行尾只显示数量——有待处理的显示这次的
+    /// 个数，清零后待处理没了、显示累计识别数（只数字、不带
+    /// 「累计」字样，Grace 定）；两者都没有才是「未扫描」。
+    private func sourceRowStatus(count: Int, total: Int) -> String {
+        if !state.scanTargets.isEmpty { return "\(count) 个" }
+        return total > 0 ? "\(total)" : "未扫描"
     }
 
     private var rowDivider: some View {
@@ -685,6 +690,26 @@ struct ContentView: View {
     private var actionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "操作", subtitle: "每个文件独立备份与处理")
+            // 第 71 条：清除扫描/更新规则归到操作板块，改成带框
+            // 并排按钮，排在全部清零上面（原来在素材清单区里）。
+            // 第 73 条：更新规则带上当前规则版本；还没下载过规则
+            // （版本 0）时只显示「更新规则」。
+            HStack(spacing: 10) {
+                opsPairButton(title: "清除扫描", symbol: "trash",
+                              disabled: state.scanTargets.isEmpty && state.launchHackMarks.isEmpty && state.launchHackFindings.isEmpty) {
+                    showClearScanConfirm = true
+                }
+                opsPairButton(title: RulesStore.currentVersion > 0 ? "更新规则 · 第 \(RulesStore.currentVersion) 版" : "更新规则",
+                              symbol: "arrow.triangle.2.circlepath",
+                              disabled: false) {
+                    state.updateRules()
+                }
+            }
+            if !state.rulesStatus.isEmpty {
+                Text(state.rulesStatus)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
             Button {
                 if requireSign() {
                     if state.scanTargets.isEmpty {
