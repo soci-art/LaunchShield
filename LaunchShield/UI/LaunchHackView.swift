@@ -1299,6 +1299,11 @@ struct LaunchHackView: View {
                                             }
                                         }
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                                        // 第 74 条：太宽的图画面虽被裁住，
+                                        // 点击区域却会溢出到左右邻格（从
+                                        // 旁边格子能点到这张宽图）。把命
+                                        // 中区域也锁死在这块圆角正方形里。
+                                        .contentShape(RoundedRectangle(cornerRadius: 10))
                                     Text(item.tileCaption).font(.system(size: 10)).foregroundStyle(Color.secondaryText)
                                         .lineLimit(1)
                                 }
