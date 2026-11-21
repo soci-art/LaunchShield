@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var showBackups = false
     @State private var showLogs = false
     @State private var showClearConfirm = false
+    @State private var showClearScanConfirm = false
     @State private var showClearCacheConfirm = false
     @State private var showRestoreConfirm = false
     @State private var ipaShareItem: ShareItem?
@@ -93,6 +94,14 @@ struct ContentView: View {
         }
         .sheet(item: $ipaShareItem) { item in
             ShareSheet(items: [item.url])
+        }
+        .confirmationDialog("清除扫描结果？", isPresented: $showClearScanConfirm, titleVisibility: .visible) {
+            Button("清除", role: .destructive) {
+                state.clearScanResults()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("只清掉素材清单里扫描到的结果，不动任何文件、不清零、不解冻。LaunchHack 手动标记的那一组不清。")
         }
         .confirmationDialog("确定要清零这些素材吗？", isPresented: $showClearConfirm, titleVisibility: .visible) {
             Button("先备份，再全部清零", role: .destructive) {
@@ -567,6 +576,15 @@ struct ContentView: View {
                             tint: .green)
             }
             HStack(spacing: 18) {
+                Button {
+                    showClearScanConfirm = true
+                } label: {
+                    Label("清除扫描", systemImage: "trash")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .buttonStyle(.plain)
+                .disabled(!state.scanTargets.contains { $0.group != AppState.launchHackTargetGroup })
                 Button {
                     state.updateRules()
                 } label: {

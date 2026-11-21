@@ -874,6 +874,17 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 清除扫描结果（清单第 46 条）：只清素材清单里规则扫描来的
+    /// 条目和扫描识别数据，不动任何文件、不清零、不解冻；
+    /// LaunchHack 手动标记那一组是手动收集的，不清。
+    func clearScanResults() {
+        let removed = scanTargets.filter { $0.group != Self.launchHackTargetGroup }.count
+        scanTargets.removeAll { $0.group != Self.launchHackTargetGroup }
+        lastRecognition = []
+        lastScanSkippedFrozen = 0
+        log("已清除扫描结果：\(removed) 项（只清列表，未动任何文件）", .notice)
+    }
+
     // MARK: - Containers and target
 
     func refreshContainers(completion: (() -> Void)? = nil) {
