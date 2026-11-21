@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var showBackups = false
     @State private var showLogs = false
     @State private var showClearConfirm = false
+    @State private var showRefreezeConfirm = false
     @State private var showNeedScanAlert = false
     @State private var showClearScanConfirm = false
     @State private var showSingleAppEntryAlert = false
@@ -114,6 +115,14 @@ struct ContentView: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("会把扫描到的结果和 LaunchHack 标记全部清掉，清完要重新扫描、重新标记。不动任何文件、不清零、不解冻。")
+        }
+        .confirmationDialog("把已复发的文件重新清零并冻结？", isPresented: $showRefreezeConfirm, titleVisibility: .visible) {
+            Button("重新清零并冻结 \(state.recurredRecipeCount) 个") {
+                state.refreezeRelapsed()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("会先备份，再把这些又变大的文件清零并冻结。")
         }
         .confirmationDialog("确定要清零这些素材吗？", isPresented: $showClearConfirm, titleVisibility: .visible) {
             Button("先备份，再全部清零", role: .destructive) {
@@ -709,6 +718,27 @@ struct ContentView: View {
                 Text(state.rulesStatus)
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
+            }
+            // 第 75 条：「一键冻结已复发」从已守护应用页挪到这里，
+            // 排在全部清零上面，橙色框；有复发才出现，确认与
+            // 重冻行为和原来一模一样。
+            if state.recurredRecipeCount > 0 {
+                Button {
+                    showRefreezeConfirm = true
+                } label: {
+                    Label("一键冻结已复发（\(state.recurredRecipeCount)）", systemImage: "snowflake")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.orange)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(Color.orange.opacity(0.10),
+                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.orange.opacity(0.45), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
             }
             Button {
                 if requireSign() {
