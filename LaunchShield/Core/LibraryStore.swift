@@ -6,6 +6,25 @@ struct LibraryFile: Codable {
     var directoryGuards: [DirectoryGuard] = []
 }
 
+extension LibraryFile {
+    private enum CodingKeys: String, CodingKey {
+        case recipes, backups, directoryGuards
+    }
+
+    /// Decode every field as if-present. The synthesized decoder ignores
+    /// the property defaults above and throws keyNotFound for any key a
+    /// library.json written by an older build does not have yet (e.g.
+    /// `directoryGuards`, added in build 23) — and that error's message
+    /// ("couldn't be read because it is missing") latched the store's
+    /// fail-closed lock for the whole session (checklist item 53).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recipes = try container.decodeIfPresent([Recipe].self, forKey: .recipes) ?? []
+        backups = try container.decodeIfPresent([BackupRecord].self, forKey: .backups) ?? []
+        directoryGuards = try container.decodeIfPresent([DirectoryGuard].self, forKey: .directoryGuards) ?? []
+    }
+}
+
 /// Recipes and the backup index live in Application Support; the original
 /// bytes live in a Documents folder so they survive an app update and can be
 /// copied out by the user.
