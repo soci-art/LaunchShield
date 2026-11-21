@@ -18,6 +18,8 @@ private struct LaunchHackVisualMatch {
     let previewData: Data?
     let mediaDetails: String
     let evidence: [String]
+    let pixelWidth: Int
+    let pixelHeight: Int
 
     var score: Int {
         let visual = max(0, min(100, Int((1.0 - Double(distance) / 0.30) * 100)))
@@ -27,6 +29,29 @@ private struct LaunchHackVisualMatch {
 
     var isStrong: Bool {
         distance <= 0.10 || (distance <= 0.17 && textOverlap >= 2)
+    }
+}
+
+/// 图片墙的一张图：扫描时按路径证据排队、解码出来的大图，自带
+/// 完整路径身份；用户点确认后按原路径生成候选、同步回主页处理
+/// （Grace 2026-11-21 定：机器筛、人认图）。
+private struct LaunchHackGalleryItem: Identifiable, Equatable {
+    let bundleID: String
+    let groupID: String?
+    let appName: String
+    let rootPath: String
+    let relativePath: String
+    let size: UInt64
+    let modifiedAt: Date
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let pathScore: Int
+    let previewData: Data?
+
+    var id: String { (groupID ?? "app") + "|" + relativePath }
+    var folderPath: String { (relativePath as NSString).deletingLastPathComponent }
+    var folderName: String {
+        folderPath.isEmpty ? "（根目录）" : (folderPath as NSString).lastPathComponent
     }
 }
 
@@ -107,6 +132,8 @@ private enum LaunchHackVisualMatcher {
                         referenceText: Set<String>,
                         kind: FileKind) -> LaunchHackVisualMatch? {
         guard kind == .image || kind == .video else { return nil }
+        // 没导入截图时视频无从比对、也不上图片墙，直接跳过省时间。
+        if references.isEmpty, kind == .video { return nil }
 
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("LaunchHackVisual-\(UUID().uuidString)", isDirectory: true)
@@ -157,10 +184,31 @@ private enum LaunchHackVisualMatcher {
                 detail = "视频 · \(String(format: "%.1f", duration)) 秒 · 比较 \(frames.count) 个关键帧"
             }
 
+            // 预览图先备好：图片墙要用它当图，命中时也用它当证据图。
+            // 太大就缩一份小的，墙上看和点开确认都够用。
+            var preview = UIImage(cgImage: frames[0]).jpegData(compressionQuality: 0.65)
+            if (preview?.count ?? 0) > 160 * 1024 {
+                let frame = frames[0]
+                let scale = min(1, 480.0 / CGFloat(max(frame.width, frame.height)))
+                let thumbSize = CGSize(width: CGFloat(frame.width) * scale,
+                                       height: CGFloat(frame.height) * scale)
+                let renderer = UIGraphicsImageRenderer(size: thumbSize)
+                preview = renderer.jpegData(withCompressionQuality: 0.6) { _ in
+                    UIImage(cgImage: frame).draw(in: CGRect(origin: .zero, size: thumbSize))
+                }
+                if (preview?.count ?? 0) > 160 * 1024 { preview = nil }
+            }
+            let pixelWidth = kind == .image ? frames[0].width : 0
+            let pixelHeight = kind == .image ? frames[0].height : 0
+            // 没导入截图：不做特征比对，解码出的尺寸与预览照样带回
+            // 去喂图片墙（距离记 1，永不过线）。
+            if references.isEmpty {
+                return LaunchHackVisualMatch(distance: 1, textOverlap: 0,
+                    previewData: preview, mediaDetails: detail, evidence: [],
+                    pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+            }
             let comparisons = frames.compactMap { compare(references: references, referenceText: referenceText, candidate: $0) }
             guard let best = comparisons.min(by: { $0.0 < $1.0 }) else { return nil }
-            let preview = UIImage(cgImage: frames[0]).jpegData(compressionQuality: 0.65)
-            let boundedPreview = (preview?.count ?? 0) <= 160 * 1024 ? preview : nil
             var evidence = [
                 "[截图视觉匹配] 最佳视觉距离：\(String(format: "%.4f", best.0))",
                 "[截图视觉匹配] OCR 文本交集：\(best.1) 个词",
@@ -169,8 +217,9 @@ private enum LaunchHackVisualMatcher {
             if best.0 <= 0.10 { evidence.append("[高置信度] 视觉特征高度接近用户提供的广告截图") }
             if best.1 >= 2 { evidence.append("[辅助证据] 截图与素材包含相同文字") }
             return LaunchHackVisualMatch(distance: best.0, textOverlap: best.1,
-                                          previewData: boundedPreview, mediaDetails: detail,
-                                          evidence: evidence)
+                                          previewData: preview, mediaDetails: detail,
+                                          evidence: evidence,
+                                          pixelWidth: pixelWidth, pixelHeight: pixelHeight)
         } catch {
             return nil
         }
@@ -263,35 +312,42 @@ private final class LaunchHackModel: ObservableObject {
     @Published var visitedFiles = 0
     @Published var checkedMedia = 0
     @Published var totalContainers = 0
-    @Published var status = "导入广告截图后，LaunchHack 会检索主页所选应用的容器：图片、视频按截图比对，数据文件按路径与内容证据识别。"
+    @Published var gallery: [LaunchHackGalleryItem] = []
+    @Published var confirmedGalleryIDs: Set<String> = []
+    @Published var gallerySmallSkipped = 0
+    @Published var status = "导入广告截图后按画面比对检索主页所选应用；也可以不导入截图，直接扫描，在可疑图片墙里亲手认图。数据文件按路径与内容证据识别。"
     var onLog: ((String, LogLevel) -> Void)?
 
     func syncFromState(_ findings: [LaunchHackCandidate]) {
         if candidates != findings { candidates = findings }
     }
 
-    func start(screenshot: Data, containers: [ContainerInfo], state: AppState) {
+    func start(screenshot: Data?, containers: [ContainerInfo], state: AppState) {
         guard !isRunning else { return }
         guard state.channel.isAvailable else {
             status = state.channel.unavailableReason
             onLog?(status, .warning)
             return
         }
-        guard let referenceImage = LaunchHackVisualMatcher.cgImage(from: screenshot) else {
-            status = "截图无法解析，请重新选择清晰的广告截图。"
-            return
+        // 截图可选：给了就走视觉比对，没给就只走数据线＋图片墙。
+        var referenceFeatures: [VNFeaturePrintObservation] = []
+        var referenceText: Set<String> = []
+        if let screenshot {
+            guard let referenceImage = LaunchHackVisualMatcher.cgImage(from: screenshot) else {
+                status = "截图无法解析，请重新选择清晰的广告截图。"
+                return
+            }
+            referenceFeatures = LaunchHackVisualMatcher.referencePrints(referenceImage)
+            guard !referenceFeatures.isEmpty else {
+                status = "截图无法解析，请重新选择清晰的广告截图。"
+                return
+            }
+            referenceText = LaunchHackVisualMatcher.recognizedText(referenceImage)
         }
-        let referenceFeatures = LaunchHackVisualMatcher.referencePrints(referenceImage)
-        guard !referenceFeatures.isEmpty else {
-            status = "截图无法解析，请重新选择清晰的广告截图。"
-            return
-        }
-
-        let referenceText = LaunchHackVisualMatcher.recognizedText(referenceImage)
         // 只扫主页选中的目标应用（Grace 2026-11-21 定）：它的数据容器
         // 加关联共享容器，不再全机扫。
         guard state.targetChosen, !state.target.bundleID.isEmpty else {
-            status = "先在主页选择一个要检测的目标应用，再导入截图。"
+            status = "先在主页选择一个要检测的目标应用，再开始检测。"
             return
         }
         let targetID = state.target.bundleID
@@ -321,11 +377,18 @@ private final class LaunchHackModel: ObservableObject {
         isRunning = true
         scanProgress = nil
         candidates = []
+        gallery = []
+        confirmedGalleryIDs = []
+        gallerySmallSkipped = 0
         visitedFiles = 0
         checkedMedia = 0
         totalContainers = targets.count
-        status = "正在分析截图并检索 \(state.target.name) 的 \(targets.count) 个容器…"
-        onLog?("LaunchHack 开始检测 \(state.target.name)：\(targets.count) 个容器，OCR 提取 \(referenceText.count) 个文本词项", .info)
+        status = "正在检索 \(state.target.name) 的 \(targets.count) 个容器…"
+        if screenshot != nil {
+            onLog?("LaunchHack 开始检测 \(state.target.name)：\(targets.count) 个容器，OCR 提取 \(referenceText.count) 个文本词项", .info)
+        } else {
+            onLog?("LaunchHack 开始检测 \(state.target.name)：\(targets.count) 个容器（未导入截图，走数据线＋图片墙）", .info)
+        }
         let channel = state.channel
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -335,6 +398,9 @@ private final class LaunchHackModel: ObservableObject {
             var visualCount = 0
             var dataCount = 0
             var sniffedMedia = 0
+            var galleryPool: [LaunchHackGalleryItem] = []
+            var smallSkipped = 0
+            let hasReference = !referenceFeatures.isEmpty
             var closest: [(path: String, distance: Float)] = []
             var failures: [String] = []
 
@@ -425,10 +491,10 @@ private final class LaunchHackModel: ObservableObject {
                         if a.score != b.score { return a.score > b.score }
                         return a.file.modified > b.file.modified
                     }
-                    .map { $0.file }
                 let dataWork = entry.work.filter { (kindOf[$0.path] ?? .other) == .other }
 
-                for file in mediaWork {
+                for mediaEntry in mediaWork {
+                    let file = mediaEntry.file
                     processed += 1
                     if processed % 20 == 0 {
                         let snapshot = processed
@@ -449,9 +515,28 @@ private final class LaunchHackModel: ObservableObject {
                         relativePath: relative, channel: channel,
                         references: referenceFeatures, referenceText: referenceText,
                         kind: kindOf[file.path] ?? .other) else { continue }
+                    // 图片墙：大图（短边 ≥300）按证据顺序收录，小图只
+                    // 计数不上墙（Grace 2026-11-21 定：小图没必要显示）。
+                    if (kindOf[file.path] ?? .other) == .image, match.pixelWidth > 0 {
+                        if min(match.pixelWidth, match.pixelHeight) >= 300 {
+                            if galleryPool.count < 60, let preview = match.previewData {
+                                galleryPool.append(LaunchHackGalleryItem(
+                                    bundleID: target.bundleID, groupID: target.groupID,
+                                    appName: target.appName, rootPath: target.rootPath,
+                                    relativePath: relative, size: file.size,
+                                    modifiedAt: file.modified,
+                                    pixelWidth: match.pixelWidth, pixelHeight: match.pixelHeight,
+                                    pathScore: mediaEntry.score, previewData: preview))
+                            }
+                        } else {
+                            smallSkipped += 1
+                        }
+                    }
                     // 没过线也把距离留下来：整轮未命中时，日志报最接近
                     // 的几个，一眼分清图不在还是差一点（Grace 定）。
-                    closest.append((path: relative, distance: match.distance))
+                    if hasReference {
+                        closest.append((path: relative, distance: match.distance))
+                    }
                     guard match.isStrong else { continue }
                     let md5 = file.size <= 32 * 1024 * 1024 ? try? channel.md5(file.path) : nil
                     matches.append(LaunchHackCandidate(bundleID: target.bundleID,
@@ -524,15 +609,28 @@ private final class LaunchHackModel: ObservableObject {
             }.prefix(500))
             DispatchQueue.main.async {
                 self.candidates = ordered
+                self.gallery = galleryPool
+                self.gallerySmallSkipped = smallSkipped
                 self.visitedFiles = visited
                 self.checkedMedia = mediaCount
                 self.isRunning = false
                 self.scanProgress = 1
-                let statusText = failures.isEmpty
-                    ? "检索完成：视觉分析 \(mediaCount) 个媒体文件、命中 \(visualCount) 个；数据文件按证据命中 \(dataCount) 个。"
-                    : "检索完成但有 \(failures.count) 个容器未能完整读取；结果可能不完整。"
+                var statusText: String
+                if !failures.isEmpty {
+                    statusText = "检索完成但有 \(failures.count) 个容器未能完整读取；结果可能不完整。"
+                } else if hasReference {
+                    statusText = "检索完成：视觉分析 \(mediaCount) 个媒体文件、命中 \(visualCount) 个；数据文件按证据命中 \(dataCount) 个。"
+                    if !galleryPool.isEmpty {
+                        statusText += "图片墙收录 \(galleryPool.count) 张大图，可点开人工确认。"
+                    }
+                } else {
+                    statusText = "检索完成：数据文件按证据命中 \(dataCount) 个；图片墙收录 \(galleryPool.count) 张大图，点开认出广告图即可加入结果。"
+                }
                 self.status = statusText
                 self.onLog?(statusText, failures.isEmpty ? .success : .warning)
+                if !galleryPool.isEmpty || smallSkipped > 0 {
+                    self.onLog?("LaunchHack 图片墙收录 \(galleryPool.count) 张大图（短边 ≥300），另略过 \(smallSkipped) 张小图", .info)
+                }
                 if sniffedMedia > 0 {
                     self.onLog?("LaunchHack 有 \(sniffedMedia) 个文件靠内容认出是图片/视频（后缀认不出）", .info)
                 }
@@ -546,6 +644,34 @@ private final class LaunchHackModel: ObservableObject {
             }
         }
     }
+
+    /// 用户在图片墙里亲手认出一张广告图：按它自带的完整路径生成
+    /// 候选，页面既有的同步会把它带回主页，走正常的处理流程。
+    func confirmGalleryItem(_ item: LaunchHackGalleryItem, state: AppState) {
+        guard !confirmedGalleryIDs.contains(item.id) else { return }
+        confirmedGalleryIDs.insert(item.id)
+        let candidate = LaunchHackCandidate(
+            bundleID: item.bundleID, groupID: item.groupID, appName: item.appName,
+            relativePath: item.relativePath, size: item.size, modifiedAt: item.modifiedAt,
+            md5: nil,
+            isFrozen: state.channel.isImmutable(item.rootPath + "/" + item.relativePath),
+            score: 95,
+            evidence: [
+                "[用户确认] 在可疑图片墙中亲手认出这张是广告图",
+                "[位置] 所在文件夹：\(item.folderPath.isEmpty ? "（根目录）" : item.folderPath)",
+                "[只读分析] 图片 · \(item.pixelWidth) × \(item.pixelHeight)，原文件未被修改"
+            ],
+            mediaDetails: "图片 · \(item.pixelWidth) × \(item.pixelHeight)",
+            previewData: item.previewData)
+        if !candidates.contains(candidate) {
+            candidates.append(candidate)
+            candidates = Array(candidates.sorted {
+                if $0.score != $1.score { return $0.score > $1.score }
+                return $0.modifiedAt > $1.modifiedAt
+            }.prefix(500))
+        }
+        onLog?("LaunchHack 图片墙确认：\(item.relativePath) 已加入识别结果", .success)
+    }
 }
 
 struct LaunchHackView: View {
@@ -556,6 +682,7 @@ struct LaunchHackView: View {
     @State private var screenshotData: Data?
     @State private var screenshotImage: UIImage?
     @State private var isLoadingScreenshot = false
+    @State private var selectedGalleryItem: LaunchHackGalleryItem?
 
     var body: some View {
         NavigationStack {
@@ -565,6 +692,7 @@ struct LaunchHackView: View {
                     screenshotPicker
                     pipelineStatus
                     resultSummary
+                    gallerySection
                 }
                 .padding(16)
                 .frame(maxWidth: 620)
@@ -604,6 +732,9 @@ struct LaunchHackView: View {
         .onChange(of: state.launchHackFindings) { _, findings in
             model.syncFromState(findings)
         }
+        .sheet(item: $selectedGalleryItem) { item in
+            galleryDetail(item)
+        }
     }
 
     private var header: some View {
@@ -619,7 +750,7 @@ struct LaunchHackView: View {
                     Text("截图驱动 · 自动定位 · 自动同步").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
                 }
             }
-            Text("只需导入真实广告界面截图。LaunchHack 自动提取视觉与文字特征，检索所选应用的资源：媒体按画面比对，数据文件按证据识别，结果同步到 LaunchShield。")
+            Text("导入广告截图可按画面自动比对定位；不导入也能直接扫描，在可疑图片墙里亲手认图。数据文件按证据识别，结果同步到 LaunchShield。")
                 .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
         }
         .padding(.vertical, 3)
@@ -647,6 +778,18 @@ struct LaunchHackView: View {
                 .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14))
             }
             .disabled(model.isRunning || isLoadingScreenshot)
+            Button {
+                runScan(screenshot: nil)
+            } label: {
+                HStack {
+                    Image(systemName: "rectangle.grid.2x2")
+                    Text("不导入截图，直接扫描看可疑图片")
+                }
+                .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.accentCyan)
+                .frame(maxWidth: .infinity).frame(height: 44)
+                .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+            }
+            .disabled(model.isRunning)
             Label("截图只在本机用于视觉分析，不会上传到服务器。", systemImage: "lock.shield")
                 .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
         }
@@ -682,6 +825,98 @@ struct LaunchHackView: View {
         .padding(15).panel()
     }
 
+    private var gallerySection: some View {
+        Group {
+            if !model.gallery.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("可疑图片").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primaryText)
+                        Spacer()
+                        Text("\(model.gallery.count) 张大图")
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(Color.secondaryText)
+                    }
+                    Text("按证据排出的大图，小图已略过。点开看大图，认出是广告就加入识别结果，再回主页处理它所在的文件夹。")
+                        .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
+                        ForEach(model.gallery) { item in
+                            Button { selectedGalleryItem = item } label: {
+                                VStack(spacing: 4) {
+                                    ZStack(alignment: .topTrailing) {
+                                        if let data = item.previewData, let ui = UIImage(data: data) {
+                                            Image(uiImage: ui).resizable().scaledToFill()
+                                                .frame(maxWidth: .infinity).frame(height: 110).clipped()
+                                        } else {
+                                            Rectangle().fill(Color.secondaryText.opacity(0.15)).frame(height: 110)
+                                        }
+                                        if model.confirmedGalleryIDs.contains(item.id) {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundStyle(.green).padding(4)
+                                        }
+                                    }
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    Text(item.folderName).font(.system(size: 10)).foregroundStyle(Color.secondaryText)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    if model.gallerySmallSkipped > 0 {
+                        Text("另有 \(model.gallerySmallSkipped) 张小图（短边不到 300）已略过。")
+                            .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
+                    }
+                }
+                .padding(15).panel()
+            }
+        }
+    }
+
+    private func galleryDetail(_ item: LaunchHackGalleryItem) -> some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let data = item.previewData, let ui = UIImage(data: data) {
+                        Image(uiImage: ui).resizable().scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    Text(item.relativePath)
+                        .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                    Text("所在文件夹：\(item.folderPath.isEmpty ? "（根目录）" : item.folderPath)")
+                        .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                    Text("尺寸 \(item.pixelWidth) × \(item.pixelHeight) · 大小 \(ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file))")
+                        .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                    if model.confirmedGalleryIDs.contains(item.id) {
+                        Label("已加入识别结果，回主页即可处理它所在的文件夹。", systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 13, weight: .medium)).foregroundStyle(.green)
+                    } else {
+                        Button {
+                            model.confirmGalleryItem(item, state: state)
+                            selectedGalleryItem = nil
+                        } label: {
+                            HStack {
+                                Image(systemName: "checkmark.circle")
+                                Text("就是这张，加入识别结果")
+                            }
+                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                            .frame(maxWidth: .infinity).frame(height: 48)
+                            .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14))
+                        }
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: 620)
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color.appBackground.ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("关闭") { selectedGalleryItem = nil }
+                }
+            }
+        }
+    }
+
     private var resultSummary: some View {
         HStack(spacing: 8) {
             metric("\(model.candidates.count)", "匹配资源")
@@ -700,12 +935,16 @@ struct LaunchHackView: View {
 
     private func loadContainersAndRunIfReady() {
         guard let screenshotData, !model.isRunning else { return }
+        runScan(screenshot: screenshotData)
+    }
+
+    private func runScan(screenshot: Data?) {
+        guard !model.isRunning else { return }
         if state.didLoadContainers {
-            model.start(screenshot: screenshotData, containers: state.containers, state: state)
+            model.start(screenshot: screenshot, containers: state.containers, state: state)
         } else {
             state.refreshContainers {
-                guard let data = self.screenshotData else { return }
-                self.model.start(screenshot: data, containers: self.state.containers, state: self.state)
+                self.model.start(screenshot: screenshot, containers: self.state.containers, state: self.state)
             }
         }
     }
