@@ -62,6 +62,16 @@ final class LibraryStore {
             try saveOrThrow()
         } catch {
             file.backups = previous
+            // If the failed write can be rolled back durably, remove the
+            // unregistered backup bytes as well. If rollback also fails,
+            // preserve the backup directory rather than risk deleting bytes
+            // referenced by an index that may have reached disk.
+            do {
+                try saveOrThrow()
+                try? FileManager.default.removeItem(at: backupDirectoryURL(for: record.id))
+            } catch {
+                // Keep the backup bytes for manual recovery.
+            }
             throw error
         }
     }

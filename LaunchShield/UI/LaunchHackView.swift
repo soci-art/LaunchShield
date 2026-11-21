@@ -510,6 +510,7 @@ private final class LaunchHackModel: ObservableObject {
     @Published var isScanning = false
     @Published var isUploading = false
     @Published var uploadMessage = ""
+    @Published var uploadResultUncertain = false
     @Published var scannedContainers = 0
     @Published var totalContainers = 0
     @Published var visitedFiles = 0
@@ -578,9 +579,10 @@ private final class LaunchHackModel: ObservableObject {
                                contentType: "application/json",
                                body: data) { success, message in
             self.isUploading = false
+            self.uploadResultUncertain = !success
             self.uploadMessage = success
                 ? "识别数据上传成功（\(uploadedCount) 项）。"
-                : "识别数据上传失败：\(message)"
+                : "上传结果未确认：\(message)。服务器可能已经收到数据；为避免重复记录，请先核对服务器，再决定是否重新提交。"
         }
     }
 
@@ -736,6 +738,7 @@ private final class LaunchHackModel: ObservableObject {
         }
 
         isScanning = true
+        uploadResultUncertain = false
         candidates = []
         scannedContainers = 0
         visitedFiles = 0
@@ -1086,7 +1089,9 @@ struct LaunchHackView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("将上传应用名称与标识、共享组标识、相对路径、文件大小与修改时间、MD5、冻结状态、识别优先级、媒体属性及证据文本。证据中的 URL 会移除查询参数和片段。不会上传图片、视频或其他原始文件内容。")
+            Text(model.uploadResultUncertain
+                 ? "上次提交未能确认结果，服务器可能已经收到数据。再次提交可能产生重复记录，请先核对服务器记录。确认后才会重新提交。"
+                 : "将上传应用名称与标识、共享组标识、相对路径、文件大小与修改时间、MD5、冻结状态、识别优先级、媒体属性及证据文本。证据中的 URL 会移除查询参数和片段。不会上传图片、视频或其他原始文件内容。")
         }
     }
 
