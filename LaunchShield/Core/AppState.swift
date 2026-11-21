@@ -812,7 +812,7 @@ final class AppState: ObservableObject {
         launchHackMarks = Array(decoded.prefix(500))
     }
 
-    // MARK: - 广告商累计识别数（第 72 条）
+    // MARK: - 广告商识别总数（第 72 条建、第 80 条改口径）
 
     private var vendorTotalsURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -833,12 +833,15 @@ final class AppState: ObservableObject {
         try? data.write(to: vendorTotalsURL, options: [.atomic])
     }
 
-    /// 每次扫描（含深扫）完成后，把这次识别到的按广告商累加。
-    func accumulateVendorTotals(from targets: [TargetFile]) {
-        guard !targets.isEmpty else { return }
+    /// 第 80 条：不累计。每次扫描（含深扫）完成后，把这次
+    /// 识别到的按广告商总计、整表替换——每个类型显示的是
+    /// 最近一次扫描的总数，再扫一次就换新数，绝不叠加。
+    func replaceVendorTotals(from targets: [TargetFile]) {
+        var totals: [String: Int] = [:]
         for (group, groupTargets) in Dictionary(grouping: targets, by: { $0.group }) {
-            vendorTotals[group, default: 0] += groupTargets.count
+            totals[group] = groupTargets.count
         }
+        vendorTotals = totals
         persistVendorTotals()
     }
 
@@ -1594,7 +1597,7 @@ final class AppState: ObservableObject {
                 self.workProgress = nil
                 self.splash = selfSoldSplash
                 self.scanTargets = allTargets
-                self.accumulateVendorTotals(from: allTargets)
+                self.replaceVendorTotals(from: allTargets)
                 self.refreshLaunchHackTargets()
                 self.lastRecognition = recognition
                 self.lastScanSkippedFrozen = skippedFrozen
