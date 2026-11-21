@@ -412,7 +412,7 @@ enum LocalADBlockRule {
     private static func erosionMatchedDirectoryPaths(container: String, channel: Channel, ownerBundleID: String) -> [String] {
         var paths: [String] = []
         for spec in appSpecificAdPaths[ownerBundleID] ?? [] {
-            if let item = try? channel.inspectItem(at: container + "/" + spec.relPath), let item, item.isDirectory, !item.isSymlink {
+            if let item = try? channel.inspectItem(at: container + "/" + spec.relPath), item.isDirectory, !item.isSymlink {
                 paths.append(spec.relPath)
             }
         }
