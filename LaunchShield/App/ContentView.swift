@@ -549,22 +549,16 @@ struct ContentView: View {
                         .foregroundStyle(Color.secondaryText)
                 }
                 Spacer()
-                Button {
-                    if requireSign() { state.scanBaidu(deep: true) }
-                } label: {
-                    Label("深扫", systemImage: "magnifyingglass.circle")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.accentCyan)
+            }
+            // 第 59 条：深扫/扫描改成横排带框按钮，第一个深扫、
+            // 第二个扫描，跟备份页三个按钮一个待遇。
+            HStack(spacing: 10) {
+                scanActionButton(title: "深扫", symbol: "magnifyingglass.circle") {
+                    state.scanBaidu(deep: true)
                 }
-                .buttonStyle(.plain)
-                Button {
-                    if requireSign() { state.scanBaidu() }
-                } label: {
-                    Label("扫描", systemImage: "arrow.clockwise")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.accentCyan)
+                scanActionButton(title: "扫描", symbol: "arrow.clockwise") {
+                    state.scanBaidu()
                 }
-                .buttonStyle(.plain)
             }
             HStack(spacing: 10) {
                 SummaryTile(title: "素材文件",
@@ -609,6 +603,26 @@ struct ContentView: View {
                     .foregroundStyle(Color.secondaryText)
             }
         }
+    }
+
+    /// 第 59 条的带框扫描按钮：面板底色＋细描边，跟第 56 条
+    /// 备份页按钮同款。
+    private func scanActionButton(title: String, symbol: String,
+                                  action: @escaping () -> Void) -> some View {
+        Button {
+            if requireSign() { action() }
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.accentCyan)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(Color.panel,
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private var sourceSection: some View {
@@ -717,24 +731,33 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
 
+            // 第 60 条：备份记录也做成整条框卡片，跟全部清零、
+            // 全部还原并排成一组；颜色用紫色调，跟全部还原的
+            // 深灰面板区分开。
             Button {
                 if requireSign() { showBackups = true }
             } label: {
-                HStack {
-                    Label("备份记录", systemImage: "externaldrive")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
+                HStack(spacing: 12) {
+                    Image(systemName: "externaldrive.fill")
+                        .font(.system(size: 19, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("备份记录")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("共 \(state.backups.count) 份备份，可逐个或全部还原")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
                     Spacer()
-                    Text("\(state.backups.count) 份")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.secondaryText)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.secondaryText.opacity(0.7))
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 13, weight: .semibold))
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 17)
+                .frame(height: 68)
+                .background(LinearGradient(colors: [Color.purple.opacity(0.75), Color.indigo.opacity(0.85)],
+                                           startPoint: .leading,
+                                           endPoint: .trailing),
+                            in: RoundedRectangle(cornerRadius: 17, style: .continuous))
             }
             .buttonStyle(.plain)
         }

@@ -647,11 +647,10 @@ struct LaunchHackView: View {
                     summaryPanel
                     scanPanel
                     gallerySection
-                }
-                .padding(16)
-                .frame(maxWidth: 620)
-                .frame(maxWidth: .infinity)
             }
+            .padding(16)
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.appBackground.ignoresSafeArea())
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -798,23 +797,32 @@ struct LaunchHackView: View {
                     }
                     Text("按证据排出的大图，小图已略过。点开看大图，认出是广告就标记它，再回主页素材清单里处理。")
                         .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
+                    // 第 62 条：固定三列、每格等大正方形；图片用
+                    // overlay 塞进格子并裁切，绝不溢出压到邻格；
+                    // 已标记的勾在格子内最上层，不会被图盖住。
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
                         ForEach(model.gallery) { item in
                             Button { selectedGalleryItem = item } label: {
                                 VStack(spacing: 4) {
-                                    ZStack(alignment: .topTrailing) {
-                                        if let data = item.previewData, let ui = UIImage(data: data) {
-                                            Image(uiImage: ui).resizable().scaledToFill()
-                                                .frame(maxWidth: .infinity).frame(height: 110).clipped()
-                                        } else {
-                                            Rectangle().fill(Color.secondaryText.opacity(0.15)).frame(height: 110)
+                                    Color.clear
+                                        .aspectRatio(1, contentMode: .fit)
+                                        .overlay {
+                                            if let data = item.previewData, let ui = UIImage(data: data) {
+                                                Image(uiImage: ui).resizable().scaledToFill()
+                                            } else {
+                                                Rectangle().fill(Color.secondaryText.opacity(0.15))
+                                            }
                                         }
-                                        if model.confirmedGalleryIDs.contains(item.id) {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundStyle(.green).padding(4)
+                                        .overlay(alignment: .topTrailing) {
+                                            if model.confirmedGalleryIDs.contains(item.id) {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .font(.system(size: 17))
+                                                    .foregroundStyle(.green)
+                                                    .background(Circle().fill(.white).padding(2.5))
+                                                    .padding(4)
+                                            }
                                         }
-                                    }
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
                                     Text(item.folderName).font(.system(size: 10)).foregroundStyle(Color.secondaryText)
                                         .lineLimit(1)
                                 }
@@ -834,13 +842,15 @@ struct LaunchHackView: View {
 
     private func galleryDetail(_ item: LaunchHackGalleryItem) -> some View {
         NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let data = item.previewData, let ui = UIImage(data: data) {
-                        Image(uiImage: ui).resizable().scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
+            // 第 63 条：整页不滚动——图片区占满剩余高度、图缩进
+            // 框内，下面的路径信息和标记按钮一屏内直接可见。
+            VStack(alignment: .leading, spacing: 12) {
+                    ZStack {
+                        if let data = item.previewData, let ui = UIImage(data: data) {
+                            Image(uiImage: ui).resizable().scaledToFit()
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Text(item.relativePath)
                         .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
                     Text("所在文件夹：\(item.folderPath.isEmpty ? "（根目录）" : item.folderPath)")
@@ -864,11 +874,10 @@ struct LaunchHackView: View {
                             .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14))
                         }
                     }
-                }
-                .padding(16)
-                .frame(maxWidth: 620)
-                .frame(maxWidth: .infinity)
             }
+            .padding(16)
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.appBackground.ignoresSafeArea())
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -3430,8 +3430,20 @@ final class AppState: ObservableObject {
             $0.bundleID.lowercased() == normalizedBundleID
                 || associatedGroupIDs.contains(($0.groupID ?? $0.bundleID).lowercased())
         }
-        guard !targets.isEmpty else {
-            alertText = "这个应用没有在守护的条目。"
+        if targets.isEmpty {
+            // 第 57 条：文件夹守护收进应用折叠后，会出现只有文件夹
+            // 守护、没有文件条目的应用——逐个移除并解冻即可。
+            let appGuards = directoryGuards.filter {
+                $0.bundleID.lowercased() == normalizedBundleID
+                    || associatedGroupIDs.contains(($0.groupID ?? $0.bundleID).lowercased())
+            }
+            guard !appGuards.isEmpty else {
+                alertText = "这个应用没有在守护的条目。"
+                return
+            }
+            let guardAppName = appGuards.first?.appName ?? bundleID
+            for item in appGuards { removeDirectoryGuard(item) }
+            alertText = "已结束 \(guardAppName) 的守护：文件夹已解冻，今后不再巡查。"
             return
         }
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
@@ -3527,6 +3539,15 @@ final class AppState: ObservableObject {
                     self.store.file.recipes = previous
                     self.recipes = previous
                     failures += 1
+                }
+                if completed.count == targets.count {
+                    // 文件条目全摘干净后，这个应用的文件夹守护记录
+                    // 也一并移除并解冻（第 57 条，两边要一致）。
+                    let appGuards = self.directoryGuards.filter {
+                        $0.bundleID.lowercased() == normalizedBundleID
+                            || associatedGroupIDs.contains(($0.groupID ?? $0.bundleID).lowercased())
+                    }
+                    for item in appGuards { self.removeDirectoryGuard(item) }
                 }
                 self.log("结束 \(name) 的守护：移除 \(completed.count) 个条目，解冻文件 \(unfrozen) 个、文件夹 \(dirs) 个，失败 \(failures) 项",
                          failures == 0 ? .success : .warning)
