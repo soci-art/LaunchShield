@@ -2045,7 +2045,13 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.recipes = updated
                 self.store.file.recipes = updated
-                self.store.save()
+                if !self.store.save() {
+                    self.recipes = allRecipes
+                    self.store.file.recipes = allRecipes
+                    self.log("配方复查结果未能保存到本机，已保留上次记录；请检查存储空间", .warning)
+                    if !silent { self.alertText = "配方复查完成，但结果保存失败；本次状态没有写入本机。" }
+                    return
+                }
                 if !silent {
                     self.log("配方复查完成：正常 \(normal) 个，复发 \(recurred) 个，其他 \(other) 个",
                              recurred > 0 ? .warning : .info)
@@ -2077,11 +2083,12 @@ final class AppState: ObservableObject {
             }
             do {
                 let full = RecipeEngine.fullPath(recipe, container: root)
-                if self.channel.isImmutable(full) {
-                    try self.channel.setImmutable(full, false)
+                let wasImmutable = self.channel.isImmutable(full)
+                guard let current = try self.channel.inspectItem(at: full),
+                      !current.isDirectory, !current.isSymlink else {
+                    throw ChannelFailure("目标不存在、不是普通文件或已变成符号链接，未执行重新清零")
                 }
-                let size = self.channel.item(at: full)?.size ?? 0
-                if size > 0 {
+                if current.size > 0 {
                     let record = try self.backupManager.backup(path: full,
                                                                relativePath: recipe.relativePath,
                                                                bundleID: recipe.bundleID,
@@ -2091,7 +2098,26 @@ final class AppState: ObservableObject {
                                                                channel: self.channel)
                     try self.store.registerBackup(record)
                 }
-                try self.channel.truncate(full)
+                do {
+                    if wasImmutable { try self.channel.setImmutable(full, false) }
+                    try self.channel.truncate(full)
+                    if wasImmutable {
+                        try self.channel.setImmutable(full, true)
+                        guard self.channel.isImmutable(full) else {
+                            throw ChannelFailure("文件已清零，但原冻结状态未能恢复")
+                        }
+                    }
+                } catch {
+                    if wasImmutable {
+                        do {
+                            try self.channel.setImmutable(full, true)
+                            guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
+                        } catch {
+                            throw ChannelFailure("重新清零失败：\(error.localizedDescription)；警告：原冻结状态恢复失败：\(error.localizedDescription)")
+                        }
+                    }
+                    throw error
+                }
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
@@ -2151,10 +2177,9 @@ final class AppState: ObservableObject {
             do {
                 let full = RecipeEngine.fullPath(recipe, container: root)
                 if enabled {
-                    if self.channel.isImmutable(full) {
-                        try self.channel.setImmutable(full, false)
-                    }
-                    if let item = self.channel.item(at: full), !item.isDirectory {
+                    if let item = try self.channel.inspectItem(at: full) {
+                        guard !item.isSymlink else { throw ChannelFailure("目标是符号链接，拒绝占位") }
+                        guard !item.isDirectory else { throw ChannelFailure("目标已经是文件夹，无需重复占位") }
                         if item.size > 0 {
                             let record = try self.backupManager.backup(path: full,
                                                                        relativePath: recipe.relativePath,
@@ -2165,7 +2190,14 @@ final class AppState: ObservableObject {
                                                                        channel: self.channel)
                             try self.store.registerBackup(record)
                         }
-                        try self.channel.delete(full)
+                        let wasImmutable = item.isImmutable
+                        do {
+                            if wasImmutable { try self.channel.setImmutable(full, false) }
+                            try self.channel.delete(full)
+                        } catch {
+                            if wasImmutable { try? self.channel.setImmutable(full, true) }
+                            throw error
+                        }
                     }
                     try self.channel.createDirectory(full)
                 } else {
@@ -2308,7 +2340,7 @@ final class AppState: ObservableObject {
                 guard let item = self.channel.item(at: full), !item.isDirectory, item.size > 0 else { continue }
                 if DatabaseFile.matches(relativePath: recipe.relativePath) { continue }
                 do {
-                    if self.channel.isImmutable(full) { try self.channel.setImmutable(full, false) }
+                    let wasImmutable = self.channel.isImmutable(full)
                     let record = try self.backupManager.backup(path: full,
                                                                 relativePath: recipe.relativePath,
                                                                 bundleID: recipe.bundleID,
@@ -2318,8 +2350,15 @@ final class AppState: ObservableObject {
                                                                 channel: self.channel)
                     try self.store.registerBackup(record)
                     newBackups.append(record)
-                    try self.channel.truncate(full)
-                    try self.channel.setImmutable(full, true)
+                    do {
+                        if wasImmutable { try self.channel.setImmutable(full, false) }
+                        try self.channel.truncate(full)
+                        try self.channel.setImmutable(full, true)
+                        guard self.channel.isImmutable(full) else { throw ChannelFailure("文件已清零，但冻结状态未能确认") }
+                    } catch {
+                        if wasImmutable { try? self.channel.setImmutable(full, true) }
+                        throw error
+                    }
                     done += 1
                     self.log("已重新冻结复发文件：\(recipe.appName) · \(recipe.relativePath)", .success)
                 } catch {

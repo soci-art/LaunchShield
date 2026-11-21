@@ -143,12 +143,16 @@ struct BackupManager {
             return restored
         } catch {
             var rollbackResult = "未能确认原文件恢复状态"
+            var rollbackCanWrite = true
             if wasImmutable {
-                // The write may have succeeded before verification/freezing failed.
-                // Ensure rollback can write, then restore the original lock below.
-                try? channel.setImmutable(target, false)
+                do {
+                    try channel.setImmutable(target, false)
+                } catch {
+                    rollbackCanWrite = false
+                    rollbackResult = "无法解冻目标，自动回滚未执行：\(error.localizedDescription)"
+                }
             }
-            if let rollbackFile, let previousMD5 {
+            if rollbackCanWrite, let rollbackFile, let previousMD5 {
                 do {
                     try channel.restore(path: target, from: rollbackFile.path)
                     let digest = try channel.md5(target)
@@ -159,18 +163,22 @@ struct BackupManager {
                 } catch {
                     rollbackResult = "自动回滚失败：\(error.localizedDescription)"
                 }
-            } else if existing == nil {
+            } else if rollbackCanWrite, existing == nil {
                 do {
-                    if try channel.inspectItem(at: target) != nil {
-                        try channel.delete(target)
-                    }
+                    if try channel.inspectItem(at: target) != nil { try channel.delete(target) }
                     rollbackResult = "已清理本次创建的残留文件"
                 } catch {
                     rollbackResult = "清理残留文件失败：\(error.localizedDescription)"
                 }
             }
             if wasImmutable {
-                try? channel.setImmutable(target, true)
+                do {
+                    try channel.setImmutable(target, true)
+                    guard channel.isImmutable(target) else { throw ChannelFailure("冻结状态校验失败") }
+                    rollbackResult += "；原冻结状态已恢复"
+                } catch {
+                    rollbackResult += "；警告：原冻结状态恢复失败：\(error.localizedDescription)"
+                }
             }
             try? FileManager.default.removeItem(at: rollbackDirectory)
             throw ChannelFailure("恢复失败：\(error.localizedDescription)；\(rollbackResult)")
