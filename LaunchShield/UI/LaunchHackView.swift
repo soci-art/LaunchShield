@@ -533,54 +533,6 @@ private final class LaunchHackModel: ObservableObject {
         }
     }
 
-    /// 用户主动上传识别结果；仅提交可审计元数据，不上传原始媒体或文件内容。
-    func uploadRecognitionData() {
-        guard !isUploading else { return }
-        guard !candidates.isEmpty else {
-            uploadMessage = "没有可上传的识别数据。"
-            return
-        }
-        let records: [[String: Any]] = candidates.map { candidate in
-            [
-                "bundleID": candidate.bundleID as Any? ?? NSNull(),
-                "groupID": candidate.groupID as Any? ?? NSNull(),
-                "appName": candidate.appName,
-                "relativePath": candidate.relativePath,
-                "size": candidate.size,
-                "modifiedAt": ISO8601DateFormatter().string(from: candidate.modifiedAt),
-                "md5": candidate.md5 as Any? ?? NSNull(),
-                "isFrozen": candidate.isFrozen,
-                "priorityScore": candidate.score,
-                "evidence": candidate.evidence.map { LaunchHackContentAnalyzer.displayURLs(in: $0) },
-                "mediaDetails": candidate.mediaDetails as Any? ?? NSNull()
-            ]
-        }
-        let uploadedCount = records.count
-        let payload: [String: Any] = [
-            "schemaVersion": 1,
-            "uploadedAt": ISO8601DateFormatter().string(from: Date()),
-            "source": "LaunchHack",
-            "records": records
-        ]
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
-            uploadMessage = "识别数据序列化失败，未上传。"
-            return
-        }
-        isUploading = true
-        uploadMessage = "正在上传识别元数据…"
-        CollectUploader.upload(kind: "launchhack-recognition",
-                               contentType: "application/json",
-                               body: data) { success, message in
-            self.isUploading = false
-            self.uploadResultUncertain = !success
-            UserDefaults.standard.set(!success, forKey: "ls.launchHackUploadResultUncertain")
-            self.uploadMessage = success
-                ? "识别数据上传成功（\(uploadedCount) 项）。"
-                : "上传结果未确认：\(message)。服务器可能已经收到数据；为避免重复记录，请先核对服务器，再决定是否重新提交。"
-        }
-    }
-
     func removeDraft(_ draft: LaunchHackRuleDraft) {
         let previous = drafts
         drafts.removeAll { $0.id == draft.id }
@@ -921,63 +873,32 @@ private final class LaunchHackModel: ObservableObject {
 
 struct LaunchHackView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var model = LaunchHackModel()
-    @State private var selectedTraceStage: LaunchHackTraceStage = .afterFreeze
-    @State private var pendingRuleCandidate: LaunchHackCandidate?
-    @State private var pendingLocalRuleCandidate: LaunchHackCandidate?
-    @State private var localRuleMessage = ""
-    @State private var showUploadConfirmation = false
-    @State private var showBulkImportConfirmation = false
-    @State private var showBulkGovernanceConfirmation = false
-    @State private var selectedGovernanceIDs: Set<String> = []
-    @State private var governanceQueue: [LaunchHackCandidate] = []
-    @State private var governanceResults: [(id: String, name: String, success: Bool, message: String)] = []
-    @State private var governanceIndex = 0
-    @State private var isGovernanceRunning = false
-    @State private var isProfessionalMode = false
 
-    /// 只把配置文件中实际读出的 URL 作为静态来源线索；不声称这是运行时网络请求。
-    private var domainFindings: [LaunchHackDomainFinding] {
-        let urlPrefixes = ["[内容已读取] 配置 URL：", "[内容已读取] 关联 URL："]
-        var findings: [String: LaunchHackDomainFinding] = [:]
-
-        for candidate in model.candidates {
-            // 先在单个候选的证据范围内收集 URL 与配置路径，避免把其他候选的配置错误归到同一域名。
-            let urls = candidate.evidence.compactMap { evidence -> String? in
-                guard let prefix = urlPrefixes.first(where: { evidence.hasPrefix($0) }) else { return nil }
-                return String(evidence.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            let configPaths = candidate.evidence.compactMap { evidence -> String? in
-                let prefix = "[关联配置] "
-                guard evidence.hasPrefix(prefix) else { return nil }
-                return String(evidence.dropFirst(prefix.count))
-            }
-
-            for rawURL in urls {
-                guard let components = URLComponents(string: rawURL),
-                      let host = components.host?.lowercased(), !host.isEmpty else { continue }
-                var finding = findings[host] ?? LaunchHackDomainFinding(
-                    host: host, urls: [], configPaths: [], resourcePaths: []
-                )
-                if !finding.urls.contains(rawURL) { finding.urls.append(rawURL) }
-                for configPath in configPaths where !finding.configPaths.contains(configPath) {
-                    finding.configPaths.append(configPath)
-                }
-                finding.resourcePaths.insert(candidate.relativePath)
-                findings[host] = finding
-            }
-        }
-
-        return findings.values.sorted {
-            if $0.resourceCount != $1.resourceCount { return $0.resourceCount > $1.resourceCount }
-            return $0.host.localizedStandardCompare($1.host) == .orderedAscending
-        }
-    }
-
-    /// LaunchHack 始终跟随主页当前选中的单个目标，不读取批量勾选范围。
     private var selectedApps: [ContainerInfo] {
         guard state.targetChosen, !state.isWhitelisted(state.target.bundleID) else { return [] }
         return model.apps.filter { $0.bundleID == state.target.bundleID }
+    }
+
+    private var trackingTargets: [LaunchHackScanTarget] {
+        var targets: [LaunchHackScanTarget] = []
+        for app in selectedApps {
+            targets.append(LaunchHackScanTarget(bundleID: app.bundleID,
+                                                 appName: app.name,
+                                                 rootPath: app.path,
+                                                 groupID: nil))
+            targets.append(contentsOf: state.associatedGroups(for: app.bundleID)
+                .filter { !$0.path.isEmpty }
+                .map {
+                    LaunchHackScanTarget(bundleID: app.bundleID,
+                                         appName: "共享容器 · \\($0.bundleID)",
+                                         rootPath: $0.path,
+                                         groupID: $0.bundleID)
+                })
+        }
+        var seen = Set<String>()
+        return targets.filter { seen.insert($0.rootPath).inserted }
     }
 
     var body: some View {
@@ -989,7 +910,7 @@ struct LaunchHackView: View {
                     scanActionCard
                     resultOverviewCard
                     if !model.candidates.isEmpty {
-                        Label("已将 \(model.candidates.count) 项识别结果同步到 LaunchShield 主界面。请返回主界面查看摘要、核验并执行后续操作。",
+                        Label("已同步到 LaunchShield 主界面。返回主页即可查看简要结果、展开证据并执行后续操作。",
                               systemImage: "checkmark.circle.fill")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Color.green)
@@ -1020,35 +941,25 @@ struct LaunchHackView: View {
         }
     }
 
-    @Environment(\.dismiss) private var dismiss
-
     private var heroHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Image(systemName: "shield.lefthalf.filled")
-                    .font(.system(size: 25, weight: .semibold))
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
                     .frame(width: 48, height: 48)
-                    .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 15))
+                    .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 7) {
-                        Text("LaunchHack")
-                            .font(.system(size: 21, weight: .bold))
-                            .foregroundStyle(Color.primaryText)
-                        Text("LaunchShield 内部功能")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Color.accentCyan)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.accentCyan.opacity(0.12), in: Capsule())
-                    }
+                    Text("LaunchHack")
+                        .font(.system(size: 21, weight: .bold))
+                        .foregroundStyle(Color.primaryText)
                     Text("只读识别 · 结果同步")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                 }
             }
-            Text("LaunchHack 只读取目标应用并识别广告线索，结果自动同步到 LaunchShield 主界面；不会清理、冻结或修改任何文件。")
-                .font(.system(size: 13))
+            Text("这里只扫描并识别广告线索。不会清理、清零、冻结、导入规则或上传文件；识别结果自动交回 LaunchShield 主界面。")
+                .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1058,28 +969,27 @@ struct LaunchHackView: View {
     private var targetApplicationCard: some View {
         HStack(spacing: 12) {
             Image(systemName: "app.fill")
-                .font(.system(size: 23))
+                .font(.system(size: 22))
                 .foregroundStyle(Color.accentCyan)
-                .frame(width: 48, height: 48)
+                .frame(width: 46, height: 46)
                 .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
             VStack(alignment: .leading, spacing: 4) {
                 Text("当前检测应用")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.secondaryText)
                 Text(selectedApps.first?.name ?? "尚未选择应用")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                     .lineLimit(1)
                 Text(selectedApps.isEmpty
                      ? "请先返回 LaunchShield 主页选择一个可访问的应用"
-                     : "检测仅针对当前应用及可靠关联的共享容器")
+                     : "仅检测当前应用及已确认关联的共享容器")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 4)
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(selectedApps.isEmpty ? Color.secondaryText : Color.green)
+            Image(systemName: selectedApps.isEmpty ? "exclamationmark.circle" : "checkmark.circle.fill")
+                .foregroundStyle(selectedApps.isEmpty ? Color.orange : Color.green)
         }
         .padding(15)
         .panel()
@@ -1103,15 +1013,16 @@ struct LaunchHackView: View {
                 .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 15))
             }
             .buttonStyle(.plain)
-            .disabled(model.isScanning || model.isTracking || model.isUploading || selectedApps.isEmpty || !state.channel.isAvailable)
+            .disabled(model.isScanning || selectedApps.isEmpty || !state.channel.isAvailable || state.isBusy)
 
             if model.isScanning {
-                ProgressView(value: Double(model.scannedContainers), total: Double(max(model.totalContainers, 1)))
-                Text("正在检查应用资源：已完成 \(model.scannedContainers)/\(model.totalContainers) 个位置，访问 \(model.visitedFiles) 个文件")
+                ProgressView(value: Double(model.scannedContainers),
+                             total: Double(max(model.totalContainers, 1)))
+                Text("已检查 \\(model.scannedContainers)/\\(model.totalContainers) 个位置，访问 \\(model.visitedFiles) 个文件")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             } else {
-                Label("只读检测；识别结果自动同步到 LaunchShield，不修改目标 App", systemImage: "lock.shield")
+                Label("只读检测，不修改目标应用文件", systemImage: "lock.shield")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
             }
@@ -1129,117 +1040,34 @@ struct LaunchHackView: View {
     private var resultOverviewCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("检测结果")
+                Text("识别摘要")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Spacer()
-                Text(model.isScanning ? "检测中" : (model.candidates.isEmpty ? "等待检测" : "初步分析完成"))
+                Text(model.isScanning ? "检测中" : (model.candidates.isEmpty ? "等待检测" : "已同步"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(model.isScanning ? Color.accentCyan : Color.secondaryText)
             }
             HStack(spacing: 8) {
-                resultMetric("\(model.candidates.count)", "发现项目")
-                resultMetric("\(priorityCandidates.count)", "优先核验")
-                resultMetric("\(unsupportedCandidates.count)", "需补充关联")
+                resultMetric("\\(model.candidates.count)", "发现线索")
+                resultMetric("\\(model.candidates.filter { $0.score >= 80 }.count)", "优先核验")
+                resultMetric("\\(model.candidates.filter { $0.bundleID == nil }.count)", "待关联")
             }
             Text(model.candidates.isEmpty
-                 ? "检测只读取当前应用可访问的资源，不会自动清理、冻结或上传。"
-                 : "扫描结果已自动同步到 LaunchShield 主界面；这里仅负责只读识别，不提供清理、冻结或上传操作。")
+                 ? "扫描完成后这里只显示数量摘要，完整识别结果会出现在 LaunchShield 主界面。"
+                 : "识别结果已交回主界面。LaunchHack 不提供任何清理或冻结按钮。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-
         }
         .padding(15)
         .panel()
-    }
-
-    private var uploadPanel: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.up.doc")
-                    .foregroundStyle(Color.accentCyan)
-                Text("提交识别数据")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text("可选步骤")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            Text("完成候选核验后，可将识别元数据提交到你的服务器。不会上传图片、视频或其他原始文件。服务器解析和规则整理由服务端完成。")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            Button {
-                showUploadConfirmation = true
-            } label: {
-                Label(model.isUploading ? "正在提交…" : "确认并上传识别数据", systemImage: "arrow.up.circle.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.accentCyan)
-            .disabled(model.candidates.isEmpty || model.isUploading || model.isScanning)
-
-            if !model.uploadMessage.isEmpty {
-                Text(model.uploadMessage)
-                    .font(.system(size: 11))
-                    .foregroundStyle(model.uploadMessage.contains("成功") ? Color.green : Color.secondaryText)
-            }
-        }
-        .padding(14)
-        .panel()
-    }
-
-    private var priorityCandidates: [LaunchHackCandidate] {
-        model.candidates.filter { $0.score >= 80 }
-    }
-
-    private var reviewCandidates: [LaunchHackCandidate] {
-        model.candidates.filter { $0.score >= 60 && $0.score < 80 }
-    }
-
-    private var evidenceOnlyCandidates: [LaunchHackCandidate] {
-        model.candidates.filter { $0.score < 60 }
-    }
-
-    private var readyCandidates: [LaunchHackCandidate] {
-        model.candidates.filter {
-            $0.bundleID != nil && !$0.isFrozen &&
-            (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
-        }.sorted { $0.score > $1.score }
-    }
-
-    private var completedCandidates: [LaunchHackCandidate] {
-        model.candidates.filter { $0.isFrozen }
-    }
-
-    private var unsupportedCandidates: [LaunchHackCandidate] {
-        model.candidates.filter {
-            $0.bundleID == nil ||
-            (FileKind.of($0.relativePath) != .image && FileKind.of($0.relativePath) != .video)
-        }
-    }
-
-    private var importableCandidates: [LaunchHackCandidate] {
-        model.candidates.filter {
-            $0.bundleID != nil && $0.groupID == nil &&
-            (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
-        }
-    }
-
-    /// 预先计算尚未导入的数量，避免在 SwiftUI 文本插值中嵌套多行闭包。
-    private var newImportableCandidateCount: Int {
-        importableCandidates.filter { candidate in
-            !RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
-                                               relativePath: candidate.relativePath)
-        }.count
     }
 
     private func resultMetric(_ value: String, _ title: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(value)
-                .font(.system(size: 23, weight: .bold, design: .rounded))
+                .font(.system(size: 21, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.primaryText)
             Text(title)
                 .font(.system(size: 10, weight: .medium))
@@ -1247,797 +1075,7 @@ struct LaunchHackView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(11)
-        .background(Color.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var professionalModeCard: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Toggle(isOn: $isProfessionalMode) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("专业技术模式")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
-                    Text("展开完整证据、域名关联、文件属性和复发差异分析")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.secondaryText)
-                }
-            }
-            .tint(Color.accentCyan)
-            if isProfessionalMode {
-                Text("专业模式提供更多静态证据，不代表能够读取目标 App 的实时网络请求或暂停其内部 SDK。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(15)
-        .panel()
-    }
-
-    private var sourceIntelPanel: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack {
-                Text("广告来源线索")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text("静态配置分析")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.accentCyan)
-            }
-
-            Text("以下域名来自目标 App 可读取的 plist、JSON 或 XML 配置内容，并已与候选资源建立关联。它们不是运行时请求记录，不能单凭域名认定为广告服务器。")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if domainFindings.isEmpty {
-                Text("本次扫描没有从可读取配置中提取到可关联的域名。动态下发、加密配置或不可访问的数据仍可能存在。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.secondaryText)
-            } else {
-                ForEach(domainFindings.prefix(20)) { finding in
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(finding.host)
-                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Color.primaryText)
-                                .textSelection(.enabled)
-                            Spacer()
-                            Text("\(finding.resourceCount) 个关联资源")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(Color.accentCyan)
-                        }
-                        ForEach(finding.urls.prefix(3), id: \.self) { url in
-                            Text(LaunchHackContentAnalyzer.displayURL(url))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(Color.secondaryText)
-                                .textSelection(.enabled)
-                                .lineLimit(2)
-                        }
-                        if !finding.configPaths.isEmpty {
-                            Text("关联配置：\(finding.configPaths.prefix(2).joined(separator: "、"))")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.secondaryText)
-                                .lineLimit(2)
-                        }
-                        Text("证据等级：配置引用 · 需要进一步验证")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Color.orange)
-                    }
-                    .padding(.vertical, 7)
-                    if finding.id != domainFindings.prefix(20).last?.id {
-                        Divider().overlay(Color.primaryText.opacity(0.08))
-                    }
-                }
-                if domainFindings.count > 20 {
-                    Text("另有 \(domainFindings.count - 20) 个域名线索未展开。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.secondaryText)
-                }
-            }
-        }
-        .padding(16)
-        .panel()
-    }
-
-    private var latestTraceStage: LaunchHackTraceStage? {
-        if model.checkpoint(for: .adReappeared) != nil { return .adReappeared }
-        if model.checkpoint(for: .afterRestart) != nil { return .afterRestart }
-        if model.checkpoint(for: .afterFreeze) != nil { return .afterFreeze }
-        return nil
-    }
-
-    private var effectReviewPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("处理效果复查", systemImage: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                if model.isTracking { ProgressView() }
-            }
-            Text("先在处理前建立基线，再按实际情况记录处理后、重启后或广告再次出现时的状态。这里只比较可访问文件的变化，不会自动判断广告是否消失。")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button {
-                model.captureCheckpoint(stage: .baseline, targets: trackingTargets, channel: state.channel)
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(model.checkpoint(for: .baseline) == nil ? "第 1 步 · 建立处理前基线" : "更新处理前基线")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(model.checkpoint(for: .baseline).map { "已记录 · \($0.createdAt.formatted(date: .abbreviated, time: .shortened))" } ?? "建议在执行治理前记录")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.secondaryText)
-                    }
-                    Spacer()
-                    Image(systemName: model.checkpoint(for: .baseline) == nil ? "flag.checkered" : "checkmark.circle.fill")
-                        .foregroundStyle(model.checkpoint(for: .baseline) == nil ? Color.accentCyan : Color.green)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.isTracking || model.isScanning || !state.channel.isAvailable)
-
-            HStack(spacing: 7) {
-                effectReviewAction(.afterFreeze, title: "处理后")
-                effectReviewAction(.afterRestart, title: "重启后")
-                effectReviewAction(.adReappeared, title: "广告复显")
-            }
-
-            if model.isTracking {
-                Text(model.trackingMessage)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.secondaryText)
-            } else if model.checkpoint(for: .baseline) == nil {
-                Text("尚未建立基线。建立后才能比较处理前后的变化。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.secondaryText)
-            } else if let stage = latestTraceStage,
-                      let result = model.traceChanges(for: stage) {
-                let added = result.changes.filter { $0.status.contains("新增") }.count
-                let deleted = result.changes.filter { $0.status.contains("删除") }.count
-                let changed = result.changes.filter {
-                    $0.status.contains("内容替换") || $0.status.contains("文件变化")
-                }.count
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("最近一次复查：\(stage.title)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
-                    HStack(spacing: 12) {
-                        traceMetric("新增", added)
-                        traceMetric("删除", deleted)
-                        traceMetric("内容变化", changed)
-                    }
-                    if result.changes.isEmpty {
-                        Text("未检测到可比较的文件变化；这不等于已确认广告消失。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.secondaryText)
-                    } else {
-                        Text("检测到 \(result.changes.count) 项变化。专业模式可查看具体路径和差异。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.secondaryText)
-                    }
-                    if !result.incomplete.isEmpty {
-                        Text("\(result.incomplete.count) 个容器无法完整对比，结果可能不完整。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.orange)
-                    }
-                }
-                .padding(10)
-                .background(Color.primaryText.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-            } else if let baseline = model.checkpoint(for: .baseline) {
-                Text("基线已建立（\(baseline.containers.count) 个容器）。处理后选择上方对应阶段记录复查。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.secondaryText)
-            }
-
-            if !model.trackingMessage.isEmpty && !model.isTracking {
-                Text(model.trackingMessage)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.secondaryText)
-                    .lineLimit(3)
-            }
-        }
-        .padding(15)
-        .panel()
-    }
-
-    private func effectReviewAction(_ stage: LaunchHackTraceStage, title: String) -> some View {
-        let checkpoint = model.checkpoint(for: stage)
-        return Button {
-            guard !state.isBusy, !model.isScanning, !isGovernanceRunning else {
-                model.trackingMessage = "当前有扫描或治理任务正在执行，请完成后再记录检查点。"
-                return
-            }
-            model.captureCheckpoint(stage: stage, targets: trackingTargets, channel: state.channel)
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: checkpoint == nil ? "circle" : "checkmark.circle.fill")
-                    .foregroundStyle(checkpoint == nil ? Color.accentCyan : Color.green)
-                Text(title)
-                    .font(.system(size: 10, weight: .semibold))
-                if let checkpoint {
-                    Text(checkpoint.createdAt.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 8))
-                        .foregroundStyle(Color.secondaryText)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
-        }
-        .buttonStyle(.bordered)
-        .disabled(model.isTracking || model.isScanning || model.checkpoint(for: .baseline) == nil || !state.channel.isAvailable)
-    }
-
-    private var tracePanel: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack {
-                Text("广告复显追踪")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                if model.checkpoint(for: .baseline) != nil {
-                    Button("清空记录") { model.clearTrace() }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.red)
-                }
-            }
-            Text("按阶段手动记录容器快照。每个阶段与基线比较新增、删除、内容变化及冻结状态变化；不会自动操作目标 App。")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("MD5 每个检查点最多计算 250 个候选文件（单个不超过 16 MiB，累计不超过 128 MiB）；其余文件按路径、大小、修改时间和冻结状态比较，不能确认元数据完全相同的内容替换。")
-                .font(.system(size: 10))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button {
-                model.captureCheckpoint(stage: .baseline, targets: trackingTargets, channel: state.channel)
-            } label: {
-                Label(model.checkpoint(for: .baseline) == nil ? "建立基线" : "重新建立基线（清除旧阶段）",
-                      systemImage: "flag.checkered")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Color.accentCyan)
-            .disabled(model.isTracking || model.isScanning || !state.channel.isAvailable)
-
-            HStack(spacing: 7) {
-                ForEach([LaunchHackTraceStage.afterFreeze, .afterRestart, .adReappeared]) { stage in
-                    Button(stage.title) {
-                        model.captureCheckpoint(stage: stage, targets: trackingTargets, channel: state.channel)
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(model.checkpoint(for: stage) == nil ? Color.accentCyan : Color.primaryText)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
-                    .background(Color.primaryText.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
-                    .disabled(model.isTracking || model.isScanning || model.checkpoint(for: .baseline) == nil || !state.channel.isAvailable)
-                }
-            }
-
-            if model.isTracking {
-                ProgressView()
-            }
-            Text(model.trackingMessage)
-                .font(.system(size: 11))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if model.checkpoint(for: .baseline) != nil {
-                Picker("对比阶段", selection: $selectedTraceStage) {
-                    Text("冻结后").tag(LaunchHackTraceStage.afterFreeze)
-                    Text("重启后").tag(LaunchHackTraceStage.afterRestart)
-                    Text("复显后").tag(LaunchHackTraceStage.adReappeared)
-                }
-                .pickerStyle(.segmented)
-
-                if let result = model.traceChanges(for: selectedTraceStage) {
-                    let added = result.changes.filter { $0.status.contains("新增") }.count
-                    let deleted = result.changes.filter { $0.status.contains("删除") }.count
-                    let replaced = result.changes.filter { $0.status.contains("内容替换") }.count
-                    let frozen = result.changes.filter { $0.status.contains("冻结状态变化") }.count
-                    let candidateMatched = result.changes.filter { isCandidateTraceMatch($0) }.count
-                    HStack(spacing: 8) {
-                        traceMetric("新增", added)
-                        traceMetric("删除", deleted)
-                        traceMetric("内容替换", replaced)
-                        traceMetric("冻结变化", frozen)
-                    }
-                    Text("其中 \(candidateMatched) 项与当前扫描候选资源路径匹配（仅表示路径关联，仍需人工确认）。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.secondaryText)
-                    if !result.incomplete.isEmpty {
-                        Text("有 \(result.incomplete.count) 个容器扫描不完整或缺少对应检查点，已跳过这些容器的差异判断。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.orange)
-                    }
-                    if result.changes.isEmpty {
-                        Text("该阶段没有检测到可比较的文件变化。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.secondaryText)
-                    } else {
-                        ForEach(result.changes.prefix(35)) { change in
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(alignment: .top) {
-                                    Text(change.status)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(change.status.contains("新增") ? Color.accentCyan : Color.primaryText)
-                                    Spacer()
-                                    Text(change.containerName)
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(Color.secondaryText)
-                                }
-                                Text(change.relativePath)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(Color.secondaryText)
-                                    .textSelection(.enabled)
-                                if isCandidateTraceMatch(change) {
-                                    Text("与当前扫描候选资源匹配 · 待人工确认")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(Color.accentCyan)
-                                }
-                                Text(change.detail)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Color.secondaryText)
-                            }
-                            .padding(.vertical, 5)
-                        }
-                        if result.changes.count > 35 {
-                            Text("仅显示前 35 项，共 \(result.changes.count) 项变化。")
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.secondaryText)
-                        }
-                    }
-                } else {
-                    Text("尚未记录「\(selectedTraceStage.title)」阶段。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.secondaryText)
-                }
-            }
-        }
-        .padding(16)
-        .panel()
-    }
-
-    private func isCandidateTraceMatch(_ change: LaunchHackTraceChange) -> Bool {
-        model.candidates.contains {
-            $0.appName == change.containerName && $0.relativePath == change.relativePath
-        }
-    }
-
-    private func traceMetric(_ title: String, _ value: Int) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 9))
-                .foregroundStyle(Color.secondaryText)
-            Text(String(value))
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.primaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var trackingTargets: [LaunchHackScanTarget] {
-        var targets: [LaunchHackScanTarget] = []
-        for app in selectedApps {
-            targets.append(LaunchHackScanTarget(bundleID: app.bundleID, appName: app.name,
-                                                 rootPath: app.path, groupID: nil))
-            // 只纳入 AppState 已按容器标识关联的共享组，不扫描其他 App 的共享容器。
-            targets.append(contentsOf: state.associatedGroups(for: app.bundleID).filter { !$0.path.isEmpty }.map {
-                LaunchHackScanTarget(bundleID: app.bundleID, appName: "共享容器 · \($0.bundleID)",
-                                     rootPath: $0.path, groupID: $0.bundleID)
-            })
-        }
-        var seen = Set<String>()
-        return targets.filter { seen.insert($0.rootPath).inserted }
-    }
-
-    private var candidatePanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("候选资源核验与处理")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text("\(model.candidates.count) 项")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-
-            HStack(spacing: 8) {
-                statusCount(readyCandidates.count, title: "可处理", color: .accentCyan)
-                statusCount(completedCandidates.count, title: "已处理", color: .green)
-                statusCount(unsupportedCandidates.count, title: "暂不支持", color: .orange)
-            }
-
-            if !localRuleMessage.isEmpty {
-                Text(localRuleMessage)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(localRuleMessage.contains("已导入") ? Color.green : Color.secondaryText)
-            }
-
-            if !importableCandidates.isEmpty {
-                Button { showBulkImportConfirmation = true } label: {
-                    Label("批量加入本地识别规则（\(newImportableCandidateCount)）", systemImage: "tray.and.arrow.down")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .disabled(newImportableCandidateCount == 0)
-            }
-
-            let selectedGovernanceCandidates = readyCandidates.filter { selectedGovernanceIDs.contains($0.id) }
-            if !selectedGovernanceCandidates.isEmpty {
-                Button {
-                    governanceQueue = selectedGovernanceCandidates
-                    showBulkGovernanceConfirmation = true
-                } label: {
-                    Label("处理已勾选资源（\(selectedGovernanceCandidates.count)）", systemImage: "shield.lefthalf.filled")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isGovernanceRunning || state.isBusy || model.isScanning)
-                Text("只处理已逐项核验并勾选的资源。优先级评分不代表广告事实。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.secondaryText)
-            }
-
-            if !readyCandidates.isEmpty {
-                candidateGroup(title: "可处理", subtitle: "已关联宿主 App、尚未冻结的图片或视频；仍需你确认具体项目", candidates: readyCandidates)
-            }
-            if !completedCandidates.isEmpty {
-                candidateGroup(title: "已处理 / 已冻结", subtitle: "扫描时已检测到冻结状态；刚完成治理后可复查刷新状态", candidates: completedCandidates)
-            }
-            if !unsupportedCandidates.isEmpty {
-                candidateGroup(title: "暂不支持", subtitle: "共享容器未关联宿主 App，或资源类型不适合直接清理；仅保留为定位证据", candidates: unsupportedCandidates)
-            }
-            if model.candidates.isEmpty {
-                Text("当前没有候选资源。可以重新扫描目标 App。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-        }
-        .padding(15)
-        .panel()
-    }
-
-    private func statusCount(_ count: Int, title: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("\(count)")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(color)
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.secondaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func candidateGroup(title: String, subtitle: String, candidates: [LaunchHackCandidate]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text("\(candidates.count) 项")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            Text(subtitle)
-                .font(.system(size: 10))
-                .foregroundStyle(Color.secondaryText)
-
-            ForEach(candidates) { candidate in
-                candidateRow(candidate)
-                if candidate.id != candidates.last?.id {
-                    Divider().overlay(Color.primaryText.opacity(0.06))
-                }
-            }
-        }
-        .padding(11)
-        .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
-    }
-
-    private func candidateStatusText(_ candidate: LaunchHackCandidate) -> String {
-        if candidate.isFrozen { return "已冻结" }
-        if candidate.bundleID == nil { return "未关联宿主" }
-        let kind = FileKind.of(candidate.relativePath)
-        return kind == .image || kind == .video ? "可核验" : "仅供参考"
-    }
-
-    private func candidateStatusColor(_ candidate: LaunchHackCandidate) -> Color {
-        if candidate.isFrozen { return .green }
-        if candidate.bundleID == nil { return .orange }
-        let kind = FileKind.of(candidate.relativePath)
-        return kind == .image || kind == .video ? .accentCyan : .secondaryText
-    }
-
-    private func candidateKindIcon(_ candidate: LaunchHackCandidate) -> String {
-        switch FileKind.of(candidate.relativePath) {
-        case .image: return "photo"
-        case .video: return "video"
-        case .other: return "doc.text"
-        }
-    }
-
-    private func candidateRow(_ candidate: LaunchHackCandidate) -> some View {
-        let canImport = candidate.bundleID != nil && candidate.groupID == nil
-            && (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video)
-        let imported = candidate.groupID == nil ? (candidate.bundleID.map {
-            RulesStore.containsLocalCandidate(bundleID: $0, relativePath: candidate.relativePath)
-        } ?? false) : false
-
-        return DisclosureGroup {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(candidate.relativePath)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.secondaryText)
-                    .textSelection(.enabled)
-
-                Text(candidate.isFrozen
-                     ? "该资源当前已处于冻结状态，无需重复处理。"
-                     : (candidate.bundleID == nil
-                        ? "尚未找到可靠的宿主 App 关联，当前只能作为定位线索。"
-                        : (canImport
-                           ? "这是已关联宿主 App 的图片或视频。请先核对预览和路径，再决定是否处理。"
-                           : "这是配置或其他文件，仅用于辅助定位，不会直接清理或冻结。")))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    Text(candidate.kindText)
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: candidate.size), countStyle: .file))
-                    Text(candidate.isFrozen ? "已冻结" : "未冻结")
-                }
-                .font(.system(size: 10))
-                .foregroundStyle(Color.secondaryText)
-
-                if let details = candidate.mediaDetails {
-                    Text(details)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.primaryText)
-                    if let data = candidate.previewData, let image = UIImage(data: data) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .frame(maxHeight: 140)
-                            .clipShape(RoundedRectangle(cornerRadius: 9))
-                    }
-                }
-                if isProfessionalMode {
-                    Text("线索评分：\(candidate.score) · \(candidate.priorityText)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.accentCyan)
-                    ForEach(candidate.evidence, id: \.self) { evidence in
-                        Text(evidence)
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.secondaryText)
-                            .textSelection(.enabled)
-                    }
-                    if let md5 = candidate.md5 {
-                        Button("复制 MD5") { UIPasteboard.general.string = md5 }
-                            .font(.system(size: 10))
-                    }
-                }
-                if canImport {
-                    HStack(spacing: 12) {
-                        Button(imported ? "已加入本地规则" : "加入本地规则") {
-                            pendingLocalRuleCandidate = candidate
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(imported ? Color.green : Color.accentCyan)
-                        .disabled(imported)
-
-                        if candidate.isFrozen {
-                            Text("已冻结")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color.green)
-                        } else {
-                            Button("确认并处理") {
-                                pendingRuleCandidate = candidate
-                            }
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.orange)
-                            .disabled(isGovernanceRunning || state.isBusy)
-                        }
-                    }
-                } else if candidate.groupID != nil {
-                    Text("共享容器尚未关联宿主 App，暂不能导入或处理")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.orange)
-                } else {
-                    Text("配置/索引文件仅作为定位证据，不直接修改")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.secondaryText)
-                }
-            }
-            .padding(.vertical, 6)
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: candidateKindIcon(candidate))
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(candidateStatusColor(candidate))
-                    .frame(width: 30, height: 30)
-                    .background(candidateStatusColor(candidate).opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text((candidate.relativePath as NSString).lastPathComponent)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
-                        .lineLimit(1)
-                    Text(candidate.appName)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.secondaryText)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(candidateStatusText(candidate))
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(candidateStatusColor(candidate))
-                    if isProfessionalMode {
-                        Text(candidate.priorityText)
-                            .font(.system(size: 9))
-                            .foregroundStyle(Color.secondaryText)
-                    }
-                }
-                if candidate.bundleID != nil && !candidate.isFrozen &&
-                    (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video) {
-                    Button {
-                        if selectedGovernanceIDs.contains(candidate.id) {
-                            selectedGovernanceIDs.remove(candidate.id)
-                        } else {
-                            selectedGovernanceIDs.insert(candidate.id)
-                        }
-                    } label: {
-                        Image(systemName: selectedGovernanceIDs.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 18))
-                            .foregroundStyle(selectedGovernanceIDs.contains(candidate.id) ? Color.accentCyan : Color.secondaryText)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isGovernanceRunning || state.isBusy)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-    }
-
-    private var governanceReportPanel: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text("治理执行报告")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                if isGovernanceRunning {
-                    ProgressView()
-                    Text("第 \(min(governanceIndex + 1, governanceQueue.count)) / \(governanceQueue.count) 项")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.secondaryText)
-                }
-            }
-            if isGovernanceRunning {
-                ProgressView(value: Double(governanceIndex), total: Double(max(governanceQueue.count, 1)))
-            }
-            let succeeded = governanceResults.filter { $0.success }.count
-            let failed = governanceResults.count - succeeded
-            HStack(spacing: 12) {
-                Label("成功 \(succeeded)", systemImage: "checkmark.circle")
-                    .foregroundStyle(Color.green)
-                Label("未完成 \(failed)", systemImage: "exclamationmark.circle")
-                    .foregroundStyle(Color.orange)
-            }
-            .font(.system(size: 11, weight: .medium))
-            ForEach(governanceResults.indices, id: \.self) { index in
-                let item = governanceResults[index]
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(item.name).font(.system(size: 11, weight: .semibold))
-                        Spacer()
-                        Text(item.success ? "已完成" : "未完成")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(item.success ? Color.green : Color.orange)
-                    }
-                    Text(item.message)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.vertical, 4)
-            }
-            if !isGovernanceRunning {
-                if succeeded > 0 {
-                    Button {
-                        selectedGovernanceIDs.removeAll()
-                        beginScan()
-                    } label: {
-                        Label("复查当前应用", systemImage: "arrow.clockwise")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                Button("清除本次报告") { governanceResults = [] }
-                    .font(.system(size: 11, weight: .medium))
-            }
-        }
-        .padding(15)
-        .panel()
-    }
-
-    private func processNextGovernanceCandidate() {
-        guard governanceIndex < governanceQueue.count else {
-            isGovernanceRunning = false
-            selectedGovernanceIDs.subtract(governanceQueue.map(\.id))
-            return
-        }
-        let candidate = governanceQueue[governanceIndex]
-        guard let bundleID = candidate.bundleID else {
-            governanceResults.append((candidate.id, candidate.appName, false, "未关联宿主 App，已跳过。"))
-            governanceIndex += 1
-            processNextGovernanceCandidate()
-            return
-        }
-        state.importLaunchHackCandidate(bundleID: bundleID,
-                                        appName: candidate.appName,
-                                        relativePath: candidate.relativePath,
-                                        expectedSize: candidate.size,
-                                        expectedModifiedAt: candidate.modifiedAt,
-                                        expectedMD5: candidate.md5,
-                                        groupID: candidate.groupID) { success, message in
-            governanceResults.append((candidate.id, candidate.appName, success, message))
-            governanceIndex += 1
-            processNextGovernanceCandidate()
-        }
-    }
-
-    private var draftPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("本地规则草稿")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text("\(model.drafts.count) 项")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-
-            if model.drafts.isEmpty {
-                Text("扫描到候选资源后，可以手动加入草稿。草稿保存在本机，不会自动进入正式冻结规则。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.secondaryText)
-            } else {
-                ForEach(model.drafts) { draft in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(draft.candidate.appName)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.primaryText)
-                        Text(draft.candidate.relativePath)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Color.secondaryText)
-                            .textSelection(.enabled)
-                        HStack {
-                            Text(draft.status)
-                            Spacer()
-                            Button("移除") { model.removeDraft(draft) }
-                                .foregroundStyle(Color.red)
-                        }
-                        .font(.system(size: 11))
-                    }
-                    .padding(.vertical, 7)
-                }
-            }
-        }
-        .padding(16)
-        .panel()
+        .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
     }
 
     private func loadApps() {
@@ -2051,11 +1089,10 @@ struct LaunchHackView: View {
     }
 
     private func beginScan() {
-        guard !state.isBusy, !isGovernanceRunning, !model.isTracking else {
-            model.scanMessage = "当前有治理或复查任务正在执行，请完成后再扫描。"
+        guard !state.isBusy, !model.isScanning else {
+            model.scanMessage = "LaunchShield 当前正在执行其他操作，请稍后再扫描。"
             return
         }
-        selectedGovernanceIDs.removeAll()
         let targets = trackingTargets
         guard !selectedApps.isEmpty, !targets.isEmpty else {
             model.scanMessage = "请先返回 LaunchShield 主页，选择一个可访问的用户 App。"
