@@ -28,8 +28,9 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
-                        entryPair
+                        announcementEntry
                         signCard
+                        tutorialEntry
                         targetCard
                         fullScanCards
                         launchHackFindingsSection
