@@ -7,6 +7,7 @@ struct RecipesView: View {
     @State private var appToEndGuard: String?
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
+    @State private var selectedGuardIDs: Set<UUID> = []
     @State private var showBatchRemove = false
     @State private var showBatchRestore = false
 
@@ -53,7 +54,7 @@ struct RecipesView: View {
                             Spacer()
                             Button {
                                 selecting.toggle()
-                                if !selecting { selectedIDs = [] }
+                                if !selecting { selectedIDs = []; selectedGuardIDs = [] }
                             } label: {
                                 HStack(spacing: 7) {
                                     Image(systemName: "checklist")
@@ -110,20 +111,27 @@ struct RecipesView: View {
                 state.restoreBackups(selectedBackupRecords)
                 selecting = false
                 selectedIDs = []
+                selectedGuardIDs = []
             }
             Button("取消", role: .cancel) { }
         } message: {
             Text("请先完全退出对应的目标应用。选中的条目里有 \(selectedBackupRecords.count) 个能找到备份，其余的没有备份、恢复不了。")
         }
         .confirmationDialog("批量移除选中的守护条目？", isPresented: $showBatchRemove, titleVisibility: .visible) {
-            Button("移除 \(selectedIDs.count) 个", role: .destructive) {
-                state.removeRecipes(selectedRecipes)
+            Button("移除 \(selectedTotalCount) 个", role: .destructive) {
+                if !selectedRecipes.isEmpty {
+                    state.removeRecipes(selectedRecipes)
+                }
+                if !selectedGuards.isEmpty {
+                    state.removeDirectoryGuards(selectedGuards)
+                }
                 selecting = false
                 selectedIDs = []
+                selectedGuardIDs = []
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("冻着的文件会先解冻再移除，不会把文件冻在原地没人管。文件还是 0 字节，应用自己会重新生成。")
+            Text("冻着的文件和文件夹都会先解冻再移除，不会把它们冻在原地没人管。文件还是 0 字节，应用自己会重新生成。")
         }
     }
 
@@ -165,11 +173,11 @@ struct RecipesView: View {
         let missing = group.items.filter { $0.lastState == RecipeState.missing.rawValue }.count
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                if selecting && !group.items.isEmpty {
+                if selecting && (!group.items.isEmpty || !group.guards.isEmpty) {
                     Button {
                         toggleGroup(group)
                     } label: {
-                        Image(systemName: group.items.allSatisfy { selectedIDs.contains($0.id) } ? "checkmark.circle.fill" : "circle")
+                        Image(systemName: groupFullySelected(group) ? "checkmark.circle.fill" : "circle")
                             .font(.system(size: 19))
                             .foregroundStyle(Color.accentCyan)
                     }
@@ -197,7 +205,7 @@ struct RecipesView: View {
                         Spacer(minLength: 8)
                         if recurred > 0 {
                             StatusBadge(text: "有复发", tint: .orange)
-                        } else if missing == group.items.count {
+                        } else if missing > 0 && missing == group.items.count {
                             StatusBadge(text: "文件不见了", tint: .red)
                         } else {
                             StatusBadge(text: "守护中", tint: .green)
@@ -245,6 +253,11 @@ struct RecipesView: View {
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(group.guards) { guardItem in
                 HStack(alignment: .top, spacing: 10) {
+                    if selecting {
+                        Image(systemName: selectedGuardIDs.contains(guardItem.id) ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 17))
+                            .foregroundStyle(Color.accentCyan)
+                    }
                     Image(systemName: "folder")
                         .foregroundStyle(Color.secondaryText)
                     Text(guardItem.relativePath)
@@ -252,19 +265,31 @@ struct RecipesView: View {
                         .foregroundStyle(Color.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    Button {
-                        state.removeDirectoryGuard(guardItem)
-                    } label: {
-                        Text("移除")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.red)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.red.opacity(0.10), in: Capsule())
+                    if !selecting {
+                        Button {
+                            state.removeDirectoryGuard(guardItem)
+                        } label: {
+                            Text("移除")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color.red)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.red.opacity(0.10), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.vertical, 2)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if selecting {
+                        if selectedGuardIDs.contains(guardItem.id) {
+                            selectedGuardIDs.remove(guardItem.id)
+                        } else {
+                            selectedGuardIDs.insert(guardItem.id)
+                        }
+                    }
+                }
             }
         }
         .padding(14)
@@ -388,6 +413,21 @@ struct RecipesView: View {
         state.recipes.filter { selectedIDs.contains($0.id) }
     }
 
+    /// 第 77 条：多选把文件夹守护也算进来，和文件一个流程删。
+    private var selectedGuards: [DirectoryGuard] {
+        state.directoryGuards.filter { selectedGuardIDs.contains($0.id) }
+    }
+
+    private var selectedTotalCount: Int {
+        selectedIDs.count + selectedGuardIDs.count
+    }
+
+    private func groupFullySelected(_ group: GuardedAppGroup) -> Bool {
+        (!group.items.isEmpty || !group.guards.isEmpty)
+            && group.items.allSatisfy { selectedIDs.contains($0.id) }
+            && group.guards.allSatisfy { selectedGuardIDs.contains($0.id) }
+    }
+
     /// 选中条目里能找到备份的，取每个文件的那份备份（批量恢复用）。
     private var selectedBackupRecords: [BackupRecord] {
         selectedRecipes.compactMap { recipe in
@@ -396,23 +436,30 @@ struct RecipesView: View {
     }
 
     private func toggleGroup(_ group: GuardedAppGroup) {
-        let ids = group.items.map { $0.id }
-        if ids.allSatisfy({ selectedIDs.contains($0) }) {
-            ids.forEach { selectedIDs.remove($0) }
+        if groupFullySelected(group) {
+            group.items.forEach { selectedIDs.remove($0.id) }
+            group.guards.forEach { selectedGuardIDs.remove($0.id) }
         } else {
-            ids.forEach { selectedIDs.insert($0) }
+            group.items.forEach { selectedIDs.insert($0.id) }
+            group.guards.forEach { selectedGuardIDs.insert($0.id) }
         }
     }
 
     private var allSelected: Bool {
-        !state.recipes.isEmpty && selectedIDs.count == state.recipes.count
+        let total = state.recipes.count + state.directoryGuards.count
+        return total > 0 && selectedTotalCount == total
     }
 
     private var batchBar: some View {
         HStack(spacing: 10) {
             Button {
-                if allSelected { selectedIDs.removeAll() }
-                else { selectedIDs = Set(state.recipes.map(\.id)) }
+                if allSelected {
+                    selectedIDs.removeAll()
+                    selectedGuardIDs.removeAll()
+                } else {
+                    selectedIDs = Set(state.recipes.map(\.id))
+                    selectedGuardIDs = Set(state.directoryGuards.map(\.id))
+                }
             } label: {
                 Text(allSelected ? "取消全选" : "全选")
                     .font(.system(size: 13, weight: .semibold))
@@ -439,16 +486,16 @@ struct RecipesView: View {
             Button {
                 showBatchRemove = true
             } label: {
-                Text("批量移除（\(selectedIDs.count)）")
+                Text("批量移除（\(selectedTotalCount)）")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .background(Color.red.opacity(selectedIDs.isEmpty ? 0.3 : 1),
+                    .background(Color.red.opacity(selectedTotalCount == 0 ? 0.3 : 1),
                                 in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(selectedIDs.isEmpty)
+            .disabled(selectedTotalCount == 0)
         }
         .padding(16)
         .background(Color.appBackground)

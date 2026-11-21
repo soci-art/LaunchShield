@@ -1271,25 +1271,64 @@ final class AppState: ObservableObject {
     /// 删掉一条文件夹守护（只停止今后的巡查和整夹冻结，已经冻结的
     /// 文件仍按各自的守护记录管理）；顺手把文件夹本身解冻。
     func removeDirectoryGuard(_ guardItem: DirectoryGuard) {
-        // 第 67 条：先解冻、再移除记录。解冻失败就把记录留着，
-        // 不让文件夹冻在原地没人管。
+        if unfreezeDirectoryGuard(guardItem) {
+            persistDirectoryGuards()
+        } else {
+            alertText = "这个文件夹解冻失败，守护记录先留着：\(guardItem.relativePath)"
+        }
+    }
+
+    /// 第 77 条：批量删文件夹守护，和文件条目一个流程——先
+    /// 解除守护（解冻）、再删记录。返回解冻失败、记录保留
+    /// 的路径列表；有失败时统一弹一次提示。
+    @discardableResult
+    func removeDirectoryGuards(_ guards: [DirectoryGuard]) -> [String] {
+        var failed: [String] = []
+        var removedAny = false
+        for guardItem in guards {
+            if unfreezeDirectoryGuard(guardItem) {
+                removedAny = true
+            } else {
+                failed.append(guardItem.relativePath)
+            }
+        }
+        if removedAny { persistDirectoryGuards() }
+        if !failed.isEmpty {
+            alertText = "有 \(failed.count) 个文件夹解冻失败，守护记录先留着。第一个：\(failed[0])"
+        }
+        return failed
+    }
+
+    /// 先解冻、再删记录（第 67 条口径）。第 77 条补：文件夹
+    /// 已经不存在的，冻结无从谈起，记录直接删——真机实证有
+    /// 一批缓存文件夹被应用自己删掉/换名后，旧记录卡在解冻
+    /// 失败上永远删不掉。解冻真失败才保留记录，返回 false。
+    private func unfreezeDirectoryGuard(_ guardItem: DirectoryGuard) -> Bool {
         if let root = channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) {
             let full = root + "/" + guardItem.relativePath
+            if !channel.exists(full) {
+                directoryGuards.removeAll { $0.id == guardItem.id }
+                log("文件夹已不存在、守护记录一并移除：\(guardItem.appName) · \(guardItem.relativePath)", .notice)
+                return true
+            }
             if channel.isImmutable(full) {
                 do { try channel.setImmutable(full, false) }
                 catch {
                     log("文件夹解冻失败、守护记录已保留：\(guardItem.relativePath)：\(error.localizedDescription)", .warning)
-                    alertText = "这个文件夹解冻失败，守护记录先留着：\(guardItem.relativePath)"
-                    return
+                    return false
                 }
             }
         }
         directoryGuards.removeAll { $0.id == guardItem.id }
+        log("已移除文件夹守护：\(guardItem.appName) · \(guardItem.relativePath)", .notice)
+        return true
+    }
+
+    private func persistDirectoryGuards() {
         store.file.directoryGuards = directoryGuards
         if !store.save() {
             log("文件夹守护删除了，但没能保存到本机", .warning)
         }
-        log("已移除文件夹守护：\(guardItem.appName) · \(guardItem.relativePath)", .notice)
     }
 
     /// Names of apps the latest scan found ad material in (for the find-ad guide).
@@ -3611,8 +3650,11 @@ final class AppState: ObservableObject {
                 return
             }
             let guardAppName = appGuards.first?.appName ?? bundleID
-            for item in appGuards { removeDirectoryGuard(item) }
-            alertText = "已结束 \(guardAppName) 的守护：文件夹已解冻，今后不再巡查。"
+            // 第 77 条：走批量移除（失败会统一提示），全成才报已结束。
+            let failed = removeDirectoryGuards(appGuards)
+            if failed.isEmpty {
+                alertText = "已结束 \(guardAppName) 的守护：文件夹已解冻，今后不再巡查。"
+            }
             return
         }
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
