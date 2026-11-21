@@ -4,7 +4,6 @@ struct RecipesView: View {
     @EnvironmentObject private var state: AppState
     @State private var expandedApps: Set<String> = []
     @State private var showClearMissing = false
-    @State private var showRefreeze = false
     @State private var appToEndGuard: String?
     @State private var selecting = false
     @State private var selectedIDs: Set<UUID> = []
@@ -32,22 +31,6 @@ struct RecipesView: View {
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 11)
                                     .background(Color.accentCyan.opacity(0.10), in: Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            if relapsedCount > 0 {
-                                Button {
-                                    showRefreeze = true
-                                } label: {
-                                    HStack(spacing: 7) {
-                                        Image(systemName: "snowflake")
-                                        Text("一键冻结已复发（\(relapsedCount)）")
-                                    }
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(Color.orange)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 11)
-                                    .background(Color.orange.opacity(0.10), in: Capsule())
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -110,14 +93,6 @@ struct RecipesView: View {
         } message: {
             Text("这些文件已经不在了，清掉只是把名单删干净，守护不再白查它们。")
         }
-        .confirmationDialog("把已复发的文件重新清零并冻结？", isPresented: $showRefreeze, titleVisibility: .visible) {
-            Button("重新清零并冻结 \(relapsedCount) 个") {
-                state.refreezeRelapsed()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("会先备份，再把这些又变大的文件清零并冻结。")
-        }
         .confirmationDialog("结束这个应用的守护？", isPresented: Binding(
             get: { appToEndGuard != nil },
             set: { if !$0 { appToEndGuard = nil } }
@@ -154,10 +129,6 @@ struct RecipesView: View {
 
     private var missingCount: Int {
         state.recipes.filter { $0.lastState == RecipeState.missing.rawValue }.count
-    }
-
-    private var relapsedCount: Int {
-        state.recipes.filter { $0.lastState == RecipeState.recurred.rawValue }.count
     }
 
     /// 一个应用一组的统一分组（第 57 条）：文件配方和文件夹
