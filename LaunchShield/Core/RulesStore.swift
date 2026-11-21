@@ -160,7 +160,7 @@ enum RulesStore {
             let parsed = try JSONDecoder().decode([LocalCandidateRule].self, from: data)
             localRulesCache = parsed.filter {
                 !$0.bundleID.isEmpty && isSafeRelativeDirectory($0.relativePath)
-                    && (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
+                    && !DatabaseFile.matches(relativePath: $0.relativePath)
             }
             localRulesLoadFailure = nil
         } catch {
@@ -189,7 +189,7 @@ enum RulesStore {
         let owner = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard owner.range(of: "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$", options: .regularExpression) != nil,
               isSafeRelativeDirectory(relativePath),
-              FileKind.of(relativePath) == .image || FileKind.of(relativePath) == .video else { return false }
+              !DatabaseFile.matches(relativePath: relativePath) else { return false }
         loadLocalRulesIfNeeded()
         lock.lock()
         defer { lock.unlock() }

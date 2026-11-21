@@ -22,49 +22,6 @@ private struct LaunchHackDomainFinding: Identifiable {
     var resourceCount: Int { resourcePaths.count }
 }
 
-private struct LaunchHackRuleDraft: Codable, Identifiable {
-    let id: UUID
-    let candidate: LaunchHackCandidate
-    let createdAt: Date
-    var status: String
-}
-
-private enum LaunchHackDraftStore {
-    private static var fileURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let directory = base.appendingPathComponent("LaunchShield/LaunchHack", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("rule-drafts.json")
-    }
-
-    private static var loadFailure: String?
-
-    static func load() -> [LaunchHackRuleDraft] {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let drafts = try JSONDecoder().decode([LaunchHackRuleDraft].self, from: data)
-            loadFailure = nil
-            return drafts
-        } catch {
-            loadFailure = error.localizedDescription
-            return []
-        }
-    }
-
-    @discardableResult
-    static func save(_ drafts: [LaunchHackRuleDraft]) -> Bool {
-        guard loadFailure == nil, let data = try? JSONEncoder().encode(drafts) else { return false }
-        do {
-            try data.write(to: fileURL, options: .atomic)
-            return true
-        } catch {
-            return false
-        }
-    }
-}
-
 struct LaunchHackContentEvidence {
     let sourcePath: String
     let urls: [String]
@@ -323,370 +280,20 @@ private enum LaunchHackAssessment {
     }
 }
 
-private enum LaunchHackTraceStage: String, Codable, CaseIterable, Identifiable {
-    case baseline
-    case afterFreeze
-    case afterRestart
-    case adReappeared
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .baseline: return "基线"
-        case .afterFreeze: return "冻结后"
-        case .afterRestart: return "重启后"
-        case .adReappeared: return "复显后"
-        }
-    }
-}
-
-private struct LaunchHackTraceEntry: Codable {
-    let size: UInt64
-    let modifiedAt: Date
-    let md5: String?
-    let isImmutable: Bool
-}
-
-private struct LaunchHackTraceContainer: Codable, Identifiable {
-    let bundleID: String?
-    let groupID: String?
-    let appName: String
-    let rootPath: String
-    let truncated: Bool
-    let entries: [String: LaunchHackTraceEntry]
-
-    var id: String {
-        if let groupID { return "group:" + groupID }
-        return "app:" + (bundleID ?? "unknown")
-    }
-}
-
-private struct LaunchHackTraceCheckpoint: Codable, Identifiable {
-    let stage: LaunchHackTraceStage
-    let createdAt: Date
-    let containers: [LaunchHackTraceContainer]
-    let hashedFiles: Int
-    let failedContainers: [String]
-
-    var id: String { stage.rawValue }
-}
-
-private struct LaunchHackTraceChange: Identifiable {
-    let containerName: String
-    let relativePath: String
-    let status: String
-    let detail: String
-
-    var id: String { containerName + "|" + relativePath + "|" + status }
-}
-
-private enum LaunchHackTraceStore {
-    private static var loadFailure: String?
-    private static var fileURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let directory = base.appendingPathComponent("LaunchShield/LaunchHack", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("trace-checkpoints.json")
-    }
-
-    static func load() -> [LaunchHackTraceCheckpoint] {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let records = try JSONDecoder().decode([LaunchHackTraceCheckpoint].self, from: data)
-            loadFailure = nil
-            return records
-        } catch {
-            loadFailure = error.localizedDescription
-            return []
-        }
-    }
-
-    static func save(_ records: [LaunchHackTraceCheckpoint]) -> Bool {
-        guard loadFailure == nil, let data = try? JSONEncoder().encode(records) else { return false }
-        do {
-            try data.write(to: fileURL, options: .atomic)
-            return true
-        } catch {
-            return false
-        }
-    }
-}
-
-private enum LaunchHackTraceDiff {
-    static func compare(baseline: LaunchHackTraceCheckpoint,
-                        checkpoint: LaunchHackTraceCheckpoint) -> (changes: [LaunchHackTraceChange], incomplete: [String]) {
-        let beforeByID = Dictionary(uniqueKeysWithValues: baseline.containers.map { ($0.id, $0) })
-        let afterByID = Dictionary(uniqueKeysWithValues: checkpoint.containers.map { ($0.id, $0) })
-        var changes: [LaunchHackTraceChange] = []
-        var incomplete: [String] = []
-
-        for after in checkpoint.containers {
-            guard let before = beforeByID[after.id] else {
-                incomplete.append(after.appName + "（缺少基线）")
-                continue
-            }
-            guard before.rootPath == after.rootPath else {
-                incomplete.append(after.appName + "（容器路径已变化，跳过对比）")
-                continue
-            }
-            guard !before.truncated, !after.truncated else {
-                incomplete.append(after.appName + "（扫描不完整，跳过对比）")
-                continue
-            }
-
-            for path in Set(before.entries.keys).union(after.entries.keys).sorted() {
-                let old = before.entries[path]
-                let new = after.entries[path]
-                guard let old else {
-                    changes.append(LaunchHackTraceChange(containerName: after.appName,
-                                                         relativePath: path,
-                                                         status: "新增",
-                                                         detail: "基线中不存在"))
-                    continue
-                }
-                guard let new else {
-                    changes.append(LaunchHackTraceChange(containerName: after.appName,
-                                                         relativePath: path,
-                                                         status: "删除",
-                                                         detail: "当前检查点中不存在"))
-                    continue
-                }
-
-                var details: [String] = []
-                var statuses: [String] = []
-                if let oldHash = old.md5, let newHash = new.md5, oldHash != newHash {
-                    statuses.append("内容替换")
-                    details.append("MD5 已变化")
-                } else if old.size != new.size || old.modifiedAt != new.modifiedAt {
-                    statuses.append("文件变化")
-                    details.append(old.md5 == nil || new.md5 == nil
-                                   ? "大小或修改时间变化；未完成哈希确认"
-                                   : "大小或修改时间变化")
-                }
-                if old.isImmutable != new.isImmutable {
-                    statuses.append("冻结状态变化")
-                    details.append(new.isImmutable ? "当前已冻结" : "当前未冻结")
-                }
-                if !statuses.isEmpty {
-                    changes.append(LaunchHackTraceChange(containerName: after.appName,
-                                                         relativePath: path,
-                                                         status: statuses.joined(separator: " · "),
-                                                         detail: details.joined(separator: "；")))
-                }
-            }
-        }
-
-        let matchedIDs = Set(afterByID.keys)
-        for before in baseline.containers where !matchedIDs.contains(before.id) {
-            incomplete.append(before.appName + "（检查点缺失）")
-        }
-
-        changes.sort {
-            if $0.status.contains("新增") != $1.status.contains("新增") {
-                return $0.status.contains("新增")
-            }
-            return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
-        }
-        return (Array(changes.prefix(500)), incomplete)
-    }
-}
-
 @MainActor
 private final class LaunchHackModel: ObservableObject {
     @Published var apps: [ContainerInfo] = []
     @Published var candidates: [LaunchHackCandidate] = []
-    @Published var drafts: [LaunchHackRuleDraft] = LaunchHackDraftStore.load()
     @Published var isScanning = false
-    @Published var isUploading = false
-    @Published var uploadMessage = ""
-    @Published var uploadResultUncertain = UserDefaults.standard.bool(forKey: "ls.launchHackUploadResultUncertain")
     @Published var scannedContainers = 0
     @Published var totalContainers = 0
     @Published var visitedFiles = 0
     @Published var scanMessage = "扫描只读取 WQ 当前可访问的容器，不会修改目标 App 文件。"
-    @Published var traceCheckpoints: [LaunchHackTraceCheckpoint] = LaunchHackTraceStore.load()
-    @Published var isTracking = false
-    @Published var trackingMessage = "尚未建立追踪基线。"
-
-    init() {
-        if !traceCheckpoints.isEmpty {
-            trackingMessage = "已载入本机追踪记录：\(traceCheckpoints.count) 个阶段。"
-        }
-    }
 
     func setApps(_ containers: [ContainerInfo]) {
         apps = containers
             .filter { !$0.isGroup && !AppState.isSystemApp($0) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    func addDraft(_ candidate: LaunchHackCandidate) {
-        guard !drafts.contains(where: { $0.candidate.id == candidate.id }) else { return }
-        let previous = drafts
-        let status = candidate.bundleID == nil ? "待关联宿主 App" : (candidate.groupID == nil ? "待验证" : "共享容器待验证")
-        drafts.insert(LaunchHackRuleDraft(id: UUID(), candidate: candidate,
-                                          createdAt: Date(), status: status), at: 0)
-        if !LaunchHackDraftStore.save(drafts) {
-            drafts = previous
-        }
-    }
-
-    func removeDraft(_ draft: LaunchHackRuleDraft) {
-        let previous = drafts
-        drafts.removeAll { $0.id == draft.id }
-        if !LaunchHackDraftStore.save(drafts) {
-            drafts = previous
-        }
-    }
-
-    func checkpoint(for stage: LaunchHackTraceStage) -> LaunchHackTraceCheckpoint? {
-        traceCheckpoints.first { $0.stage == stage }
-    }
-
-    func traceChanges(for stage: LaunchHackTraceStage) -> (changes: [LaunchHackTraceChange], incomplete: [String])? {
-        guard let baseline = checkpoint(for: .baseline),
-              let checkpoint = checkpoint(for: stage), stage != .baseline else { return nil }
-        return LaunchHackTraceDiff.compare(baseline: baseline, checkpoint: checkpoint)
-    }
-
-    func captureCheckpoint(stage: LaunchHackTraceStage,
-                           targets: [LaunchHackScanTarget],
-                           channel: Channel) {
-        guard !isTracking else { return }
-        guard channel.isAvailable else {
-            trackingMessage = channel.unavailableReason
-            return
-        }
-        guard !targets.isEmpty else {
-            trackingMessage = "没有可记录的容器，请先选择至少一个 App。"
-            return
-        }
-        if stage != .baseline && checkpoint(for: .baseline) == nil {
-            trackingMessage = "请先建立基线，再记录后续阶段。"
-            return
-        }
-
-        isTracking = true
-        trackingMessage = "正在记录「\(stage.title)」检查点…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            var containers: [LaunchHackTraceContainer] = []
-            var failed: [String] = []
-            var totalVisited = 0
-            var hashedFiles = 0
-            var hashedBytes: UInt64 = 0
-            let totalFileBudget = 60000
-
-            for target in targets {
-                let remaining = totalFileBudget - totalVisited
-                guard remaining > 0 else {
-                    failed.append(target.appName + "（达到本次 60,000 文件上限）")
-                    continue
-                }
-                let perContainerLimit = min(12000, remaining)
-                do {
-                    guard let rootItem = channel.item(at: target.rootPath),
-                          rootItem.isDirectory, !rootItem.isSymlink else {
-                        throw ChannelFailure("容器根目录不可访问或是符号链接")
-                    }
-                    let files = try channel.walkFiles(
-                        at: target.rootPath,
-                        limit: perContainerLimit,
-                        skipDirNames: [".Trash", "Recently Deleted"],
-                        skipDirSubstrings: [],
-                        skipAccountDirs: false
-                    )
-                    totalVisited += files.count
-                    var entries: [String: LaunchHackTraceEntry] = [:]
-                    for file in files where !file.isDirectory && !file.isSymlink
-                        && file.path.hasPrefix(target.rootPath + "/") {
-                        let relative = String(file.path.dropFirst(target.rootPath.count + 1))
-                        var digest: String?
-                        let ext = (relative as NSString).pathExtension.lowercased()
-                        let relevant = FileKind.of(relative) == .image
-                            || FileKind.of(relative) == .video
-                            || ["plist", "json", "xml"].contains(ext)
-                            || ["splash", "ad", "advert", "campaign", "launch"].contains(where: { relative.lowercased().contains($0) })
-                        if relevant, file.size > 0, file.size <= 16 * 1024 * 1024,
-                           hashedFiles < 250, hashedBytes + file.size <= 128 * 1024 * 1024 {
-                            digest = try? channel.md5(file.path)
-                            if digest != nil {
-                                hashedFiles += 1
-                                hashedBytes += file.size
-                            }
-                        }
-                        entries[relative] = LaunchHackTraceEntry(
-                            size: file.size,
-                            modifiedAt: file.modified,
-                            md5: digest,
-                            isImmutable: channel.isImmutable(file.path)
-                        )
-                    }
-                    containers.append(LaunchHackTraceContainer(
-                        bundleID: target.bundleID,
-                        groupID: target.groupID,
-                        appName: target.appName,
-                        rootPath: target.rootPath,
-                        truncated: files.count >= perContainerLimit,
-                        entries: entries
-                    ))
-                } catch {
-                    failed.append(target.appName + "（" + error.localizedDescription + "）")
-                }
-            }
-
-            let checkpoint = LaunchHackTraceCheckpoint(
-                stage: stage,
-                createdAt: Date(),
-                containers: containers,
-                hashedFiles: hashedFiles,
-                failedContainers: failed
-            )
-            DispatchQueue.main.async {
-                self.isTracking = false
-                guard !containers.isEmpty else {
-                    self.trackingMessage = "没有容器成功完成本次记录，原有追踪数据保持不变。"
-                    return
-                }
-                let hasIncompleteContainers = containers.contains(where: { $0.truncated })
-                    || !failed.isEmpty
-                    || containers.count != targets.count
-                guard !hasIncompleteContainers else {
-                    let truncatedCount = containers.filter { $0.truncated }.count
-                    self.trackingMessage = "本次记录不完整：\(containers.count)/\(targets.count) 个容器成功读取，\(truncatedCount) 个达到扫描上限，\(failed.count) 个读取失败。为避免产生误导性差异，未覆盖原有检查点；请恢复容器访问后重新记录。"
-                    return
-                }
-                let previous = self.traceCheckpoints
-                if stage == .baseline {
-                    self.traceCheckpoints = [checkpoint]
-                } else {
-                    self.traceCheckpoints.removeAll { $0.stage == stage }
-                    self.traceCheckpoints.append(checkpoint)
-                    self.traceCheckpoints.sort { $0.createdAt < $1.createdAt }
-                }
-                let saved = LaunchHackTraceStore.save(self.traceCheckpoints)
-                if !saved {
-                    self.traceCheckpoints = previous
-                }
-                let count = containers.reduce(0) { $0 + $1.entries.count }
-                let incomplete = containers.filter { $0.truncated }.count
-                self.trackingMessage = saved
-                    ? "「\(stage.title)」已记录：\(containers.count) 个容器、\(count) 个文件、\(hashedFiles) 个 MD5；\(incomplete) 个容器达到扫描上限，\(failed.count) 个容器未能读取。已保存到本机。"
-                    : "本机保存失败，已保留上一次追踪记录；请检查存储空间后重试。"
-            }
-        }
-    }
-
-    func clearTrace() {
-        let previous = traceCheckpoints
-        traceCheckpoints = []
-        if LaunchHackTraceStore.save(traceCheckpoints) {
-            trackingMessage = "本机追踪记录已清空。"
-        } else {
-            traceCheckpoints = previous
-            trackingMessage = "无法更新本机追踪文件，已保留原有追踪记录。"
-        }
     }
 
     func scan(targets: [LaunchHackScanTarget], channel: Channel) {
@@ -709,11 +316,10 @@ private final class LaunchHackModel: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async {
             var found: [LaunchHackCandidate] = []
+            var foundPaths: [String] = []
             var visitedTotal = 0
             var completed = 0
             var failures: [String] = []
-            var mediaAnalyzedCount = 0
-            var mediaBytesCopied: UInt64 = 0
 
             for target in targets {
                 do {
@@ -800,30 +406,8 @@ private final class LaunchHackModel: ObservableObject {
 
                         guard score >= 40 else { continue }
 
-                        let digest: String?
-                        if file.size <= 16 * 1024 * 1024, found.count < 250 {
-                            digest = try? channel.md5(file.path)
-                        } else {
-                            digest = nil
-                        }
-
-                        var mediaDetails: String?
-                        var previewData: Data?
-                        if (FileKind.of(relative) == .image || FileKind.of(relative) == .video),
-                           file.size <= 32 * 1024 * 1024,
-                           mediaAnalyzedCount < 24,
-                           mediaBytesCopied + file.size <= 128 * 1024 * 1024 {
-                            mediaAnalyzedCount += 1
-                            mediaBytesCopied += file.size
-                            if let media = LaunchHackMediaAnalyzer.analyze(
-                                path: file.path, relativePath: relative, channel: channel
-                            ) {
-                                mediaDetails = media.details
-                                previewData = media.previewData
-                                evidence.append(media.evidence)
-                            }
-                        }
-
+                        // 先只收集评分与证据；MD5 和媒体分析在排序后按分数优先补算，
+                        // 保证最该核验的候选一定带指纹，而不是先遍历到的先得。
                         found.append(LaunchHackCandidate(
                             bundleID: target.bundleID,
                             groupID: target.groupID,
@@ -831,13 +415,14 @@ private final class LaunchHackModel: ObservableObject {
                             relativePath: relative,
                             size: file.size,
                             modifiedAt: file.modified,
-                            md5: digest,
+                            md5: nil,
                             isFrozen: channel.isImmutable(file.path),
                             score: min(score, 98),
                             evidence: Array(Set(evidence)).sorted(),
-                            mediaDetails: mediaDetails,
-                            previewData: previewData
+                            mediaDetails: nil,
+                            previewData: nil
                         ))
+                        foundPaths.append(file.path)
                     }
                 } catch {
                     failures.append("\(target.appName)：\(error.localizedDescription)")
@@ -852,13 +437,69 @@ private final class LaunchHackModel: ObservableObject {
                 }
             }
 
-            let sorted = found.sorted {
-                if $0.score != $1.score { return $0.score > $1.score }
-                return $0.modifiedAt > $1.modifiedAt
+            // 按分数从高到低排序后，再给靠前的候选补算 MD5 与媒体分析：
+            // 指纹预算先花在最该核验的文件上。
+            let order = found.indices.sorted {
+                if found[$0].score != found[$1].score { return found[$0].score > found[$1].score }
+                return found[$0].modifiedAt > found[$1].modifiedAt
+            }
+            var ranked: [LaunchHackCandidate] = []
+            var rankedPaths: [String] = []
+            for index in order.prefix(500) {
+                ranked.append(found[index])
+                rankedPaths.append(foundPaths[index])
+            }
+            var mediaAnalyzedCount = 0
+            var mediaBytesCopied: UInt64 = 0
+            var md5ComputedCount = 0
+            for index in ranked.indices {
+                let candidate = ranked[index]
+                let fullPath = rankedPaths[index]
+                var md5 = candidate.md5
+                if md5ComputedCount < 250, candidate.size <= 16 * 1024 * 1024 {
+                    md5 = try? channel.md5(fullPath)
+                    if md5 != nil { md5ComputedCount += 1 }
+                }
+                var updated = LaunchHackCandidate(bundleID: candidate.bundleID,
+                                                  groupID: candidate.groupID,
+                                                  appName: candidate.appName,
+                                                  relativePath: candidate.relativePath,
+                                                  size: candidate.size,
+                                                  modifiedAt: candidate.modifiedAt,
+                                                  md5: md5,
+                                                  isFrozen: candidate.isFrozen,
+                                                  score: candidate.score,
+                                                  evidence: candidate.evidence,
+                                                  mediaDetails: candidate.mediaDetails,
+                                                  previewData: candidate.previewData)
+                if (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video),
+                   candidate.size <= 32 * 1024 * 1024,
+                   mediaAnalyzedCount < 24,
+                   mediaBytesCopied + candidate.size <= 128 * 1024 * 1024 {
+                    mediaAnalyzedCount += 1
+                    mediaBytesCopied += candidate.size
+                    if let media = LaunchHackMediaAnalyzer.analyze(
+                        path: fullPath, relativePath: candidate.relativePath, channel: channel
+                    ) {
+                        updated = LaunchHackCandidate(bundleID: updated.bundleID,
+                                                      groupID: updated.groupID,
+                                                      appName: updated.appName,
+                                                      relativePath: updated.relativePath,
+                                                      size: updated.size,
+                                                      modifiedAt: updated.modifiedAt,
+                                                      md5: updated.md5,
+                                                      isFrozen: updated.isFrozen,
+                                                      score: updated.score,
+                                                      evidence: Array(Set(updated.evidence + [media.evidence])).sorted(),
+                                                      mediaDetails: media.details,
+                                                      previewData: media.previewData)
+                    }
+                }
+                ranked[index] = updated
             }
 
             DispatchQueue.main.async {
-                self.candidates = Array(sorted.prefix(500))
+                self.candidates = ranked
                 self.isScanning = false
                 let failureText = failures.isEmpty ? "" : "；\(failures.count) 个容器无法完整读取"
                 self.scanMessage = "扫描完成：访问 \(visitedTotal) 个文件，发现 \(found.count) 个候选资源；媒体分析 \(mediaAnalyzedCount) 项\(failureText)。候选需要人工核验，不会自动冻结。"
@@ -924,8 +565,6 @@ struct LaunchHackView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Color.appBackground.ignoresSafeArea())
-            .navigationTitle("LaunchHack")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("关闭") { dismiss() }
@@ -1051,7 +690,7 @@ struct LaunchHackView: View {
             HStack(spacing: 8) {
                 resultMetric("\(model.candidates.count)", "发现线索")
                 resultMetric("\(model.candidates.filter { $0.score >= 80 }.count)", "优先核验")
-                resultMetric("\(model.candidates.filter { $0.bundleID == nil }.count)", "待关联")
+                resultMetric("\(model.candidates.filter { $0.isFrozen }.count)", "已冻结")
             }
             Text(model.candidates.isEmpty
                  ? "扫描完成后这里只显示数量摘要，完整识别结果会出现在 LaunchShield 主界面。"

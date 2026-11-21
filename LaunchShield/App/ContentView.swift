@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var showRestoreConfirm = false
     @State private var showLaunchHackUploadConfirm = false
     @State private var pendingLaunchHackCandidate: LaunchHackCandidate?
+    @State private var savedLocalRuleIDs: Set<String> = []
     @State private var showAllLaunchHackFindings = false
     @State private var ipaShareItem: ShareItem?
 
@@ -137,7 +138,10 @@ struct ContentView: View {
                                                      expectedSize: candidate.size,
                                                      expectedModifiedAt: candidate.modifiedAt,
                                                      expectedMD5: candidate.md5,
-                                                     groupID: candidate.groupID)
+                                                     groupID: candidate.groupID) { success, message in
+                        state.alertText = message
+                        if success { state.markLaunchHackFindingFrozen(candidate) }
+                    }
                 }
                 pendingLaunchHackCandidate = nil
             }
@@ -146,14 +150,14 @@ struct ContentView: View {
             Text("此操作由 LaunchShield 主界面执行：先重新核验文件与指纹、备份原件，再清零并冻结。LaunchHack 只负责识别，不会修改目标文件。")
         }
         .confirmationDialog("上传本次识别数据？", isPresented: $showLaunchHackUploadConfirm, titleVisibility: .visible) {
-            Button("确认上传识别元数据") {
-                state.uploadLaunchHackRecognition()
+            Button("确认上传") {
+                state.uploadAllRecognitionData()
             }
             Button("取消", role: .cancel) { }
         } message: {
             Text(state.launchHackUploadResultUncertain
                  ? "上次上传结果未确认，服务器可能已经收到数据。请先核对服务器记录，再决定是否重试。"
-                 : "仅上传识别元数据、路径、文件指纹和脱敏证据，不上传图片、视频或其他原始文件。服务器解析和规则整理由服务端完成。")
+                 : "有哪份传哪份：扫描识别数据和 LaunchHack 识别数据都会传。仅上传文字信息（路径、文件指纹和脱敏证据），不上传图片、视频或其他原始文件。")
         }
     }
 
@@ -480,13 +484,12 @@ struct ContentView: View {
                 }
             } label: {
                 HStack(spacing: 10) {
+                    Spacer()
                     Image(systemName: "viewfinder")
                         .font(.system(size: 17, weight: .semibold))
-                    Text("开始广告检测")
+                    Text("LaunchHack")
                         .font(.system(size: 16, weight: .semibold))
                     Spacer()
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 13, weight: .semibold))
                 }
                 .foregroundStyle(.white)
                 .padding(.horizontal, 16)
@@ -587,6 +590,29 @@ struct ContentView: View {
                                 symbol: "doc.text.magnifyingglass",
                                 tint: .cyan)
                 }
+                Button {
+                    showLaunchHackUploadConfirm = true
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "arrow.up.circle")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text(state.isUploadingMergedRecognition ? "正在上传…" : "上传识别数据")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.accentCyan)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(Color.accentCyan.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(state.isUploadingMergedRecognition || state.isUploadingLaunchHackFindings || state.isBusy)
+                if !state.mergedUploadMessage.isEmpty {
+                    Text(state.mergedUploadMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(state.mergedUploadMessage.hasPrefix("已上传") ? Color.green : Color.secondaryText)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
                 VStack(spacing: 0) {
                     ForEach(findings) { candidate in
                         DisclosureGroup {
@@ -610,7 +636,11 @@ struct ContentView: View {
                                         .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(Color.primaryText)
                                 }
-                                if candidate.bundleID != nil &&
+                                if candidate.isFrozen {
+                                    Text("已冻结，已在守护列表中。")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.green)
+                                } else if candidate.bundleID != nil &&
                                    (FileKind.of(candidate.relativePath) == .image || FileKind.of(candidate.relativePath) == .video) {
                                     Button("确认后备份、清零并冻结") {
                                         pendingLaunchHackCandidate = candidate
@@ -618,6 +648,27 @@ struct ContentView: View {
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(Color.accentCyan)
                                     .disabled(state.isBusy)
+                                } else if let ownerID = candidate.bundleID,
+                                          !DatabaseFile.matches(relativePath: candidate.relativePath) {
+                                    if savedLocalRuleIDs.contains(candidate.id) ||
+                                       RulesStore.containsLocalCandidate(bundleID: ownerID, relativePath: candidate.relativePath) {
+                                        Text("已存为本地规则，后续扫描会按这条规则处理这个文件。")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(Color.secondaryText)
+                                    } else {
+                                        Button("存为本地规则") {
+                                            if RulesStore.addLocalCandidate(bundleID: ownerID,
+                                                                            appName: candidate.appName,
+                                                                            relativePath: candidate.relativePath) {
+                                                savedLocalRuleIDs.insert(candidate.id)
+                                            } else {
+                                                state.alertText = "没能存为本地规则：路径不安全，或本机规则库异常。"
+                                            }
+                                        }
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Color.accentCyan)
+                                        .disabled(state.isBusy)
+                                    }
                                 } else {
                                     Text("当前仅作为定位证据，暂不能直接处理。")
                                         .font(.system(size: 10))
@@ -660,23 +711,6 @@ struct ContentView: View {
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
-                }
-                HStack(spacing: 12) {
-                    Button {
-                        showLaunchHackUploadConfirm = true
-                    } label: {
-                        Label(state.isUploadingLaunchHackFindings ? "正在上传…" : "上传识别数据",
-                              systemImage: "arrow.up.circle")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .disabled(state.isUploadingLaunchHackFindings || state.isBusy)
-                    Spacer()
-                    if !state.launchHackUploadMessage.isEmpty {
-                        Text(state.launchHackUploadMessage)
-                            .font(.system(size: 10))
-                            .foregroundStyle(state.launchHackUploadMessage.contains("成功") ? Color.green : Color.secondaryText)
-                            .lineLimit(2)
-                    }
                 }
             }
         }
@@ -729,14 +763,18 @@ struct ContentView: View {
                             tint: .green)
             }
             HStack(spacing: 18) {
-                Button {
-                    state.uploadRecognition(stillSeesAds: false)
-                } label: {
-                    Label("上传识别数据", systemImage: "arrow.up.circle")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.accentCyan)
+                if state.launchHackFindings.isEmpty {
+                    Button {
+                        showLaunchHackUploadConfirm = true
+                    } label: {
+                        Label(state.isUploadingMergedRecognition ? "正在上传…" : "上传识别数据",
+                              systemImage: "arrow.up.circle")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.accentCyan)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(state.isUploadingMergedRecognition || state.isBusy)
                 }
-                .buttonStyle(.plain)
                 Spacer()
                 Button {
                     state.updateRules()
@@ -746,6 +784,11 @@ struct ContentView: View {
                         .foregroundStyle(Color.accentCyan)
                 }
                 .buttonStyle(.plain)
+            }
+            if state.launchHackFindings.isEmpty && !state.mergedUploadMessage.isEmpty {
+                Text(state.mergedUploadMessage)
+                    .font(.system(size: 11))
+                    .foregroundStyle(state.mergedUploadMessage.hasPrefix("已上传") ? Color.green : Color.secondaryText)
             }
             if !state.rulesStatus.isEmpty {
                 Text(state.rulesStatus)

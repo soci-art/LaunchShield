@@ -95,6 +95,7 @@ final class AppState: ObservableObject {
         checkedIDs = Set(checkedIDs.filter { $0.lowercased() != key })
         scanTargets.removeAll { $0.bundleID.lowercased() == key }
         launchHackFindings.removeAll { $0.bundleID?.lowercased() == key }
+        persistLaunchHackFindings()
         candidates.removeAll { $0.bundleID.lowercased() == key }
         selectedCandidatePaths = Set(selectedCandidatePaths.filter { path in candidates.contains { $0.id == path } })
         lastRecognition.removeAll { $0.bundleID.lowercased() == key }
@@ -141,6 +142,9 @@ final class AppState: ObservableObject {
     @Published var launchHackFindings: [LaunchHackCandidate] = []
     @Published var launchHackUploadMessage = ""
     @Published var isUploadingLaunchHackFindings = false
+    /// 合并上传（扫描识别数据 + LaunchHack 识别数据）的进度与结果提示。
+    @Published var mergedUploadMessage = ""
+    @Published var isUploadingMergedRecognition = false
     @Published var launchHackUploadResultUncertain = UserDefaults.standard.bool(forKey: "ls.launchHackUploadResultUncertain")
     @Published var splash: SplashResolution?
     @Published var isBusy = false
@@ -226,6 +230,7 @@ final class AppState: ObservableObject {
 
     init() {
         backupManager = BackupManager(store: store)
+        loadLaunchHackFindings()
         UserDefaults.standard.removeObject(forKey: "ls.signMethod")
         signMethod = channel.signMethod
         // 实时检测（清单第 12 条）：应用开着时每 30 分钟自动查一次
@@ -506,16 +511,74 @@ final class AppState: ObservableObject {
             return !isWhitelisted(bundleID)
         }
         launchHackFindings = Array(filtered.prefix(500))
+        persistLaunchHackFindings()
         if !filtered.isEmpty {
             log("LaunchHack 识别结果已同步到主界面：\(filtered.count) 项", .success)
         }
     }
 
+    // MARK: - LaunchHack 识别结果落盘
+
+    private var launchHackFindingsURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let directory = base.appendingPathComponent("LaunchShield", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("launchhack-findings.json")
+    }
+
+    /// 识别结果存到本机，应用重启后还在；预览图不落盘（体积大、非必需）。
+    func persistLaunchHackFindings() {
+        let stored = launchHackFindings.map { candidate in
+            LaunchHackCandidate(bundleID: candidate.bundleID,
+                                groupID: candidate.groupID,
+                                appName: candidate.appName,
+                                relativePath: candidate.relativePath,
+                                size: candidate.size,
+                                modifiedAt: candidate.modifiedAt,
+                                md5: candidate.md5,
+                                isFrozen: candidate.isFrozen,
+                                score: candidate.score,
+                                evidence: candidate.evidence,
+                                mediaDetails: candidate.mediaDetails,
+                                previewData: nil)
+        }
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        try? data.write(to: launchHackFindingsURL, options: [.atomic])
+    }
+
+    private func loadLaunchHackFindings() {
+        guard let data = try? Data(contentsOf: launchHackFindingsURL),
+              let decoded = try? JSONDecoder().decode([LaunchHackCandidate].self, from: data) else { return }
+        launchHackFindings = Array(decoded.prefix(500))
+    }
+
+    /// 主界面处理成功后，把对应候选当场标为已冻结，列表和计数立即反映。
+    func markLaunchHackFindingFrozen(_ candidate: LaunchHackCandidate) {
+        guard let index = launchHackFindings.firstIndex(where: { $0.id == candidate.id }) else { return }
+        let current = launchHackFindings[index]
+        guard !current.isFrozen else { return }
+        launchHackFindings[index] = LaunchHackCandidate(bundleID: current.bundleID,
+                                                        groupID: current.groupID,
+                                                        appName: current.appName,
+                                                        relativePath: current.relativePath,
+                                                        size: current.size,
+                                                        modifiedAt: current.modifiedAt,
+                                                        md5: current.md5,
+                                                        isFrozen: true,
+                                                        score: current.score,
+                                                        evidence: current.evidence,
+                                                        mediaDetails: current.mediaDetails,
+                                                        previewData: current.previewData)
+        persistLaunchHackFindings()
+    }
+
     /// 识别数据上传由 LaunchShield 主界面发起；LaunchHack 本身只负责扫描和同步。
-    func uploadLaunchHackRecognition() {
-        guard !isUploadingLaunchHackFindings else { return }
+    func uploadLaunchHackRecognition(completion: ((Bool) -> Void)? = nil) {
+        guard !isUploadingLaunchHackFindings else { completion?(false); return }
         guard !launchHackFindings.isEmpty else {
             launchHackUploadMessage = "没有可上传的识别数据。"
+            completion?(false)
             return
         }
         let records: [[String: Any]] = launchHackFindings.map { candidate in
@@ -542,6 +605,7 @@ final class AppState: ObservableObject {
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
             launchHackUploadMessage = "识别数据序列化失败，未上传。"
+            completion?(false)
             return
         }
         isUploadingLaunchHackFindings = true
@@ -557,7 +621,47 @@ final class AppState: ObservableObject {
                 self.launchHackUploadMessage = success
                     ? "识别数据上传成功（\(records.count) 项）。"
                     : "上传结果未确认：\(message)。服务器可能已经收到数据；请先核对服务器记录，再决定是否重试。"
+                completion?(success)
             }
+        }
+    }
+
+    /// 合并上传：现有的识别数据一次传完——有 LaunchHack 检测结果传检测结果，
+    /// 有扫描结果传扫描识别数据，两份都有就先后都传，最后给一句汇总。
+    func uploadAllRecognitionData() {
+        guard !isUploadingMergedRecognition else { return }
+        let findingsCount = launchHackFindings.count
+        let hasFindings = findingsCount > 0
+        let hasScan = !lastRecognition.isEmpty
+        guard hasFindings || hasScan else {
+            alertText = "还没有可上传的数据：先做一次扫描，或用 LaunchHack 完成一次广告检测。"
+            return
+        }
+        isUploadingMergedRecognition = true
+        mergedUploadMessage = "正在上传…"
+        var succeeded: [String] = []
+        var failed: [String] = []
+        func finish() {
+            isUploadingMergedRecognition = false
+            var parts: [String] = []
+            if !succeeded.isEmpty { parts.append("已上传：" + succeeded.joined(separator: "、")) }
+            if !failed.isEmpty { parts.append("失败：" + failed.joined(separator: "、")) }
+            mergedUploadMessage = parts.joined(separator: "；")
+        }
+        func runScanPart() {
+            guard hasScan else { finish(); return }
+            uploadRecognition(stillSeesAds: false, reportWithAlert: false) { ok in
+                if ok { succeeded.append("扫描识别数据") } else { failed.append("扫描识别数据") }
+                finish()
+            }
+        }
+        if hasFindings {
+            uploadLaunchHackRecognition { ok in
+                if ok { succeeded.append("LaunchHack 识别数据（\(findingsCount) 项）") } else { failed.append("LaunchHack 识别数据") }
+                runScanPart()
+            }
+        } else {
+            runScanPart()
         }
     }
 
@@ -595,6 +699,7 @@ final class AppState: ObservableObject {
         targetChosen = true
         scanTargets = []
         launchHackFindings = []
+        persistLaunchHackFindings()
         launchHackUploadMessage = ""
         lastScanSkippedFrozen = 0
         splash = nil
@@ -3433,9 +3538,11 @@ final class AppState: ObservableObject {
 
     /// 上传识别数据 v2：分组计数 + 未知目录 + 文件级清单 + 目录树 +
     /// 配置结构 + 用户手动标记 +「清完还出广告」反馈。
-    func uploadRecognition(stillSeesAds: Bool) {
+    func uploadRecognition(stillSeesAds: Bool, reportWithAlert: Bool = true,
+                           completion: ((Bool) -> Void)? = nil) {
         guard !lastRecognition.isEmpty else {
             alertText = "先点一次「扫描」，有了识别结果才能上传。"
+            completion?(false)
             return
         }
         let base = lastRecognition
@@ -3477,16 +3584,21 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
-                guard let data else { return }
+                guard let data else { completion?(false); return }
                 CollectUploader.upload(kind: "recognition", contentType: "application/json", body: data) { [weak self] ok, message in
                     guard let self = self else { return }
                     if ok {
                         self.log(stillSeesAds ? "已反馈：清完还出广告（附识别数据 v2）" : "识别数据已上传（v2）", .success)
-                        self.alertText = stillSeesAds ? "已反馈，我们会照着这份数据找漏掉的广告商。" : "识别数据已上传，谢谢帮忙攒指纹库。"
+                        if reportWithAlert {
+                            self.alertText = stillSeesAds ? "已反馈，我们会照着这份数据找漏掉的广告商。" : "识别数据已上传，谢谢帮忙攒指纹库。"
+                        }
                     } else {
                         self.log("识别数据上传失败：\(message)", .warning)
-                        self.alertText = "上传失败：\(message)"
+                        if reportWithAlert {
+                            self.alertText = "上传失败：\(message)"
+                        }
                     }
+                    completion?(ok)
                 }
             }
         }
