@@ -694,10 +694,10 @@ private final class LaunchHackModel: ObservableObject {
                     self.trackingMessage = "没有容器成功完成本次记录，原有追踪数据保持不变。"
                     return
                 }
-                let incomplete = containers.contains(where: { $0.truncated })
+                let hasIncompleteContainers = containers.contains(where: { $0.truncated })
                     || !failed.isEmpty
                     || containers.count != targets.count
-                guard !incomplete else {
+                guard !hasIncompleteContainers else {
                     let truncatedCount = containers.filter { $0.truncated }.count
                     self.trackingMessage = "本次记录不完整：\(containers.count)/\(targets.count) 个容器成功读取，\(truncatedCount) 个达到扫描上限，\(failed.count) 个读取失败。为避免产生误导性差异，未覆盖原有检查点；请恢复容器访问后重新记录。"
                     return
