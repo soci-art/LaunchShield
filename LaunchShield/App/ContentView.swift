@@ -560,6 +560,7 @@ struct ContentView: View {
 
     // MARK: - LaunchHack findings (display and governance live on the main screen)
 
+    @ViewBuilder
     private var launchHackFindingsSection: some View {
         if state.launchHackFindings.isEmpty {
             EmptyView()
