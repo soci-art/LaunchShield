@@ -989,7 +989,7 @@ struct LaunchHackView: View {
                     scanActionCard
                     resultOverviewCard
                     if !model.candidates.isEmpty {
-                        Label("已将 \\(model.candidates.count) 项识别结果同步到 LaunchShield 主界面。请返回主界面查看摘要、核验并执行后续操作。",
+                        Label("已将 \(model.candidates.count) 项识别结果同步到 LaunchShield 主界面。请返回主界面查看摘要、核验并执行后续操作。",
                               systemImage: "checkmark.circle.fill")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Color.green)
@@ -1042,7 +1042,7 @@ struct LaunchHackView: View {
                             .padding(.vertical, 4)
                             .background(Color.accentCyan.opacity(0.12), in: Capsule())
                     }
-                    Text("检测 · 核验 · 治理")
+                    Text("只读识别 · 结果同步")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                 }
