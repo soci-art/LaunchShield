@@ -268,6 +268,8 @@ final class AppState: ObservableObject {
     @Published var directoryGuards: [DirectoryGuard] = []
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
+    /// 第 72 条：各广告商累计识别数（落盘；清零、清除扫描都不清）。
+    @Published var vendorTotals: [String: Int] = [:]
     /// LaunchHack 机器按证据查出的候选：不展示给用户，只作上传数据
     /// （Grace 2026-11-21 定）；用户手动标记的另存 launchHackMarks。
     @Published var launchHackFindings: [LaunchHackCandidate] = []
@@ -366,6 +368,7 @@ final class AppState: ObservableObject {
         backupManager = BackupManager(store: store)
         loadLaunchHackFindings()
         loadLaunchHackMarks()
+        loadVendorTotals()
         UserDefaults.standard.removeObject(forKey: "ls.signMethod")
         signMethod = channel.signMethod
         // 实时检测（清单第 12 条）：应用开着时每 30 分钟自动查一次
@@ -784,6 +787,36 @@ final class AppState: ObservableObject {
         guard let data = try? Data(contentsOf: launchHackMarksURL),
               let decoded = try? JSONDecoder().decode([LaunchHackCandidate].self, from: data) else { return }
         launchHackMarks = Array(decoded.prefix(500))
+    }
+
+    // MARK: - 广告商累计识别数（第 72 条）
+
+    private var vendorTotalsURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let directory = base.appendingPathComponent("LaunchShield", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("vendor-totals.json")
+    }
+
+    private func loadVendorTotals() {
+        guard let data = try? Data(contentsOf: vendorTotalsURL),
+              let decoded = try? JSONDecoder().decode([String: Int].self, from: data) else { return }
+        vendorTotals = decoded
+    }
+
+    private func persistVendorTotals() {
+        guard let data = try? JSONEncoder().encode(vendorTotals) else { return }
+        try? data.write(to: vendorTotalsURL, options: [.atomic])
+    }
+
+    /// 每次扫描（含深扫）完成后，把这次识别到的按广告商累加。
+    func accumulateVendorTotals(from targets: [TargetFile]) {
+        guard !targets.isEmpty else { return }
+        for (group, groupTargets) in Dictionary(grouping: targets, by: { $0.group }) {
+            vendorTotals[group, default: 0] += groupTargets.count
+        }
+        persistVendorTotals()
     }
 
     /// 图片墙里新标记一张：收进标记收集、落盘、同步素材清单。
@@ -1446,6 +1479,7 @@ final class AppState: ObservableObject {
                 self.workProgress = nil
                 self.splash = selfSoldSplash
                 self.scanTargets = allTargets
+                self.accumulateVendorTotals(from: allTargets)
                 self.refreshLaunchHackTargets()
                 self.lastRecognition = recognition
                 self.lastScanSkippedFrozen = skippedFrozen
