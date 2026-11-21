@@ -83,6 +83,15 @@ struct BackupsView: View {
             }
         }
         .appAlert(state)
+        .overlay {
+            if state.isBusy, let progress = state.workProgress {
+                ZStack {
+                    Color.black.opacity(0.45)
+                        .ignoresSafeArea()
+                    WorkProgressOverlay(progress: progress)
+                }
+            }
+        }
         .confirmationDialog("确定要全部还原吗？", isPresented: $showRestoreAll, titleVisibility: .visible) {
             Button("逐个写回并核对 MD5", role: .destructive) {
                 state.restoreAll()

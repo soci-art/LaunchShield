@@ -1281,33 +1281,71 @@ final class AppState: ObservableObject {
     /// 第 77 条：批量删文件夹守护，和文件条目一个流程——先
     /// 解除守护（解冻）、再删记录。返回解冻失败、记录保留
     /// 的路径列表；有失败时统一弹一次提示。
-    @discardableResult
-    func removeDirectoryGuards(_ guards: [DirectoryGuard]) -> [String] {
-        var failed: [String] = []
-        var removedAny = false
-        for guardItem in guards {
-            if unfreezeDirectoryGuard(guardItem) {
-                removedAny = true
-            } else {
-                failed.append(guardItem.relativePath)
+    func removeDirectoryGuards(_ guards: [DirectoryGuard],
+                               completion: (([String]) -> Void)? = nil) {
+        guard !guards.isEmpty else { completion?([]); return }
+        guard !isBusy else {
+            // 已有操作在跑：退回同步执行，保持原有行为。
+            var failed: [String] = []
+            var removedAny = false
+            for guardItem in guards {
+                if unfreezeDirectoryGuard(guardItem) {
+                    removedAny = true
+                } else {
+                    failed.append(guardItem.relativePath)
+                }
+            }
+            if removedAny { persistDirectoryGuards() }
+            if !failed.isEmpty {
+                alertText = "有 \(failed.count) 个文件夹解冻失败，守护记录先留着。第一个：\(failed[0])"
+            }
+            completion?(failed)
+            return
+        }
+        isBusy = true
+        busyText = "正在移除文件夹守护…"
+        workProgress = WorkProgress(label: "正在移除文件夹守护", done: 0,
+                                    total: guards.count, detail: nil)
+        work.async {
+            var removable = Set<UUID>()
+            var failed: [String] = []
+            for (index, guardItem) in guards.enumerated() {
+                if self.directoryGuardUnfreeze(guardItem) {
+                    removable.insert(guardItem.id)
+                } else {
+                    failed.append(guardItem.relativePath)
+                }
+                self.reportWorkProgress(label: "正在移除文件夹守护",
+                                        done: index + 1, total: guards.count)
+            }
+            DispatchQueue.main.async {
+                self.isBusy = false
+                self.busyText = ""
+                self.workProgress = nil
+                if !removable.isEmpty {
+                    self.directoryGuards.removeAll { removable.contains($0.id) }
+                    self.persistDirectoryGuards()
+                    self.log("已批量移除文件夹守护：\(removable.count) 个", .notice)
+                }
+                if !failed.isEmpty {
+                    self.alertText = "有 \(failed.count) 个文件夹解冻失败，守护记录先留着。第一个：\(failed[0])"
+                }
+                completion?(failed)
             }
         }
-        if removedAny { persistDirectoryGuards() }
-        if !failed.isEmpty {
-            alertText = "有 \(failed.count) 个文件夹解冻失败，守护记录先留着。第一个：\(failed[0])"
-        }
-        return failed
     }
 
     /// 先解冻、再删记录（第 67 条口径）。第 77 条补：文件夹
     /// 已经不存在的，冻结无从谈起，记录直接删——真机实证有
     /// 一批缓存文件夹被应用自己删掉/换名后，旧记录卡在解冻
     /// 失败上永远删不掉。解冻真失败才保留记录，返回 false。
-    private func unfreezeDirectoryGuard(_ guardItem: DirectoryGuard) -> Bool {
+    /// 只做通道侧的事、不动记录（第 78 条拆分：批量移除在后台
+    /// 队列逐个解冻，主线程再统一删记录）。文件夹已不存在→
+    /// 可删（true）；冻着→试解冻，失败→false。
+    private func directoryGuardUnfreeze(_ guardItem: DirectoryGuard) -> Bool {
         if let root = channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) {
             let full = root + "/" + guardItem.relativePath
             if !channel.exists(full) {
-                directoryGuards.removeAll { $0.id == guardItem.id }
                 log("文件夹已不存在、守护记录一并移除：\(guardItem.appName) · \(guardItem.relativePath)", .notice)
                 return true
             }
@@ -1319,6 +1357,11 @@ final class AppState: ObservableObject {
                 }
             }
         }
+        return true
+    }
+
+    private func unfreezeDirectoryGuard(_ guardItem: DirectoryGuard) -> Bool {
+        guard directoryGuardUnfreeze(guardItem) else { return false }
         directoryGuards.removeAll { $0.id == guardItem.id }
         log("已移除文件夹守护：\(guardItem.appName) · \(guardItem.relativePath)", .notice)
         return true
@@ -1328,6 +1371,16 @@ final class AppState: ObservableObject {
         store.file.directoryGuards = directoryGuards
         if !store.save() {
             log("文件夹守护删除了，但没能保存到本机", .warning)
+        }
+    }
+
+    /// 第 78 条：批量操作真进度上报。后台循环里每处理完一个
+    /// 就调一次；界面以弹窗形式显示确定进度条＋已完成/总数。
+    func reportWorkProgress(label: String, done: Int, total: Int) {
+        DispatchQueue.main.async {
+            guard self.isBusy else { return }
+            self.workProgress = WorkProgress(label: label, done: done,
+                                             total: total, detail: nil)
         }
     }
 
@@ -1683,11 +1736,14 @@ final class AppState: ObservableObject {
         }
         isBusy = true
         busyText = "正在清零 \(targets.count) 个文件…"
+        workProgress = WorkProgress(label: "正在清零", done: 0,
+                                    total: targets.count, detail: nil)
         log("开始清零：\(targets.count) 个文件，逐个先备份再截断", .notice)
 
         work.async {
             // 第 52 条：先按文件夹把同夹文件带进来，整夹一起清。
             let targets = self.expandedWithFolderSiblings(targets)
+            self.reportWorkProgress(label: "正在清零", done: 0, total: targets.count)
             var done = 0
             var frozenCount = 0
             var freezeFailureCount = 0
@@ -1696,7 +1752,8 @@ final class AppState: ObservableObject {
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
 
-            for targetFile in targets {
+            for (index, targetFile) in targets.enumerated() {
+                self.reportWorkProgress(label: "正在清零", done: index, total: targets.count)
                 // 数据库文件被所属应用常驻锁着：写尝试必然失败，还会把
                 // 界面弄出双份（构建 43 定案），直接跳过——不备份、
                 // 不清零、不冻结，也不再反复往备份里堆。
@@ -1877,6 +1934,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 for recipe in newRecipes {
                     let exists = self.store.file.recipes.contains {
                         $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
@@ -2361,6 +2419,8 @@ final class AppState: ObservableObject {
         }
         isBusy = true
         busyText = "正在清零确认的素材…"
+        workProgress = WorkProgress(label: "正在清零确认的素材", done: 0,
+                                    total: selected.count, detail: nil)
         work.async {
             var done = 0
             var failure: String?
@@ -2370,7 +2430,8 @@ final class AppState: ObservableObject {
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
             var newGuards: [DirectoryGuard] = []
-            for candidate in selected {
+            for (index, candidate) in selected.enumerated() {
+                defer { self.reportWorkProgress(label: "正在清零确认的素材", done: index + 1, total: selected.count) }
                 let root = candidate.containerRoot.isEmpty
                     ? (self.channel.containerPath(for: candidate.bundleID) ?? "")
                     : candidate.containerRoot
@@ -2533,6 +2594,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 for recipe in newRecipes {
                     let exists = self.store.file.recipes.contains {
                         $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
@@ -3435,6 +3497,8 @@ final class AppState: ObservableObject {
         guard !targets.isEmpty else { alertText = "先勾选要移除的条目。"; return }
         isBusy = true
         busyText = "正在安全移除守护条目…"
+        workProgress = WorkProgress(label: "正在移除守护条目", done: 0,
+                                    total: targets.count, detail: nil)
         work.async {
             var removed = Set<UUID>()
             var failures: [String] = []
@@ -3491,10 +3555,14 @@ final class AppState: ObservableObject {
                     }
                     failures.append("\(recipe.relativePath)：\(error.localizedDescription)")
                 }
+                self.reportWorkProgress(label: "正在移除守护条目",
+                                        done: removed.count + failures.count,
+                                        total: targets.count)
             }
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 let previous = self.recipes
                 let remaining = previous.filter { !removed.contains($0.id) }
                 self.store.file.recipes = remaining
@@ -3536,10 +3604,13 @@ final class AppState: ObservableObject {
         }
         isBusy = true
         busyText = "正在重新冻结已复发的文件…"
+        workProgress = WorkProgress(label: "正在重新冻结已复发的文件", done: 0,
+                                    total: targets.count, detail: nil)
         work.async {
             var done = 0
             var newBackups: [BackupRecord] = []
-            for recipe in targets {
+            for (index, recipe) in targets.enumerated() {
+                defer { self.reportWorkProgress(label: "正在重新冻结已复发的文件", done: index + 1, total: targets.count) }
                 guard let root = self.channel.rootPath(bundleID: recipe.bundleID, groupID: recipe.groupID) else { continue }
                 let full = RecipeEngine.fullPath(recipe, container: root)
                 guard let item = self.channel.item(at: full), !item.isDirectory, !item.isSymlink, item.size > 0 else { continue }
@@ -3589,6 +3660,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 if !newBackups.isEmpty {
                     self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 }
@@ -3651,9 +3723,11 @@ final class AppState: ObservableObject {
             }
             let guardAppName = appGuards.first?.appName ?? bundleID
             // 第 77 条：走批量移除（失败会统一提示），全成才报已结束。
-            let failed = removeDirectoryGuards(appGuards)
-            if failed.isEmpty {
-                alertText = "已结束 \(guardAppName) 的守护：文件夹已解冻，今后不再巡查。"
+            // 第 78 条：批量移除带真进度，改异步回调。
+            removeDirectoryGuards(appGuards) { [weak self] failed in
+                if failed.isEmpty {
+                    self?.alertText = "已结束 \(guardAppName) 的守护：文件夹已解冻，今后不再巡查。"
+                }
             }
             return
         }
@@ -3661,6 +3735,8 @@ final class AppState: ObservableObject {
         let name = targets.first?.appName ?? bundleID
         isBusy = true
         busyText = "正在结束 \(name) 的守护…"
+        workProgress = WorkProgress(label: "正在结束 \(name) 的守护", done: 0,
+                                    total: targets.count, detail: nil)
         work.async {
             var completed = Set<UUID>()
             var unfrozen = 0, dirs = 0, failures = 0
@@ -3703,6 +3779,8 @@ final class AppState: ObservableObject {
                         }
                     }
                     completed.insert(recipe.id)
+                    self.reportWorkProgress(label: "正在结束 \(name) 的守护",
+                                            done: completed.count + failures, total: targets.count)
                 } catch {
                     if recipe.placeholder, let targetPath,
                        (try? self.channel.inspectItem(at: targetPath)) == nil {
@@ -3720,6 +3798,8 @@ final class AppState: ObservableObject {
                     }
                     failures += 1
                     self.log("结束守护失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
+                    self.reportWorkProgress(label: "正在结束 \(name) 的守护",
+                                            done: completed.count + failures, total: targets.count)
                 }
             }
             if completed.count == targets.count {
@@ -3741,6 +3821,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isBusy = false
                 self.busyText = ""
+                self.workProgress = nil
                 let previous = self.recipes
                 let remaining = previous.filter { !completed.contains($0.id) }
                 self.store.file.recipes = remaining
