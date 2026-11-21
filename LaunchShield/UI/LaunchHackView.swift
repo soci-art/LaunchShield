@@ -1115,10 +1115,7 @@ struct LaunchHackView: View {
             Text("仅处理你逐项核验后勾选的图片/视频资源。每项都会重新核验、备份并校验后才清零和冻结；每次只执行一项，失败项目会记录原因并继续下一项。")
         }
         .confirmationDialog("批量导入可用候选？", isPresented: $showBulkImportConfirmation, titleVisibility: .visible) {
-            Button("导入 \(importableCandidates.filter { candidate in
-                !RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
-                                                   relativePath: candidate.relativePath)
-            }.count) 项") {
+            Button("导入 \(newImportableCandidateCount) 项") {
                 var importedCount = 0
                 for candidate in importableCandidates {
                     guard let bundleID = candidate.bundleID,
@@ -1359,6 +1356,14 @@ struct LaunchHackView: View {
             $0.bundleID != nil && $0.groupID == nil &&
             (FileKind.of($0.relativePath) == .image || FileKind.of($0.relativePath) == .video)
         }
+    }
+
+    /// 预先计算尚未导入的数量，避免在 SwiftUI 文本插值中嵌套多行闭包。
+    private var newImportableCandidateCount: Int {
+        importableCandidates.filter { candidate in
+            !RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
+                                               relativePath: candidate.relativePath)
+        }.count
     }
 
     private func resultMetric(_ value: String, _ title: String) -> some View {
@@ -1788,17 +1793,11 @@ struct LaunchHackView: View {
 
             if !importableCandidates.isEmpty {
                 Button { showBulkImportConfirmation = true } label: {
-                    Label("批量加入本地识别规则（\(importableCandidates.filter { candidate in
-                        !RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
-                                                           relativePath: candidate.relativePath)
-                    }.count)）", systemImage: "tray.and.arrow.down")
+                    Label("批量加入本地识别规则（\(newImportableCandidateCount)）", systemImage: "tray.and.arrow.down")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(importableCandidates.allSatisfy { candidate in
-                    RulesStore.containsLocalCandidate(bundleID: candidate.bundleID ?? "",
-                                                       relativePath: candidate.relativePath)
-                })
+                .disabled(newImportableCandidateCount == 0)
             }
 
             let selectedGovernanceCandidates = readyCandidates.filter { selectedGovernanceIDs.contains($0.id) }
