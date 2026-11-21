@@ -720,23 +720,33 @@ struct ContentView: View {
                     .foregroundStyle(Color.secondaryText)
             }
             // 第 75 条：「一键冻结已复发」从已守护应用页挪到这里，
-            // 排在全部清零上面，橙色框；有复发才出现，确认与
-            // 重冻行为和原来一模一样。
+            // 排在全部清零上面；尺寸和全部清零一样（整条大卡片），
+            // 橙色填满。有复发才出现，确认与重冻行为和原来一样。
             if state.recurredRecipeCount > 0 {
                 Button {
                     showRefreezeConfirm = true
                 } label: {
-                    Label("一键冻结已复发（\(state.recurredRecipeCount)）", systemImage: "snowflake")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.orange)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(Color.orange.opacity(0.10),
-                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.orange.opacity(0.45), lineWidth: 1))
+                    HStack(spacing: 12) {
+                        Image(systemName: "snowflake")
+                            .font(.system(size: 18, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("一键冻结已复发（\(state.recurredRecipeCount)）")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("把又变大的文件重新清零并冻结")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.white.opacity(0.76))
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 17)
+                    .frame(height: 68)
+                    .background(LinearGradient(colors: [Color.orange.opacity(0.92), Color.red.opacity(0.78)],
+                                               startPoint: .leading,
+                                               endPoint: .trailing),
+                                in: RoundedRectangle(cornerRadius: 17, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
