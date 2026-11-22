@@ -1741,6 +1741,18 @@ final class AppState: ObservableObject {
         return result
     }
 
+    /// 第 83 条：冻结分批限速。清零收尾一口气连冻上百个文件和
+    /// 文件夹时，通道操作在一秒内密集打出，界面出过重影（构建
+    /// 39 真机复现：那场清零截断 0 个、失败 0 个，唯一的大动作
+    /// 就是收尾冻了 139 个）。每真冻 10 个停一小会儿，把爆发
+    /// 摊开；已经冻着的只是复数、不调冻结、不占额度。
+    private func freezePaceTick(_ counter: inout Int) {
+        counter += 1
+        if counter % 10 == 0 {
+            Thread.sleep(forTimeInterval: 0.06)
+        }
+    }
+
     private func performClear() {
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
@@ -1769,6 +1781,7 @@ final class AppState: ObservableObject {
             var freezeFailureCount = 0
             var failures: [String] = []
             var skippedDB = 0
+            var freezePace = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
 
@@ -1856,6 +1869,7 @@ final class AppState: ObservableObject {
                         frozenCount += 1
                     } else {
                         do {
+                            self.freezePaceTick(&freezePace)
                             try self.channel.setImmutable(targetFile.path, true)
                             guard self.channel.isImmutable(targetFile.path) else { throw ChannelFailure("冻结状态未能确认") }
                             frozenCount += 1
@@ -1864,6 +1878,7 @@ final class AppState: ObservableObject {
                             var finalError = error
                             if wasImmutable {
                                 do {
+                                    self.freezePaceTick(&freezePace)
                                     try self.channel.setImmutable(targetFile.path, true)
                                     guard self.channel.isImmutable(targetFile.path) else { throw ChannelFailure("冻结状态校验失败") }
                                 } catch {
@@ -1911,6 +1926,7 @@ final class AppState: ObservableObject {
                         continue
                     }
                     do {
+                        self.freezePaceTick(&freezePace)
                         try self.channel.setImmutable(full, true)
                         guard self.channel.isImmutable(full) else { throw ChannelFailure("文件夹冻结状态未能确认") }
                         frozenDirCount += 1
@@ -1943,6 +1959,7 @@ final class AppState: ObservableObject {
                 let full = root + "/" + guardItem.relativePath
                 guard !self.channel.isImmutable(full) else { continue }
                 do {
+                    self.freezePaceTick(&freezePace)
                     try self.channel.setImmutable(full, true)
                     guard self.channel.isImmutable(full) else { throw ChannelFailure("文件夹冻结状态未能确认") }
                     self.log("已冻结文件夹（整夹守护）：\(guardItem.relativePath)", .success)
@@ -1984,6 +2001,9 @@ final class AppState: ObservableObject {
                 }
                 if frozenDirCount > 0 {
                     self.log("广告商的文件夹已冻结：\(frozenDirCount) 个", .success)
+                }
+                if freezePace >= 10 {
+                    self.log("这次要冻的东西多，已分批慢慢冻结", .info)
                 }
                 if freezeDirFailureCount > 0 {
                     self.log("有 \(freezeDirFailureCount) 个文件夹没冻上，详情看上面", .warning)
@@ -2446,6 +2466,7 @@ final class AppState: ObservableObject {
             var failure: String?
             var skippedDB = 0
             var skippedActiveFiles = 0
+            var freezePace = 0
             var freezeFailureCount = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
@@ -2528,6 +2549,7 @@ final class AppState: ObservableObject {
                     try self.channel.truncate(full)
                     var frozen = false
                     do {
+                        self.freezePaceTick(&freezePace)
                         try self.channel.setImmutable(full, true)
                         guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态未能确认") }
                         frozen = true
@@ -2604,6 +2626,7 @@ final class AppState: ObservableObject {
                 let full = root + "/" + guardItem.relativePath
                 guard !self.channel.isImmutable(full) else { continue }
                 do {
+                    self.freezePaceTick(&freezePace)
                     try self.channel.setImmutable(full, true)
                     guard self.channel.isImmutable(full) else { throw ChannelFailure("文件夹冻结状态未能确认") }
                     self.log("已冻结文件夹（整夹守护）：\(guardItem.relativePath)", .success)
@@ -2667,16 +2690,18 @@ final class AppState: ObservableObject {
 
     /// 递归走一遍范围内的容器收集文件；keyword 非空时只收文件名命中的
     /// （上限 500 条），keyword 为空时全收（供大文件榜排序）。
-    /// 深扫：名单之外翻文件，命中两条线——相对路径带广告关键词，或者
-    /// 图片尺寸正好是手机全屏那几档。结果都进「疑似广告」组，清之前在
-    /// 清单里过目。系统启动图目录（SplashBoard）是系统自己的画面，排除。
+    /// 深扫：名单之外翻文件，只认一条线——相对路径带广告关键词。
+    /// 结果都进「疑似广告」组，清之前在清单里过目。系统启动图目录
+    /// （SplashBoard）是系统自己的画面，排除。
     /// 这些散文件清零时只冻文件本身：文件夹冻结只认规则目录，不会连累公共目录。
+    /// 第 84 条瘦身：原来还有「文件名像启动图」和「图片尺寸正好
+    /// 全屏」两条线，找图这活归 LaunchHack 图片墙（看图认比按名
+    /// 猜、按尺寸猜都准），深扫只留关键词线，走访更快、噪声更少。
     /// 深扫（提速版）：整个子树在底层一遍走完，不再逐目录跨层列举和
     /// 排序；个人内容目录整棵剪枝——目录里每个文件本来也会被个人
     /// 内容判定绕开，剪枝只省时间、不改结果，逐文件判定仍保留兜底。
-    /// 关键词拼成一个正则一次匹配；图片尺寸检查只读文件头 32 KB
-    /// （尺寸信息都在开头一段）。走访上限 8000 条、结果上限 300 个、
-    /// 尺寸检查上限 50 张，都和原来一样。
+    /// 关键词拼成一个正则一次匹配。走访上限 8000 条、结果上限
+    /// 300 个，和原来一样。
     private func deepScanTargets(container: String, ownerBundleID: String, ownerName: String,
                                  onVisitedCount: ((Int) -> Void)? = nil) -> [TargetFile] {
         let keywords = Set(RulesStore.keywords.map { $0.lowercased() } + ["appopen", "openad", "splashad"])
@@ -2686,14 +2711,8 @@ final class AppState: ObservableObject {
             guard !parts.isEmpty else { return nil }
             return try? NSRegularExpression(pattern: parts.joined(separator: "|"))
         }()
-        let fullscreen: Set<String> = ["1080x1920", "1920x1080", "1125x2436", "2436x1125", "1242x2688", "2688x1242",
-                                       "1170x2532", "2532x1170", "1179x2556", "2556x1179", "1290x2796", "2796x1290",
-                                       "1206x2622", "2622x1206", "1320x2868", "2868x1320", "750x1334", "1334x750",
-                                       "828x1792", "1792x828", "1080x2340", "2340x1080", "720x1280", "1280x720"]
-        let imageExts: Set<String> = ["jpg", "jpeg", "png", "webp", "heic", "gif"]
         var results: [TargetFile] = []
         var visited = 0
-        var dimsChecked = 0
         func consider(item: FileItem) {
             guard !item.isDirectory, !item.isSymlink,
                   item.path.hasPrefix(container + "/") else { return }
@@ -2708,26 +2727,6 @@ final class AppState: ObservableObject {
                                           note: "深扫：路径带广告关键词", size: item.size, isSmallConfig: item.size < 65536,
                                           bundleID: ownerBundleID, appName: ownerName))
                 return
-            }
-            let ext = (item.name as NSString).pathExtension.lowercased()
-            if imageExts.contains(ext), LaunchImageHint.matches(lower) {
-                results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",
-                                          note: "深扫：启动图/引导图", size: item.size, isSmallConfig: false,
-                                          bundleID: ownerBundleID, appName: ownerName))
-                return
-            }
-            if imageExts.contains(ext), item.size >= 30_000, dimsChecked < 50 {
-                dimsChecked += 1
-                if let data = try? channel.read(item.path, maxBytes: 32 * 1024),
-                   let source = CGImageSourceCreateWithData(data as CFData, nil),
-                   let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
-                   let w = props[kCGImagePropertyPixelWidth as String] as? Int,
-                   let h = props[kCGImagePropertyPixelHeight as String] as? Int,
-                   fullscreen.contains("\(w)x\(h)") {
-                    results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",
-                                              note: "深扫：全屏尺寸图片 \(w)×\(h)", size: item.size, isSmallConfig: false,
-                                              bundleID: ownerBundleID, appName: ownerName))
-                }
             }
         }
         for root in ["Library", "tmp", "Documents"] {
