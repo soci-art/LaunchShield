@@ -189,13 +189,19 @@ struct ContentView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                         .layoutPriority(1)
-                    Text("预发行")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Color.orange)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(Color.orange.opacity(0.12), in: Capsule())
-                        .fixedSize()
+                    // 「预发行」标签只许出现在真预发行包里：按更新通道
+                    // 判断（预发行工作流会在 Info.plist 盖
+                    // LSUpdateChannel=prerelease，正式版没有）。正式版
+                    // 界面永远不带这几个字（第 85 条）。
+                    if CollectUploader.isPrereleaseChannel {
+                        Text("预发行")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.orange)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.orange.opacity(0.12), in: Capsule())
+                            .fixedSize()
+                    }
                 }
                 Text("去除应用的开屏广告")
                     .font(.system(size: 13))
