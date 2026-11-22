@@ -193,7 +193,7 @@ struct ContentView: View {
                     // 判断（预发行工作流会在 Info.plist 盖
                     // LSUpdateChannel=prerelease，正式版没有）。正式版
                     // 界面永远不带这几个字（第 85 条）。
-                    if CollectUploader.isPrereleaseChannel {
+                    if GitHubUpdate.isPrereleaseChannel {
                         Text("预发行")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(Color.orange)
