@@ -121,10 +121,13 @@ final class AppIconProvider {
     private func ensureBundleMap(channel: Channel) {
         guard !bundleMapScanned else { return }
         guard let roots = try? channel.children(of: Self.bundleRoot) else { return }
-        bundleMapScanned = true
         var changed = false
+        var everyDirectoryListed = true
         for dir in roots where dir.isDirectory {
-            guard let subs = try? channel.children(of: dir.path) else { continue }
+            guard let subs = try? channel.children(of: dir.path) else {
+                everyDirectoryListed = false
+                continue
+            }
             for sub in subs where sub.isDirectory && sub.name.hasSuffix(".app") {
                 guard let got = readPlist(appPath: sub.path, channel: channel) else { continue }
                 if pathCache[got.id]?.path != sub.path {
@@ -133,6 +136,8 @@ final class AppIconProvider {
                 }
             }
         }
+        // 任一 UUID 目录未能列举时保留重试机会；全部列举成功才缓存扫描完成。
+        bundleMapScanned = everyDirectoryListed
         if changed { persistPathCache() }
     }
 
