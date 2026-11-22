@@ -74,7 +74,7 @@ final class Channel {
         return items.map { FileItem($0) }
     }
 
-    /// 深扫专用的一次性批量走访：整个子树在底层一遍走完，只回文件
+    /// 一次性批量走访：整个子树在底层一遍走完，只回文件
     /// （不排序）。跳过的目录整棵不走，语义由调用方保证等价。
     /// onVisit 收到的是累计已走条数（文件＋目录）。
     func walkFiles(at path: String, limit: Int,

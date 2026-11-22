@@ -839,7 +839,7 @@ final class AppState: ObservableObject {
         try? data.write(to: vendorTotalsURL, options: [.atomic])
     }
 
-    /// 第 80 条：不累计。每次扫描（含深扫）完成后，把这次
+    /// 第 80 条：不累计。每次扫描完成后，把这次
     /// 识别到的按广告商总计、整表替换——每个类型显示的是
     /// 最近一次扫描的总数，再扫一次就换新数，绝不叠加。
     func replaceVendorTotals(from targets: [TargetFile]) {
@@ -1542,7 +1542,7 @@ final class AppState: ObservableObject {
 
     /// 扫描范围：一键勾选有勾选时扫全部勾选的应用，否则只扫当前单个目标。
     /// 软件自营的推导目前只对百度网盘成立，其余应用只扫第三方 SDK 分组。
-    func scanBaidu(deep: Bool = false, completion: (() -> Void)? = nil) {
+    func scanBaidu(completion: (() -> Void)? = nil) {
         guard requireChannel() else { return }
         let scanSet: [ContainerInfo]
         if !checkedIDs.isEmpty {
@@ -1568,9 +1568,7 @@ final class AppState: ObservableObject {
         }
         let singleNetdisk = scanSet.count == 1 && scanSet[0].bundleID == LocalADBlockRule.dynamicSplashBundleID
         isBusy = true
-        busyText = deep
-            ? (scanSet.count == 1 ? "正在深扫\(scanSet[0].name)…" : "正在深扫 \(scanSet.count) 个应用…")
-            : (scanSet.count == 1 ? "正在扫描\(scanSet[0].name)的素材…" : "正在扫描 \(scanSet.count) 个应用的素材…")
+        busyText = scanSet.count == 1 ? "正在扫描\(scanSet[0].name)的素材…" : "正在扫描 \(scanSet.count) 个应用的素材…"
         workProgress = WorkProgress(label: busyText, done: 0,
                                     total: scanSet.count > 1 ? scanSet.count : nil,
                                     detail: nil)
@@ -1588,7 +1586,7 @@ final class AppState: ObservableObject {
                 DispatchQueue.main.async {
                     self.workProgress = WorkProgress(
                         label: scanSet.count > 1
-                            ? "正在\(deep ? "深扫" : "扫描")（第 \(min(appsDone + 1, scanSet.count)) / \(scanSet.count) 个应用）"
+                            ? "正在扫描（第 \(min(appsDone + 1, scanSet.count)) / \(scanSet.count) 个应用）"
                             : self.busyText,
                         done: appsDone,
                         total: scanSet.count > 1 ? scanSet.count : nil,
@@ -1618,30 +1616,6 @@ final class AppState: ObservableObject {
                         self.log("\(info.name) 的共享组容器（\(group.bundleID)）：找到 \(groupFound.count) 个素材", .notice)
                     }
                     found.append(contentsOf: groupFound)
-                }
-                // 深扫：名单之外再按关键词和全屏尺寸翻一遍，命中进「疑似广告」组。
-                if deep {
-                    let knownPaths = Set(found.map { $0.path })
-                    // 深扫走访在底层成批推进，进度按累计条数回填，
-                    // 不再逐个文件回调。
-                    var deepOffset = filesVisited
-                    let onDeepVisit = { (count: Int) in
-                        filesVisited = deepOffset + count
-                        reportScanProgress()
-                    }
-                    var extra = self.deepScanTargets(container: info.path, ownerBundleID: info.bundleID,
-                                                     ownerName: info.name, onVisitedCount: onDeepVisit)
-                    deepOffset = filesVisited
-                    for group in groups {
-                        extra.append(contentsOf: self.deepScanTargets(container: group.path, ownerBundleID: info.bundleID,
-                                                                      ownerName: info.name, onVisitedCount: onDeepVisit))
-                        deepOffset = filesVisited
-                    }
-                    let fresh = extra.filter { !knownPaths.contains($0.path) }
-                    if !fresh.isEmpty {
-                        self.log("\(info.name)：深扫多找到 \(fresh.count) 个疑似广告文件", .notice)
-                    }
-                    found.append(contentsOf: fresh)
                 }
                 // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
                 // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
@@ -2742,69 +2716,6 @@ final class AppState: ObservableObject {
 
     /// 递归走一遍范围内的容器收集文件；keyword 非空时只收文件名命中的
     /// （上限 500 条），keyword 为空时全收（供大文件榜排序）。
-    /// 深扫：名单之外翻文件，只认一条线——相对路径带广告关键词。
-    /// 结果都进「疑似广告」组，清之前在清单里过目。系统启动图目录
-    /// （SplashBoard）是系统自己的画面，排除。
-    /// 这些散文件清零时只冻文件本身：文件夹冻结只认规则目录，不会连累公共目录。
-    /// 第 84 条瘦身：原来还有「文件名像启动图」和「图片尺寸正好
-    /// 全屏」两条线，找图这活归 LaunchHack 图片墙（看图认比按名
-    /// 猜、按尺寸猜都准），深扫只留关键词线，走访更快、噪声更少。
-    /// 深扫（提速版）：整个子树在底层一遍走完，不再逐目录跨层列举和
-    /// 排序；个人内容目录整棵剪枝——目录里每个文件本来也会被个人
-    /// 内容判定绕开，剪枝只省时间、不改结果，逐文件判定仍保留兜底。
-    /// 关键词拼成一个正则一次匹配。走访上限 8000 条、结果上限
-    /// 300 个，和原来一样。
-    private func deepScanTargets(container: String, ownerBundleID: String, ownerName: String,
-                                 onVisitedCount: ((Int) -> Void)? = nil) -> [TargetFile] {
-        let keywords = Set(RulesStore.keywords.map { $0.lowercased() } + ["appopen", "openad", "splashad"])
-        let keywordRegex: NSRegularExpression? = {
-            let parts = keywords.filter { !$0.isEmpty }
-                .map { NSRegularExpression.escapedPattern(for: $0) }
-            guard !parts.isEmpty else { return nil }
-            return try? NSRegularExpression(pattern: parts.joined(separator: "|"))
-        }()
-        var results: [TargetFile] = []
-        var visited = 0
-        func consider(item: FileItem) {
-            guard !item.isDirectory, !item.isSymlink,
-                  item.path.hasPrefix(container + "/") else { return }
-            let relative = String(item.path.dropFirst(container.count + 1))
-            if relative.hasPrefix("Library/SplashBoard") { return }
-            // 个人内容（聊天图、短视频、表情包）不算疑似广告，深扫直接绕开。
-            if PersonalMedia.isPersonal(bundleID: ownerBundleID, relativePath: relative) { return }
-            let lower = relative.lowercased()
-            if let keywordRegex,
-               keywordRegex.firstMatch(in: lower, range: NSRange(location: 0, length: lower.utf16.count)) != nil {
-                results.append(TargetFile(path: item.path, relativePath: relative, group: "疑似广告",
-                                          note: "深扫：路径带广告关键词", size: item.size, isSmallConfig: item.size < 65536,
-                                          bundleID: ownerBundleID, appName: ownerName))
-                return
-            }
-        }
-        for root in ["Library", "tmp", "Documents"] {
-            guard visited < 8000, results.count < 300 else { break }
-            guard let rootItem = channel.item(at: container + "/" + root),
-                  rootItem.isDirectory, !rootItem.isSymlink else { continue }
-            let base = visited
-            let files = (try? channel.walkFiles(
-                at: rootItem.path,
-                limit: 8000 - base,
-                skipDirNames: PersonalMedia.personalDirectoryNames,
-                skipDirSubstrings: PersonalMedia.personalDirectorySubstrings,
-                skipAccountDirs: root == "Documents",
-                onVisit: { count in
-                    visited = base + count
-                    onVisitedCount?(visited)
-                })) ?? []
-            for item in files {
-                if results.count >= 300 { break }
-                consider(item: item)
-            }
-        }
-        onVisitedCount?(visited)
-        return results
-    }
-
     /// 找广告第 0 步（只对单个目标应用）：先把缓存和临时文件清干净，
     /// 再自动拍第一次快照当干净底子——广告图早就缓存好时，
     /// 只有这样它重新下载的那一份才会在对比里现形。
