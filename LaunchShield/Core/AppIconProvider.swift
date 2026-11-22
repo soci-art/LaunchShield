@@ -5,12 +5,29 @@ import Compression
 /// 第 86 条：给应用列表取每个应用自己的图标。
 ///
 /// 准确性口径（Grace 问过，照此实现）：
-/// - 图标只从应用自己的安装包（.app）里取，不上网、不靠名字猜。
-/// - 认 Bundle ID 对号：取图前先读安装包里的 Info.plist，里面写的
-///   CFBundleIdentifier 必须和要找的 Bundle ID 完全一致才用它的图标。
+/// - 优先从应用自己的安装包（.app）里取图；安装包受系统权限保护时，
+///   兜底查询 Apple App Store 公开目录。
+/// - 本地和商店结果都按 Bundle ID 精确核对，不按应用名称猜测或错配。
 /// - 取图顺序：先按 Info.plist 写的图标文件名拿包里的原图；没有再拆
 ///   Assets.car（图标打包文件）里那张扁平的 AppIcon 大图。
 /// - 实在拿不到返回 nil，界面用通用图样占位，绝不拿别的图标顶替。
+private final class IconRequestResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Data?
+
+    func set(_ data: Data?) {
+        lock.lock()
+        stored = data
+        lock.unlock()
+    }
+
+    func get() -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
+
 final class AppIconProvider {
     private static let bundleRoot = "/private/var/containers/Bundle/Application"
     private static let maxCarBytes: UInt64 = 64_000_000
@@ -62,21 +79,107 @@ final class AppIconProvider {
         cacheDir.appendingPathComponent(bundleID + ".png")
     }
 
+    private func appStoreIconFileURL(_ bundleID: String) -> URL {
+        cacheDir.appendingPathComponent(bundleID + ".appstore.png")
+    }
+
+    /// 本轮通过 Apple App Store 公开目录取得的图标数。
+    private(set) var appStoreIconsFetched = 0
+    private var lastAppStoreSearchAt = Date.distantPast
+
+    /// Apple 文档给出的 Search API 参考上限约为每分钟 20 次。
+    /// 图标队列串行运行，因此用 3.1 秒间隔避免集中请求触发限流。
+    private func waitForAppStoreSearchSlot() {
+        let interval = Date().timeIntervalSince(lastAppStoreSearchAt)
+        if interval < 3.1 {
+            Thread.sleep(forTimeInterval: 3.1 - interval)
+        }
+        lastAppStoreSearchAt = Date()
+    }
+
+    /// Apple 官方 iTunes Search API。按应用名称搜索软件结果，再用
+    /// 返回的 bundleId 精确匹配；不使用未在官方文档列明的 bundleId lookup 参数。
+    /// 当前 App Store 地区优先，必要时回退 US / CN / KR。
+    private func fetchAppStoreIcon(bundleID: String, appName: String) -> UIImage? {
+        let preferred = Locale.current.region?.identifier.lowercased() ?? "us"
+        var regions = [preferred, "us", "cn", "kr"]
+        var seen = Set<String>()
+        regions = regions.filter { seen.insert($0).inserted }
+
+        for region in regions {
+            waitForAppStoreSearchSlot()
+            var components = URLComponents(string: "https://itunes.apple.com/search")
+            components?.queryItems = [
+                URLQueryItem(name: "term", value: appName),
+                URLQueryItem(name: "country", value: region),
+                URLQueryItem(name: "media", value: "software"),
+                URLQueryItem(name: "entity", value: "software"),
+                URLQueryItem(name: "limit", value: "50")
+            ]
+            guard let url = components?.url,
+                  let data = synchronousRequest(url: url),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = root["results"] as? [[String: Any]] else { continue }
+
+            guard let match = results.first(where: {
+                ($0["bundleId"] as? String) == bundleID
+            }) else { continue }
+
+            guard let artwork = (match["artworkUrl512"] as? String)
+                ?? (match["artworkUrl100"] as? String)
+                ?? (match["artworkUrl60"] as? String),
+                let artworkURL = URL(string: artwork),
+                let imageData = synchronousRequest(url: artworkURL),
+                let image = UIImage(data: imageData) else { continue }
+            return image
+        }
+        return nil
+    }
+
+    /// 仅在专用后台图标队列调用；限制单次请求等待时间，避免网络故障卡住界面。
+    private func synchronousRequest(url: URL) -> Data? {
+        let request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad,
+                                 timeoutInterval: 10)
+        let semaphore = DispatchSemaphore(value: 0)
+        let result = IconRequestResult()
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            guard error == nil,
+                  let response = response as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode) else { return }
+            result.set(data)
+        }
+        task.resume()
+        guard semaphore.wait(timeout: .now() + 11) == .success else {
+            task.cancel()
+            return nil
+        }
+        return result.get()
+    }
+
     /// 缓存命中：安装包路径已知、Info.plist 没变过、图标文件还在。
     func iconFromCache(bundleID: String, channel: Channel) -> UIImage? {
         loadPathCacheIfNeeded()
-        guard let entry = pathCache[bundleID] else { return nil }
-        let plistPath = entry.path + "/Info.plist"
-        guard let item = channel.item(at: plistPath),
-              abs(item.modified.timeIntervalSince1970 - entry.stamp) < 1.0 else { return nil }
-        let url = iconFileURL(bundleID)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return UIImage(contentsOfFile: url.path)
+        if let entry = pathCache[bundleID] {
+            let plistPath = entry.path + "/Info.plist"
+            if let item = channel.item(at: plistPath),
+               abs(item.modified.timeIntervalSince1970 - entry.stamp) < 1.0 {
+                let url = iconFileURL(bundleID)
+                if FileManager.default.fileExists(atPath: url.path),
+                   let image = UIImage(contentsOfFile: url.path) {
+                    return image
+                }
+            }
+        }
+        // App Store 图标单独缓存，不伪装成从安装包读取的本地图标。
+        let storeURL = appStoreIconFileURL(bundleID)
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return nil }
+        return UIImage(contentsOfFile: storeURL.path)
     }
 
     // MARK: - 现取
 
-    func fetchIcon(bundleID: String, channel: Channel) -> UIImage? {
+    func fetchIcon(bundleID: String, appName: String, channel: Channel) -> UIImage? {
         loadPathCacheIfNeeded()
 
         // 先用 LaunchServices 的 Bundle ID -> .app 路径映射，避免必须列举
@@ -110,14 +213,26 @@ final class AppIconProvider {
             }
         }
 
-        guard let app = resolved else { return nil }
-        let image = looseIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
-            ?? carIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
-        guard let found = image else { return nil }
-        let small = Self.downscale(found)
-        if let png = small.pngData() {
-            try? png.write(to: iconFileURL(bundleID), options: .atomic)
+        if let app = resolved {
+            let image = looseIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
+                ?? carIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
+            if let found = image {
+                let small = Self.downscale(found)
+                if let png = small.pngData() {
+                    try? png.write(to: iconFileURL(bundleID), options: .atomic)
+                }
+                return small
+            }
         }
+
+        // 本地安装包读取被 iOS 沙盒拒绝时，尝试 Apple 公开 App Store 查询。
+        // 返回结果必须带有完全相同的 Bundle ID，绝不按名称模糊匹配。
+        guard let storeImage = fetchAppStoreIcon(bundleID: bundleID, appName: appName) else { return nil }
+        let small = Self.downscale(storeImage)
+        if let png = small.pngData() {
+            try? png.write(to: appStoreIconFileURL(bundleID), options: .atomic)
+        }
+        appStoreIconsFetched += 1
         return small
     }
 

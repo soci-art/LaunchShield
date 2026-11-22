@@ -1176,7 +1176,7 @@ final class AppState: ObservableObject {
                 }
             }
             for info in pending {
-                if let image = self.iconProvider.fetchIcon(bundleID: info.bundleID, channel: self.channel) {
+                if let image = self.iconProvider.fetchIcon(bundleID: info.bundleID, appName: info.name, channel: self.channel) {
                     DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
                     fetched += 1
                 } else {
@@ -1184,7 +1184,7 @@ final class AppState: ObservableObject {
                 }
             }
             if !targets.isEmpty {
-                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + fetched) 个（缓存 \(cached)、现取 \(fetched)），没找到 \(missing.count) 个；安装数据库给到路径 \(self.iconProvider.lsPathsGiven) 个", .info)
+                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + fetched) 个（缓存 \(cached)、现取 \(fetched)），其中 Apple App Store 查询取得 \(self.iconProvider.appStoreIconsFetched) 个，没找到 \(missing.count) 个；安装数据库给到路径 \(self.iconProvider.lsPathsGiven) 个", .info)
                 if !missing.isEmpty {
                     self.log("没找到图标的应用：\(missing.joined(separator: "、"))", .info)
                 }
