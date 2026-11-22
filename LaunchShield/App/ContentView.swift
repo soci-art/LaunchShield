@@ -603,12 +603,9 @@ struct ContentView: View {
                 }
                 Spacer()
             }
-            // 第 59 条：深扫/扫描改成横排带框按钮，第一个深扫、
-            // 第二个扫描，跟备份页三个按钮一个待遇。
+            // 第 59 条：扫描改成横排带框按钮，跟备份页三个按钮
+            // 一个待遇。第 93 条：深扫已删，只剩扫描一个按钮。
             HStack(spacing: 10) {
-                scanActionButton(title: "深扫", symbol: "magnifyingglass.circle") {
-                    state.scanBaidu(deep: true)
-                }
                 scanActionButton(title: "扫描", symbol: "arrow.clockwise") {
                     state.scanBaidu()
                 }

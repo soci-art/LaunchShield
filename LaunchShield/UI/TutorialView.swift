@@ -149,10 +149,8 @@ struct HowToUseView: View {
                     }
                 }
                 tutorialStep(3, "扫描，看广告藏在哪",
-                     "点素材清单下方的「扫描」，扫完会按广告商分好类，告诉你每个应用里有几家的广告素材。扫不全时用「深扫」，查得更深。") {
+                     "点素材清单下方的「扫描」，扫完会按广告商分好类，告诉你每个应用里有几家的广告素材。") {
                     tutorialMockRow {
-                        tutorialMockButton("◎ 深扫")
-                        Spacer()
                         tutorialMockButton("↻ 扫描")
                     }
                 }

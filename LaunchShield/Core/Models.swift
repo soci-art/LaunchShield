@@ -197,7 +197,7 @@ enum DatabaseFile {
 /// 不进文件工具的默认列表。宁可漏抓广告，也不能误伤用户自己的东西。
 enum PersonalMedia {
     /// 聊天媒体的典型目录名：短视频、自定义表情、表情包、聊天图、接收的文件等。
-    /// 深扫走访按这份名单整棵剪枝——目录里的每个文件都会命中同名
+    /// 走访时按这份名单整棵剪枝——目录里的每个文件都会命中同名
     /// 路径段，剪枝只影响速度，不改变判定结果。
     static let personalDirectoryNames: Set<String> = ["shortvideo", "customface", "emoji", "emojis",
                                                       "sticker", "stickers", "messageimg",
