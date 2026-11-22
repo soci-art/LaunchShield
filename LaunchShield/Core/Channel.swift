@@ -135,7 +135,7 @@ final class Channel {
     /// writes through the existing inode, so owner, mode and xattrs stay.
     func truncate(_ path: String) throws {
         let op = raw.truncateFile(path)
-        guard op.ok else { throw ChannelFailure(op.error ?? "清零失败") }
+        guard op.ok else { throw ChannelFailure(op.error ?? "去除失败") }
     }
 
 

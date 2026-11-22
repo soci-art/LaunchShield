@@ -547,7 +547,7 @@ skipDirSubstrings:(NSArray<NSString *> *)skipDirSubstrings
 {
     NSString *error = nil;
     if (!wq_write(path, [NSData data], &error)) {
-        return [WQOp fail:[self messageFor:error fallback:@"清零失败"]];
+        return [WQOp fail:[self messageFor:error fallback:@"去除失败"]];
     }
     return [WQOp ok:@(0)];
 }

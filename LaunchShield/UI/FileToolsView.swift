@@ -54,7 +54,7 @@ struct FileToolsView: View {
     var body: some View {
         SheetPage("大文件榜 / 搜文件名") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("范围和找广告一样：当前目标应用（加一键勾选的应用）连同关联的共享组容器。选中的文件会加进找广告候选，并算作你标记的广告；清零仍在候选列表里确认，这里不动文件。")
+                Text("范围和找广告一样：当前目标应用（加一键勾选的应用）连同关联的共享组容器。选中的文件会加进找广告候选，并算作你标记的广告；去除仍在候选列表里确认，这里不动文件。")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)

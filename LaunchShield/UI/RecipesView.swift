@@ -256,7 +256,7 @@ struct RecipesView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
             }
-            Text("清零时连文件夹一起冻住的都在这里。新广告落回这些文件夹，打开 LaunchShield 时会一并清掉。移除后文件夹会解冻，今后不再巡查这个文件夹。")
+            Text("去除时连文件夹一起冻住的都在这里。新广告落回这些文件夹，打开 LaunchShield 时会一并清掉。移除后文件夹会解冻，今后不再巡查这个文件夹。")
                 .font(.system(size: 11))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -311,7 +311,7 @@ struct RecipesView: View {
             Text("还没有配方")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
-            Text("清零广告素材后，会自动把「Bundle ID ＋ 相对路径」存成配方，下次打开时按配方复查。")
+            Text("去除广告素材后，会自动把「Bundle ID ＋ 相对路径」存成配方，下次打开时按配方复查。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -372,7 +372,7 @@ struct RecipesView: View {
                 Spacer()
                 if !selecting {
                 Menu {
-                    Button("重新清零") {
+                    Button("重新去除") {
                         state.replaceRecipe(recipe)
                     }
                     Button(recipe.frozen ? "解冻" : "冻结") {

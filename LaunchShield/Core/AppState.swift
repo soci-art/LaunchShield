@@ -1184,7 +1184,7 @@ final class AppState: ObservableObject {
                 }
             }
             if !targets.isEmpty {
-                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + fetched) 个（缓存 \(cached)、现取 \(fetched)），没找到 \(missing.count) 个", .info)
+                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + fetched) 个（缓存 \(cached)、现取 \(fetched)），没找到 \(missing.count) 个；安装数据库给到路径 \(self.iconProvider.lsPathsGiven) 个", .info)
                 if !missing.isEmpty {
                     self.log("没找到图标的应用：\(missing.joined(separator: "、"))", .info)
                 }
@@ -1526,7 +1526,7 @@ final class AppState: ObservableObject {
         selectedCandidatePaths = []
         scanTargets = []
         log("一键勾选：勾上 \(userApps.count) 个应用，跳过游戏 \(games.count) 个", .notice)
-        alertText = "已勾选 \(userApps.count) 个应用（游戏除外）。点「扫描」会一起扫，点「全部清零」会一起清。"
+        alertText = "已勾选 \(userApps.count) 个应用（游戏除外）。点「扫描」会一起扫，点「开始去除广告」会一起清。"
     }
 
     // MARK: - Scan and batch clear
@@ -1743,7 +1743,7 @@ final class AppState: ObservableObject {
         // 结果时不再自动先扫一遍（主页按钮已改为弹提醒让用户
         // 先去扫描）；这里再兜底拦一道，防止别的入口绕过。
         if scanTargets.isEmpty {
-            alertText = "还没有扫描到素材。全部清零只处理已经扫描到的素材，先去扫描一遍，扫完再回来清零。"
+            alertText = "还没有扫描到素材。开始去除广告只处理已经扫描到的素材，先去扫描一遍，扫完再回来去除。"
             return
         }
         performClear()
@@ -1800,7 +1800,7 @@ final class AppState: ObservableObject {
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
         guard !scanTargets.isEmpty else {
-            alertText = "没有可清零的素材，先扫描一次。"
+            alertText = "没有可去除的素材，先扫描一次。"
             return
         }
         let targets = scanTargets.filter { !isWhitelisted($0.bundleID) }
@@ -1810,15 +1810,15 @@ final class AppState: ObservableObject {
             return
         }
         isBusy = true
-        busyText = "正在清零 \(targets.count) 个文件…"
-        workProgress = WorkProgress(label: "正在清零", done: 0,
+        busyText = "去除中 \(targets.count) 个文件…"
+        workProgress = WorkProgress(label: "去除中", done: 0,
                                     total: targets.count, detail: nil)
         log("开始清零：\(targets.count) 个文件，逐个先备份再截断", .notice)
 
         work.async {
             // 第 52 条：先按文件夹把同夹文件带进来，整夹一起清。
             let targets = self.expandedWithFolderSiblings(targets)
-            self.reportWorkProgress(label: "正在清零", done: 0, total: targets.count)
+            self.reportWorkProgress(label: "去除中", done: 0, total: targets.count)
             var done = 0
             var frozenCount = 0
             var freezeFailureCount = 0
@@ -1829,7 +1829,7 @@ final class AppState: ObservableObject {
             var newRecipes: [Recipe] = []
 
             for (index, targetFile) in targets.enumerated() {
-                self.reportWorkProgress(label: "正在清零", done: index, total: targets.count)
+                self.reportWorkProgress(label: "去除中", done: index, total: targets.count)
                 // 数据库文件被所属应用常驻锁着：写尝试必然失败，还会把
                 // 界面弄出双份（构建 43 定案），直接跳过——不备份、
                 // 不清零、不冻结，也不再反复往备份里堆。
@@ -1869,7 +1869,7 @@ final class AppState: ObservableObject {
                         newBackups.append(record)
                         let backedUpDigest = try self.channel.md5(targetFile.path)
                         guard backedUpDigest.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                            throw ChannelFailure("备份后源文件内容发生变化，已取消清零")
+                            throw ChannelFailure("备份后源文件内容发生变化，已取消去除")
                         }
                         if wasImmutable {
                             try self.channel.setImmutable(targetFile.path, false)
@@ -1878,11 +1878,11 @@ final class AppState: ObservableObject {
                         guard let preWriteItem = try self.channel.inspectItem(at: targetFile.path),
                               !preWriteItem.isDirectory, !preWriteItem.isSymlink,
                               preWriteItem.size == record.originalSize else {
-                            throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                            throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
                         }
                         let preWriteMD5 = try self.channel.md5(targetFile.path)
                         guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                            throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                            throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                         }
                         try self.channel.truncate(targetFile.path)
                         done += 1
@@ -2057,11 +2057,11 @@ final class AppState: ObservableObject {
                 let completionText: String
                 if failures.isEmpty {
                     completionText = (frozenCount > 0
-                        ? "清零完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
-                        : "清零完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。") + dbNote
+                        ? "去除完成：\(done) 个文件已截断为 0 字节，全部已冻结。请把处理过的应用完全退出，再重新打开看看。"
+                        : "去除完成：\(done) 个文件已截断为 0 字节。请把处理过的应用完全退出，再重新打开看看。") + dbNote
                 } else {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    completionText = "清零完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。" + dbNote
+                    completionText = "去除完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。" + dbNote
                 }
                 self.scanTargets = []
                 self.checkRecipes(silent: true)
@@ -2474,7 +2474,7 @@ final class AppState: ObservableObject {
                     } else {
                         self.alertText = self.candidates.isEmpty
                             ? "完整扫描后没有发现新文件或变大的文件。可以再让广告播一次试试。"
-                            : "请勾选确实是广告素材的文件，再点清零。"
+                            : "请勾选确实是广告素材的文件，再点去除。"
                     }
                 }
                 if !failedNames.isEmpty {
@@ -2497,12 +2497,12 @@ final class AppState: ObservableObject {
         guard requireChannel() else { return }
         let selected = candidates.filter { selectedCandidatePaths.contains($0.id) }
         guard !selected.isEmpty else {
-            alertText = "请先勾选要清零的文件。"
+            alertText = "请先勾选要去除的文件。"
             return
         }
         isBusy = true
-        busyText = "正在清零确认的素材…"
-        workProgress = WorkProgress(label: "正在清零确认的素材", done: 0,
+        busyText = "正在去除确认的素材…"
+        workProgress = WorkProgress(label: "正在去除确认的素材", done: 0,
                                     total: selected.count, detail: nil)
         work.async {
             var done = 0
@@ -2515,7 +2515,7 @@ final class AppState: ObservableObject {
             var newRecipes: [Recipe] = []
             var newGuards: [DirectoryGuard] = []
             for (index, candidate) in selected.enumerated() {
-                defer { self.reportWorkProgress(label: "正在清零确认的素材", done: index + 1, total: selected.count) }
+                defer { self.reportWorkProgress(label: "正在去除确认的素材", done: index + 1, total: selected.count) }
                 let root = candidate.containerRoot.isEmpty
                     ? (self.channel.containerPath(for: candidate.bundleID) ?? "")
                     : candidate.containerRoot
@@ -2561,7 +2561,7 @@ final class AppState: ObservableObject {
                     }
                     guard current.size == candidate.size,
                           abs(current.modified.timeIntervalSince(candidate.modified)) <= 2 else {
-                        throw ChannelFailure("文件在第二次快照后发生变化，已取消清零；请重新扫描")
+                        throw ChannelFailure("文件在第二次快照后发生变化，已取消去除；请重新扫描")
                     }
                     let located = self.locateFile(path: full,
                                                   relativePath: candidate.relativePath,
@@ -2577,17 +2577,17 @@ final class AppState: ObservableObject {
                     newBackups.append(record)
                     let sourceMD5AfterBackup = try self.channel.md5(full)
                     guard sourceMD5AfterBackup.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                        throw ChannelFailure("备份后源文件内容发生变化，已取消清零")
+                        throw ChannelFailure("备份后源文件内容发生变化，已取消去除")
                     }
                     if wasImmutable { try self.channel.setImmutable(full, false) }
                     guard let preWriteItem = try self.channel.inspectItem(at: full),
                           !preWriteItem.isDirectory, !preWriteItem.isSymlink,
                           preWriteItem.size == record.originalSize else {
-                        throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                        throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
                     }
                     let preWriteMD5 = try self.channel.md5(full)
                     guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                        throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                        throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                     }
                     try self.channel.truncate(full)
                     var frozen = false
@@ -2707,15 +2707,15 @@ final class AppState: ObservableObject {
                     ? "另有 \(skippedActiveFiles) 个文件因持续变化已暂时跳过；请关闭对应应用后再清理。"
                     : ""
                 let freezeNote = freezeFailureCount > 0
-                    ? "另有 \(freezeFailureCount) 个已清零文件未能确认冻结，请复查。"
+                    ? "另有 \(freezeFailureCount) 个已去除文件未能确认冻结，请复查。"
                     : ""
                 let completionText: String
                 if let failure {
                     self.log("清零候选没有全部完成，没清成的：\(failure)", .warning)
-                    completionText = "清零完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。" + dbNote + busyNote + freezeNote
+                    completionText = "去除完成了一部分：\(done) 个已经清掉，有文件没清成（多半是正被应用占用着），详情看日志。" + dbNote + busyNote + freezeNote
                 } else {
                     self.log("确认的素材已清零：\(done) 个，配方已存入守护列表", .success)
-                    completionText = "已清零 \(done) 个素材，并加入已守护应用。" + dbNote + busyNote + freezeNote
+                    completionText = "已去除 \(done) 个素材，并加入已守护应用。" + dbNote + busyNote + freezeNote
                         + (recipesSaved ? "" : " 注意：本机守护记录保存失败，请检查存储空间并复查。")
                     self.candidates = []
                     self.selectedCandidatePaths = []
@@ -3002,7 +3002,7 @@ final class AppState: ObservableObject {
         }
         saveMarks()
         log("已把 \(files.count) 个文件加进找广告候选（已勾选、已标记为广告）", .success)
-        alertText = "已加进找广告候选 \(files.count) 个，回到候选列表确认清零。"
+        alertText = "已加进找广告候选 \(files.count) 个，回到候选列表确认去除。"
     }
 
     // MARK: - Recipes
@@ -3036,7 +3036,7 @@ final class AppState: ObservableObject {
             return
         }
         guard FileKind.of(relativePath) == .image || FileKind.of(relativePath) == .video else {
-            report(false, "配置文件只作为定位证据，不直接清零或冻结。请定位到它对应的图片/视频资源。")
+            report(false, "配置文件只作为定位证据，不直接去除或冻结。请定位到它对应的图片/视频资源。")
             return
         }
         let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
@@ -3073,11 +3073,11 @@ final class AppState: ObservableObject {
                     throw ChannelFailure("目标文件不存在、不是普通文件或已变成符号链接")
                 }
                 guard item.size > 0 else {
-                    throw ChannelFailure("目标文件为空，无需清零或建立冻结规则")
+                    throw ChannelFailure("目标文件为空，无需去除或建立冻结规则")
                 }
                 guard item.size == expectedSize,
                       abs(item.modified.timeIntervalSince(expectedModifiedAt)) <= 2 else {
-                    throw ChannelFailure("资源在扫描后发生变化，请重新扫描并核验，未执行清零")
+                    throw ChannelFailure("资源在扫描后发生变化，请重新扫描并核验，未执行去除")
                 }
                 let currentMD5 = try self.channel.md5(full)
                 if let expectedMD5, currentMD5.caseInsensitiveCompare(expectedMD5) != .orderedSame {
@@ -3092,17 +3092,17 @@ final class AppState: ObservableObject {
                                                            channel: self.channel)
                 try self.store.registerBackup(record)
                 guard currentMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                    throw ChannelFailure("备份校验失败，未清零目标文件")
+                    throw ChannelFailure("备份校验失败，未去除目标文件")
                 }
                 if wasImmutable { try self.channel.setImmutable(full, false) }
                 guard let preWriteItem = try self.channel.inspectItem(at: full),
                       !preWriteItem.isDirectory, !preWriteItem.isSymlink,
                       preWriteItem.size == record.originalSize else {
-                    throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                    throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
                 }
                 let preWriteMD5 = try self.channel.md5(full)
                 guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                    throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                    throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                 }
                 try self.channel.truncate(full)
                 var frozen = false
@@ -3153,17 +3153,17 @@ final class AppState: ObservableObject {
                         self.recipes = previousRecipes
                         let detail = freezeFailure.map { "冻结也未成功：\($0)。" } ?? ""
                         self.log("LaunchHack 资源已处理，但守护配方未能写入本机：\(relativePath)", .warning)
-                        let message = "原文件已备份并清零。\(frozen ? "文件当前已冻结，但" : detail)守护规则未能保存到本机，重启后可能无法自动复查或维持守护。请检查 LaunchShield 存储空间，并在已守护列表核对该项目。"
+                        let message = "原文件已备份并去除。\(frozen ? "文件当前已冻结，但" : detail)守护规则未能保存到本机，重启后可能无法自动复查或维持守护。请检查 LaunchShield 存储空间，并在已守护列表核对该项目。"
                         if completion == nil { self.alertText = message }
                         completion?(false, message)
                     } else if let freezeFailure {
                         self.log("LaunchHack 资源已备份并清零，但冻结失败：\(relativePath)：\(freezeFailure)", .warning)
-                        let message = "已备份并清零，配方已同步；但冻结失败：\(freezeFailure)。请在已守护列表重试冻结。"
+                        let message = "已备份并去除，配方已同步；但冻结失败：\(freezeFailure)。请在已守护列表重试冻结。"
                         if completion == nil { self.alertText = message }
                         completion?(false, message)
                     } else {
                         self.log("LaunchHack 资源已备份、清零、冻结并同步到守护配方：\(relativePath)", .success)
-                        let message = "已完成：原文件已备份，资源已清零并冻结，规则已同步到 LaunchShield「已守护应用」。"
+                        let message = "已完成：原文件已备份，资源已去除并冻结，规则已同步到 LaunchShield「已守护应用」。"
                         if completion == nil { self.alertText = message }
                         completion?(true, message)
                     }
@@ -3255,11 +3255,11 @@ final class AppState: ObservableObject {
     func replaceRecipe(_ recipe: Recipe) {
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard RecipeEngine.isSafeRelativePath(recipe.relativePath) else {
-            alertText = "守护记录中的路径不安全，已拒绝重新清零。"
+            alertText = "守护记录中的路径不安全，已拒绝重新去除。"
             return
         }
         guard !isWhitelisted(recipe.bundleID) else {
-            alertText = "该应用已加入排除白名单，不能执行重新清零。"
+            alertText = "该应用已加入排除白名单，不能执行重新去除。"
             return
         }
         guard requireChannel() else { return }
@@ -3268,13 +3268,13 @@ final class AppState: ObservableObject {
             return
         }
         isBusy = true
-        busyText = "正在重新清零…"
+        busyText = "正在重新去除…"
         work.async {
             if DatabaseFile.matches(relativePath: recipe.relativePath) {
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
-                    self.alertText = "这是数据库文件，正被应用占用着，重新清零不了，已跳过。"
+                    self.alertText = "这是数据库文件，正被应用占用着，重新去除不了，已跳过。"
                 }
                 return
             }
@@ -3283,7 +3283,7 @@ final class AppState: ObservableObject {
                 let wasImmutable = self.channel.isImmutable(full)
                 guard let current = try self.channel.inspectItem(at: full),
                       !current.isDirectory, !current.isSymlink else {
-                    throw ChannelFailure("目标不存在、不是普通文件或已变成符号链接，未执行重新清零")
+                    throw ChannelFailure("目标不存在、不是普通文件或已变成符号链接，未执行重新去除")
                 }
                 guard current.isImmutable == wasImmutable else {
                     throw ChannelFailure("目标冻结状态在操作前发生变化，请重新复查")
@@ -3294,12 +3294,12 @@ final class AppState: ObservableObject {
                                                                relativePath: recipe.relativePath,
                                                                bundleID: recipe.bundleID,
                                                                appName: recipe.appName,
-                                                               source: "复发后重新清零",
+                                                               source: "复发后重新去除",
                                                                groupID: recipe.groupID,
                                                                channel: self.channel)
                     try self.store.registerBackup(record)
                     guard originalMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                        throw ChannelFailure("备份后源文件内容发生变化，已取消重新清零")
+                        throw ChannelFailure("备份后源文件内容发生变化，已取消重新去除")
                     }
                 }
                 do {
@@ -3307,17 +3307,17 @@ final class AppState: ObservableObject {
                     guard let preWriteItem = try self.channel.inspectItem(at: full),
                           !preWriteItem.isDirectory, !preWriteItem.isSymlink,
                           preWriteItem.size == current.size else {
-                        throw ChannelFailure("备份后目标文件状态发生变化，已取消重新清零")
+                        throw ChannelFailure("备份后目标文件状态发生变化，已取消重新去除")
                     }
                     let preWriteMD5 = try self.channel.md5(full)
                     guard preWriteMD5.caseInsensitiveCompare(originalMD5) == .orderedSame else {
-                        throw ChannelFailure("备份后目标文件内容发生变化，已取消重新清零")
+                        throw ChannelFailure("备份后目标文件内容发生变化，已取消重新去除")
                     }
                     try self.channel.truncate(full)
                     if wasImmutable {
                         try self.channel.setImmutable(full, true)
                         guard self.channel.isImmutable(full) else {
-                            throw ChannelFailure("文件已清零，但原冻结状态未能恢复")
+                            throw ChannelFailure("文件已去除，但原冻结状态未能恢复")
                         }
                     }
                 } catch {
@@ -3327,7 +3327,7 @@ final class AppState: ObservableObject {
                             try self.channel.setImmutable(full, true)
                             guard self.channel.isImmutable(full) else { throw ChannelFailure("冻结状态校验失败") }
                         } catch {
-                            throw ChannelFailure("重新清零失败：\(operationError.localizedDescription)；警告：原冻结状态恢复失败：\(error.localizedDescription)")
+                            throw ChannelFailure("重新去除失败：\(operationError.localizedDescription)；警告：原冻结状态恢复失败：\(error.localizedDescription)")
                         }
                     }
                     throw operationError
@@ -3343,7 +3343,7 @@ final class AppState: ObservableObject {
                     self.isBusy = false
                     self.busyText = ""
                     self.log("重新清零失败：\(recipe.relativePath)：\(error.localizedDescription)", .warning)
-                    self.alertText = "重新清零失败：\(error.localizedDescription)"
+                    self.alertText = "重新去除失败：\(error.localizedDescription)"
                 }
             }
         }
@@ -3693,15 +3693,15 @@ final class AppState: ObservableObject {
                         guard let preWriteItem = try self.channel.inspectItem(at: full),
                               !preWriteItem.isDirectory, !preWriteItem.isSymlink,
                               preWriteItem.size == record.originalSize else {
-                            throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                            throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
                         }
                         let preWriteMD5 = try self.channel.md5(full)
                         guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                            throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                            throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                         }
                         try self.channel.truncate(full)
                         try self.channel.setImmutable(full, true)
-                        guard self.channel.isImmutable(full) else { throw ChannelFailure("文件已清零，但冻结状态未能确认") }
+                        guard self.channel.isImmutable(full) else { throw ChannelFailure("文件已去除，但冻结状态未能确认") }
                     } catch {
                         if wasImmutable {
                             do {
@@ -3727,7 +3727,7 @@ final class AppState: ObservableObject {
                     self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
                 }
                 let completionText = done > 0
-                    ? "已把 \(done) 个复发文件重新清零并冻结。"
+                    ? "已把 \(done) 个复发文件重新去除并冻结。"
                     : "复发文件都没能处理，详情看日志。"
                 self.checkRecipes(silent: true)
                 self.alertText = completionText
@@ -4175,17 +4175,17 @@ final class AppState: ObservableObject {
             newBackups.append(record)
             let backedUpDigest = try channel.md5(file.path)
             guard backedUpDigest.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                throw ChannelFailure("备份后源文件内容发生变化，已取消清零")
+                throw ChannelFailure("备份后源文件内容发生变化，已取消去除")
             }
             if wasImmutable { try channel.setImmutable(file.path, false) }
             guard let preWriteItem = try channel.inspectItem(at: file.path),
                   !preWriteItem.isDirectory, !preWriteItem.isSymlink,
                   preWriteItem.size == record.originalSize else {
-                throw ChannelFailure("备份后目标文件状态发生变化，已取消清零")
+                throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
             }
             let preWriteMD5 = try channel.md5(file.path)
             guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                throw ChannelFailure("备份后目标文件内容发生变化，已取消清零")
+                throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
             }
             try channel.truncate(file.path)
             var frozen = false

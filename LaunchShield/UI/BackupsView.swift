@@ -17,7 +17,7 @@ struct BackupsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if state.backups.isEmpty {
-                        Text("还没有备份。清零操作会先备份每个文件，备份记录出现在这里。")
+                        Text("还没有备份。去除操作会先备份每个文件，备份记录出现在这里。")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.secondaryText)
                             .padding(16)

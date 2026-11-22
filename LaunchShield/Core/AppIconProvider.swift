@@ -15,6 +15,10 @@ final class AppIconProvider {
     private static let bundleRoot = "/private/var/containers/Bundle/Application"
     private static let maxCarBytes: UInt64 = 64_000_000
 
+    /// 本轮里安装数据库（LaunchServices）给到路径的应用数，供汇总日志
+    /// 区分「数据库没给路径」和「给了路径但读不出来」两种失败。
+    private(set) var lsPathsGiven = 0
+
     /// bundleID -> (安装包路径, Info.plist 修改时间戳)。落盘跨启动复用。
     private var pathCache: [String: (path: String, stamp: TimeInterval)] = [:]
     private var pathCacheLoaded = false
@@ -85,14 +89,15 @@ final class AppIconProvider {
             resolved = (entry.path, plist)
         }
 
-        if resolved == nil,
-           let appPath = channel.installedAppBundlePath(for: bundleID),
-           appPath.hasSuffix(".app"),
-           let plist = readPlist(appPath: appPath, channel: channel),
-           plist.id == bundleID {
-            resolved = (appPath, plist)
-            pathCache[bundleID] = (appPath, plist.stamp)
-            persistPathCache()
+        if resolved == nil, let appPath = channel.installedAppBundlePath(for: bundleID) {
+            lsPathsGiven += 1
+            if appPath.hasSuffix(".app"),
+               let plist = readPlist(appPath: appPath, channel: channel),
+               plist.id == bundleID {
+                resolved = (appPath, plist)
+                pathCache[bundleID] = (appPath, plist.stamp)
+                persistPathCache()
+            }
         }
 
         // LaunchServices 没有给出可用路径时，才回退到原来的目录枚举。
