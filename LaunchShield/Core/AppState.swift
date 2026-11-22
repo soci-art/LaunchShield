@@ -1156,38 +1156,47 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 第 86 条：容器列表到位后在后台取图标。先读落盘缓存，再现取
-    /// 缺的；取到一个往 appIcons 里补一个。只跑一次。
+    /// 第 86 条：容器列表到位后在后台取图标。缓存里有的先显示；
+    /// 没有的、或缓存已过 30 天有效期的，排队去 App Store 目录
+    /// 现查（过期的是先显示旧图、查到新图再换）。只跑一次。
+    /// 第 91 条：轮次范围和「选择目标应用」同口径——系统应用直接
+    /// 跳过（它们在选择页不显示、商店里也没条目，白查还刷日志）。
     func loadAppIconsIfNeeded() {
         guard !iconLoadStarted, channel.isAvailable else { return }
         iconLoadStarted = true
-        let targets = containers
+        let targets = containers.filter { !Self.isSystemApp($0) }
         iconQueue.async { [weak self] in
             guard let self else { return }
-            var cached = 0, fetched = 0
+            var cached = 0, newFetched = 0, refreshed = 0
             var missing: [String] = []
             var pending: [ContainerInfo] = []
+            var shownFromCache = Set<String>()
             for info in targets {
-                if let image = self.iconProvider.iconFromCache(bundleID: info.bundleID, channel: self.channel) {
+                if let image = self.iconProvider.iconFromCache(bundleID: info.bundleID) {
                     DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
                     cached += 1
-                } else {
+                    shownFromCache.insert(info.bundleID)
+                }
+                if self.iconProvider.iconNeedsFetch(bundleID: info.bundleID) {
                     pending.append(info)
                 }
             }
-            for info in pending {
-                if let image = self.iconProvider.fetchIcon(bundleID: info.bundleID, channel: self.channel) {
-                    DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
-                    fetched += 1
-                } else {
-                    missing.append(info.bundleID)
+            if !pending.isEmpty {
+                // 第 90 条：打包批量查商店目录（每批 30 个），不再一个个慢慢搜。
+                let got = self.iconProvider.fetchIcons(bundleIDs: pending.map { $0.bundleID })
+                for info in pending {
+                    if let image = got[info.bundleID] {
+                        DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                        if shownFromCache.contains(info.bundleID) { refreshed += 1 } else { newFetched += 1 }
+                    } else if !shownFromCache.contains(info.bundleID) {
+                        missing.append(info.bundleID)
+                    }
                 }
             }
             if !targets.isEmpty {
-                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + fetched) 个（缓存 \(cached)、现取 \(fetched)），没找到 \(missing.count) 个", .info)
-                if !missing.isEmpty {
-                    self.log("没找到图标的应用：\(missing.joined(separator: "、"))", .info)
-                }
+                // 第 91 条：只留一行汇总；没找到的名单不再整串写进
+                // 日志（哪个没图标看列表里的占位图样就知道）。
+                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + newFetched) 个（缓存 \(cached)、新取 \(newFetched)、过期刷新 \(refreshed)），没找到 \(missing.count) 个", .info)
             }
         }
     }

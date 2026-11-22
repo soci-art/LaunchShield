@@ -203,6 +203,7 @@ struct RecipesView: View {
                         Image(systemName: expandedApps.contains(group.bundleID) ? "chevron.down" : "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Color.secondaryText)
+                        AppIconView(bundleID: group.bundleID, size: 32)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(group.name)
                                 .font(.system(size: 14, weight: .semibold))
