@@ -255,8 +255,8 @@ final class AppState: ObservableObject {
     @Published var availableVersion: String?
     /// 有新版时要弹的更新提醒（清单第 12 条的新弹窗：一句话＋取消／更新两个按钮）。
     @Published var updateAlert: UpdateAlertKind?
-    /// 更新公告（清单第 20 条）：跟着正式版发行版走，检测更新时顺带
-    /// 取回。未读带红点，新公告只自动弹一次，之后从主页入口看。
+    /// 更新公告（清单第 20 条）：跟着本机通道的发行版走（第 88 条），
+    /// 检测更新时顺带取回。未读带红点，新公告只自动弹一次，之后从主页入口看。
     @Published var announcement: Announcement?
     @Published var announcementUnread = false
     @Published var announcementPopupReady = false
@@ -4600,7 +4600,7 @@ final class AppState: ObservableObject {
 
     /// 启动时悄悄查一次正式版：有新版才提醒（同一个版本一天最多提醒
     /// 一次），没有就什么都不说——像 Drift 那样，不用用户自己去点。
-    /// 公告跟着正式版发行版走：每次拿到最新正式版信息都顺手解析一遍。
+    /// 公告跟着本机通道的发行版走：每次拿到本通道最新发行版信息都顺手解析一遍。
     /// 没看过的算未读；同一条公告只自动弹一次（弹没弹单独记，看没看
     /// 在用户点「知道了」时才记）。
     private func processAnnouncement(_ info: GitHubUpdate.VersionInfo) {
@@ -4624,16 +4624,11 @@ final class AppState: ObservableObject {
         announcementUnread = false
     }
 
-    /// 公告只跟正式版走（清单第 31 条）：本机是预发行时，更新检查查的是
-    /// 预发行，公告另查正式版；本机是正式版时直接用同一份结果，不多发请求。
+    /// 公告跟本机通道走（清单第 88 条，改自第 31 条）：两条线各读自己
+    /// 最新发行版说明里的公告段。更新检查拿到的本来就是本通道的结果，
+    /// 直接解析，不再另查正式版。
     private func handleAnnouncement(from info: GitHubUpdate.VersionInfo) {
-        if GitHubUpdate.isPrereleaseChannel {
-            GitHubUpdate.fetchFormalLatest { [weak self] formalInfo, _ in
-                if let formalInfo { self?.processAnnouncement(formalInfo) }
-            }
-        } else {
-            processAnnouncement(info)
-        }
+        processAnnouncement(info)
     }
 
     private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {

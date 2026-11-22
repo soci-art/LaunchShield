@@ -61,11 +61,6 @@ enum GitHubUpdate {
         fetchLatest(mirror: 0, prerelease: isPrereleaseChannel, completion: completion)
     }
 
-    /// 公告只跟正式版走：不管本机是哪条线，公告永远查最新正式版。
-    static func fetchFormalLatest(completion: @escaping (VersionInfo?, String) -> Void) {
-        fetchLatest(mirror: 0, prerelease: false, completion: completion)
-    }
-
     private static func fetchLatest(mirror: Int, prerelease: Bool, completion: @escaping (VersionInfo?, String) -> Void) {
         guard mirror < mirrors.count else {
             completion(nil, "三条线路都没连上 GitHub")
@@ -177,9 +172,9 @@ enum GitHubUpdate {
     }
 }
 
-/// 更新公告（清单第 20 条）：跟着正式版发行版走，写在发行说明里
-/// 【公告】…【/公告】一段中，第一行是标题、其余是正文。App 检测更新
-/// 时顺带取回，有新公告弹一次，主页入口常驻、未读带红点。
+/// 更新公告（清单第 20 条）：跟着本机通道的发行版走（第 88 条），写在
+/// 该通道最新发行版的发行说明里【公告】…【/公告】一段中，第一行是标题、
+/// 其余是正文。App 检测更新时顺带取回，有新公告弹一次，主页入口常驻、未读带红点。
 struct Announcement: Equatable {
     let title: String
     let body: String
