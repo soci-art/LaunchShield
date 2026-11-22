@@ -676,35 +676,36 @@ struct ContentView: View {
     }
 
     private var sourceSection: some View {
-        VStack(spacing: 0) {
-            sourceRow(name: "软件自营", symbol: "building.2.crop.circle", tint: .cyan, group: "软件自营")
+        // 第 96 条：这一列的数字按配方汇总，现算现显示，跟配方增减实时同步。
+        let tallies = state.recipeTallies
+        return VStack(spacing: 0) {
+            sourceRow(name: "软件自营", symbol: "building.2.crop.circle", tint: .cyan, count: tallies["软件自营"] ?? 0)
             rowDivider
-            sourceRow(name: "优量汇", symbol: "rectangle.stack", tint: .blue, group: "优量汇")
+            sourceRow(name: "优量汇", symbol: "rectangle.stack", tint: .blue, count: tallies["优量汇"] ?? 0)
             rowDivider
-            sourceRow(name: "穿山甲", symbol: "leaf", tint: .green, group: "穿山甲")
+            sourceRow(name: "穿山甲", symbol: "leaf", tint: .green, count: tallies["穿山甲"] ?? 0)
             rowDivider
-            sourceRow(name: "BeiZi", symbol: "square.grid.2x2", tint: .orange, group: "BeiZi")
+            sourceRow(name: "BeiZi", symbol: "square.grid.2x2", tint: .orange, count: tallies["BeiZi"] ?? 0)
             rowDivider
-            sourceRow(name: "美数", symbol: "target", tint: .purple, group: "美数")
+            sourceRow(name: "美数", symbol: "target", tint: .purple, count: tallies["美数"] ?? 0)
             rowDivider
-            sourceRow(name: "UBIX", symbol: "cube", tint: .teal, group: "UBIX")
+            sourceRow(name: "UBIX", symbol: "cube", tint: .teal, count: tallies["UBIX"] ?? 0)
             rowDivider
-            sourceRow(name: "趣盟", symbol: "link", tint: .yellow, group: "趣盟")
+            sourceRow(name: "趣盟", symbol: "link", tint: .yellow, count: tallies["趣盟"] ?? 0)
             rowDivider
-            sourceRow(name: "AdMob", symbol: "globe", tint: .pink, group: "AdMob")
+            sourceRow(name: "AdMob", symbol: "globe", tint: .pink, count: tallies["AdMob"] ?? 0)
             rowDivider
-            sourceRow(name: "其他广告", symbol: "ellipsis.circle", tint: .gray, group: "其他广告")
-            if state.targetCount(for: AppState.launchHackTargetGroup) > 0 {
-                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", tint: .cyan, group: AppState.launchHackTargetGroup)
+            sourceRow(name: "其他广告", symbol: "ellipsis.circle", tint: .gray, count: tallies["其他广告"] ?? 0)
+            if (tallies[AppState.launchHackTargetGroup] ?? 0) > 0 {
+                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", tint: .cyan, count: tallies[AppState.launchHackTargetGroup] ?? 0)
             }
         }
         .padding(.horizontal, 15)
         .panel()
     }
 
-    private func sourceRow(name: String, symbol: String, tint: Color, group: String) -> some View {
-        let count = state.targetCount(for: group)
-        return HStack(spacing: 11) {
+    private func sourceRow(name: String, symbol: String, tint: Color, count: Int) -> some View {
+        HStack(spacing: 11) {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(tint)
@@ -713,19 +714,13 @@ struct ContentView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(Color.primaryText)
             Spacer()
-            Text(sourceRowStatus(count: count, total: state.vendorTotals[group] ?? 0))
+            // 第 96 条（取代第 72 条口径）：行尾是这家广告商的配方数，
+            // 按配方现算；没有就是 0 个，不再有「未扫描」。
+            Text("\(count) 个")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(state.scanTargets.isEmpty && (state.vendorTotals[group] ?? 0) == 0 ? Color.secondaryText : Color.accentCyan)
+                .foregroundStyle(count > 0 ? Color.accentCyan : Color.secondaryText)
         }
         .padding(.vertical, 11)
-    }
-
-    /// 第 72 条：广告商行尾只显示数量——有待处理的显示这次的
-    /// 个数，清零后待处理没了、显示累计识别数（只数字、不带
-    /// 「累计」字样，Grace 定）；两者都没有才是「未扫描」。
-    private func sourceRowStatus(count: Int, total: Int) -> String {
-        if !state.scanTargets.isEmpty { return "\(count) 个" }
-        return total > 0 ? "\(total)" : "未扫描"
     }
 
     private var rowDivider: some View {
