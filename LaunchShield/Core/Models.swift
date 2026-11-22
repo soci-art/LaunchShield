@@ -398,6 +398,9 @@ struct Recipe: Codable, Identifiable, Hashable {
     var lastState: String
     /// 文件在共享组容器里时这里是组标识；应用自己容器里是 nil。
     var groupID: String? = nil
+    /// 第 96 条：这条配方来自哪家广告商（处理时素材的分组名）。
+    /// 老配方没记这一项（nil），汇总时按路径现认。
+    var source: String? = nil
 }
 
 /// 文件夹守护（清单第 52 条，2026-11-21 Grace 定）：处理任何条目

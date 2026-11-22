@@ -452,6 +452,47 @@ final class AppState: ObservableObject {
         scanTargets.filter { $0.group == group }.count
     }
 
+    /// 第 96 条：一条配方算在哪家广告商名下。新配方记了来源就用来源；
+    /// 老配方没记，按路径现认：LaunchHack 本地规则 → 规则写死目录 →
+    /// 模板命中的目录 → 百度网盘自营素材根；都认不出就不计入任何一行。
+    func recipeGroup(of recipe: Recipe) -> String? {
+        if let source = recipe.source, !source.isEmpty { return source }
+        if RulesStore.containsLocalCandidate(bundleID: recipe.bundleID, relativePath: recipe.relativePath) {
+            return Self.launchHackTargetGroup
+        }
+        let path = recipe.relativePath
+        for group in RulesStore.groups {
+            for directory in group.directories where path == directory || path.hasPrefix(directory + "/") {
+                return group.group
+            }
+            for template in group.templates {
+                var dir = (path as NSString).deletingLastPathComponent
+                while !dir.isEmpty && dir != "." {
+                    if RulesStore.templateMatches(template, directory: dir) { return group.group }
+                    dir = (dir as NSString).deletingLastPathComponent
+                }
+            }
+        }
+        if recipe.bundleID == LocalADBlockRule.dynamicSplashBundleID,
+           path.hasPrefix(LocalADBlockRule.splashCacheRoot + "/") {
+            return "软件自营"
+        }
+        return nil
+    }
+
+    /// 第 96 条：主页广告商汇总，按配方现算一份总账。配方任何增减
+    /// （新处理出配方、删配方、手动还原清掉）都会让这个数即时变。
+    /// LaunchHack 本地规则命中的配方也算在 LaunchHack 识别名下。
+    var recipeTallies: [String: Int] {
+        var result: [String: Int] = [:]
+        for recipe in recipes {
+            guard var owner = recipeGroup(of: recipe) else { continue }
+            if owner == "LaunchHack 本地规则" { owner = Self.launchHackTargetGroup }
+            result[owner, default: 0] += 1
+        }
+        return result
+    }
+
     /// 第 95 条：模板命中按「应用＋命中的目录」成组，界面一组一行确认。
     struct TemplateHitGroup: Identifiable {
         let bundleID: String
@@ -1940,7 +1981,8 @@ final class AppState: ObservableObject {
                                                      placeholder: false,
                                                      lastCheckedAt: Date(),
                                                      lastState: RecipeState.normal.rawValue,
-                                                     groupID: located.groupID))
+                                                     groupID: located.groupID,
+                                                     source: targetFile.group))
                         }
                     }
                     // 已经是 0 字节且原本未冻结的文件不做额外冻结，避免制造没有守护记录的锁。
@@ -2667,7 +2709,8 @@ final class AppState: ObservableObject {
                                                  placeholder: false,
                                                  lastCheckedAt: Date(),
                                                  lastState: RecipeState.normal.rawValue,
-                                                 groupID: located.groupID))
+                                                 groupID: located.groupID,
+                                                 source: Self.launchHackTargetGroup))
                         // 第 52 条：确认素材清零也登记文件夹守护。
                         if let guardItem = self.makeDirectoryGuard(bundleID: appBundleID, appName: appName,
                                                                    groupID: located.groupID,
@@ -3110,7 +3153,8 @@ final class AppState: ObservableObject {
                                     placeholder: false,
                                     lastCheckedAt: Date(),
                                     lastState: RecipeState.normal.rawValue,
-                                    groupID: groupID)
+                                    groupID: groupID,
+                                    source: recipeExists?.source)
                 DispatchQueue.main.async {
                     self.isBusy = false
                     self.busyText = ""
@@ -4197,7 +4241,8 @@ final class AppState: ObservableObject {
                                          placeholder: false,
                                          lastCheckedAt: Date(),
                                          lastState: RecipeState.normal.rawValue,
-                                         groupID: located.groupID))
+                                         groupID: located.groupID,
+                                         source: source))
                 // 第 52 条：自动清掉的文件也把所在文件夹登记守护，
                 // 后来新落进这个文件夹的文件会被巡查一并处理。
                 if let guardItem = makeDirectoryGuard(bundleID: ownerID, appName: ownerName,
