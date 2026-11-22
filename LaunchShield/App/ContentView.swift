@@ -37,6 +37,9 @@ struct ContentView: View {
                         summarySection
                         actionsSection
                         sourceSection
+                        if !state.templateTargets.isEmpty {
+                            templateSection
+                        }
                         recipesSection
                         logSection
                         updateSection
@@ -729,6 +732,53 @@ struct ContentView: View {
         Divider().overlay(Color.primaryText.opacity(0.06)).padding(.leading, 39)
     }
 
+    /// 第 95 条：模板命中单独成卡。按长相认出来的目录，可能认错，
+    /// 用户逐组看过、点「加入处理」才进待处理清单，之后跟普通素材
+    /// 一样走备份、去除、守护。
+    private var templateSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "模板命中（待确认）",
+                          subtitle: "这些目录名字对不上名单，但长得像广告缓存，可能认错。确认是广告的，点加入处理。")
+            VStack(spacing: 0) {
+                ForEach(Array(state.templateHitGroups.enumerated()), id: \.element.id) { index, hit in
+                    if index > 0 { rowDivider }
+                    HStack(spacing: 11) {
+                        AppIconView(bundleID: hit.bundleID, size: 32)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(hit.appName) · \(hit.group)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Color.primaryText)
+                                .lineLimit(1)
+                            Text(hit.root)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.secondaryText)
+                                .lineLimit(2)
+                            Text("\(hit.files.count) 个文件 · \(Format.bytes(hit.totalSize))")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.secondaryText)
+                        }
+                        Spacer()
+                        Button {
+                            state.includeTemplateHitGroup(hit)
+                        } label: {
+                            Text("加入处理")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.accentCyan)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(Color.accentCyan.opacity(0.5), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 10)
+                }
+            }
+            .padding(.horizontal, 15)
+            .panel()
+        }
+    }
+
     // MARK: - Actions
 
     private var actionsSection: some View {
@@ -743,7 +793,7 @@ struct ContentView: View {
                               disabled: state.scanTargets.isEmpty && state.launchHackMarks.isEmpty && state.launchHackFindings.isEmpty) {
                     showClearScanConfirm = true
                 }
-                opsPairButton(title: RulesStore.currentVersion > 0 ? "更新规则 · 第 \(RulesStore.currentVersion) 版" : "更新规则",
+                opsPairButton(title: RulesStore.currentVersion > 0 ? "更新规则 · 第 \(RulesStore.currentDisplayVersion) 版" : "更新规则",
                               symbol: "arrow.triangle.2.circlepath",
                               disabled: false) {
                     state.updateRules()

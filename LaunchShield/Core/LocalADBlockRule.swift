@@ -25,7 +25,7 @@ enum LocalADBlockRule {
 
     /// 分组名单改由 RulesStore 提供：内置保底一份，用户点「更新规则」
     /// 下载到新名单后，这里自动跟着换。
-    static var thirdPartyCacheGroups: [(group: String, directories: [String])] {
+    static var thirdPartyCacheGroups: [(group: String, directories: [String], templates: [String])] {
         RulesStore.groups
     }
 
@@ -530,6 +530,73 @@ enum LocalADBlockRule {
             append(item, group: "LaunchHack 本地规则", note: "用户确认的本地识别规则")
         }
         return result
+    }
+
+    /// 第 95 条：路径模板命中——单独一条路，不混进 targets()。
+    /// 模板认的是长相，可能认错，所以命中文件只由扫描显式来取，进单独的
+    /// 待确认清单；守护巡查、自动清理那些老调用方拿不到它们，不会误清。
+    static func templateTargets(container: String, channel: Channel,
+                                ownerBundleID: String, ownerName: String,
+                                onVisit: (() -> Void)? = nil) -> [TargetFile] {
+        guard !protectedBundleIDs.contains(ownerBundleID) else { return [] }
+        // 写死目录已经覆盖的范围不重复报：实例目录等于某个写死目录、
+        // 或落在它下面，都算已覆盖。
+        let literalDirs = thirdPartyCacheGroups.flatMap { $0.directories }
+        func coveredByLiteral(_ relative: String) -> Bool {
+            literalDirs.contains { relative == $0 || relative.hasPrefix($0 + "/") }
+        }
+        var result: [TargetFile] = []
+        var seen = Set<String>()
+        for group in thirdPartyCacheGroups {
+            for template in group.templates {
+                for instance in matchTemplateDirectories(container: container, template: template, channel: channel) {
+                    guard !coveredByLiteral(instance) else { continue }
+                    let root = container + "/" + instance
+                    for item in files(below: root, channel: channel, depth: 0, limit: 4000, onVisit: onVisit) {
+                        guard !item.isSymlink, !item.isDirectory, seen.insert(item.path).inserted else { continue }
+                        result.append(TargetFile(path: item.path,
+                                                 relativePath: relativePath(container: container, path: item.path),
+                                                 group: group.group,
+                                                 note: "模板命中，待确认",
+                                                 size: item.size,
+                                                 isSmallConfig: false,
+                                                 bundleID: ownerBundleID,
+                                                 appName: ownerName,
+                                                 viaTemplate: true,
+                                                 templateRoot: instance))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /// 沿模板逐段往下走：写死的段直接下探，* 段把当前层的子目录挨个试。
+    /// 只在模板圈定的邻里里走，不全盘枚举，开销跟模板条数走。
+    private static func matchTemplateDirectories(container: String, template: String, channel: Channel) -> [String] {
+        let segments = template.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        var results: [String] = []
+        func walk(_ relative: String, _ index: Int) {
+            if index == segments.count {
+                results.append(relative)
+                return
+            }
+            let segment = segments[index]
+            if segment == "*" {
+                let full = relative.isEmpty ? container : container + "/" + relative
+                guard let items = try? channel.children(of: full) else { return }
+                for item in items where item.isDirectory && !item.isSymlink {
+                    walk(relative.isEmpty ? item.name : relative + "/" + item.name, index + 1)
+                }
+            } else {
+                let next = relative.isEmpty ? segment : relative + "/" + segment
+                guard let item = channel.item(at: container + "/" + next),
+                      item.isDirectory, !item.isSymlink else { return }
+                walk(next, index + 1)
+            }
+        }
+        walk("", 0)
+        return results
     }
 
     private static func files(below directory: String, channel: Channel, depth: Int, limit: Int,

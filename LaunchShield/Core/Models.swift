@@ -452,6 +452,11 @@ struct TargetFile: Identifiable, Hashable {
     let isSmallConfig: Bool
     var bundleID: String = ""
     var appName: String = ""
+    /// 第 95 条：路径模板命中的文件。模板是认长相不是认全名，可能认错，
+    /// 所以扫描时单独收着，用户确认后才并入待处理清单。
+    var viaTemplate: Bool = false
+    /// 模板命中的那个目录（相对路径），界面按它成组展示、成组确认。
+    var templateRoot: String = ""
 
     var id: String { path }
     var kind: FileKind { FileKind.of(path) }

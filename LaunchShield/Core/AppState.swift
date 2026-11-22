@@ -274,6 +274,9 @@ final class AppState: ObservableObject {
     @Published var directoryGuards: [DirectoryGuard] = []
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
+    /// 第 95 条：路径模板命中的文件，单独收着待用户确认；确认前不进
+    /// 待处理清单、不参与自动清理和守护巡查。
+    @Published var templateTargets: [TargetFile] = []
     /// 第 72 条：各广告商累计识别数（落盘；清零、清除扫描都不清）。
     @Published var vendorTotals: [String: Int] = [:]
     /// LaunchHack 机器按证据查出的候选：不展示给用户，只作上传数据
@@ -447,6 +450,36 @@ final class AppState: ObservableObject {
 
     func targetCount(for group: String) -> Int {
         scanTargets.filter { $0.group == group }.count
+    }
+
+    /// 第 95 条：模板命中按「应用＋命中的目录」成组，界面一组一行确认。
+    struct TemplateHitGroup: Identifiable {
+        let bundleID: String
+        let appName: String
+        let group: String
+        let root: String
+        let files: [TargetFile]
+        var id: String { bundleID + "|" + root }
+        var totalSize: UInt64 { files.reduce(0) { $0 + $1.size } }
+    }
+
+    var templateHitGroups: [TemplateHitGroup] {
+        let grouped = Dictionary(grouping: templateTargets) { $0.bundleID + "|" + $0.templateRoot }
+        return grouped.values.compactMap { files in
+            guard let first = files.first else { return nil }
+            return TemplateHitGroup(bundleID: first.bundleID, appName: first.appName,
+                                    group: first.group, root: first.templateRoot, files: files)
+        }.sorted { ($0.appName, $0.root) < ($1.appName, $1.root) }
+    }
+
+    /// 用户确认一组模板命中：整组并入待处理清单，之后跟普通素材一样处理。
+    func includeTemplateHitGroup(_ hit: TemplateHitGroup) {
+        let moving = templateTargets.filter { $0.bundleID == hit.bundleID && $0.templateRoot == hit.root }
+        guard !moving.isEmpty else { return }
+        templateTargets.removeAll { $0.bundleID == hit.bundleID && $0.templateRoot == hit.root }
+        let existing = Set(scanTargets.map { $0.path })
+        scanTargets.append(contentsOf: moving.filter { !existing.contains($0.path) })
+        log("已把模板命中的 \(moving.count) 个文件加入待处理：\(hit.appName) · \(hit.root)", .notice)
     }
 
     // MARK: - Startup
@@ -1109,9 +1142,10 @@ final class AppState: ObservableObject {
     /// 识别数据连同图片墙落盘会话（已标记状态）一并清掉，清完
     /// 要重新扫描、重新标记。不动任何文件、不清零、不解冻。
     func clearScanResults() {
-        let targetCount = scanTargets.count
+        let targetCount = scanTargets.count + templateTargets.count
         let markCount = launchHackMarks.count
         scanTargets.removeAll()
+        templateTargets.removeAll()
         launchHackMarks.removeAll()
         persistLaunchHackMarks()
         if !launchHackFindings.isEmpty {
@@ -1574,6 +1608,7 @@ final class AppState: ObservableObject {
                                     detail: nil)
         work.async {
             var allTargets: [TargetFile] = []
+            var allTemplateTargets: [TargetFile] = []
             var selfSoldSplash: SplashResolution?
             var recognition: [AppRecognition] = []
             var skippedFrozen = 0
@@ -1617,6 +1652,23 @@ final class AppState: ObservableObject {
                     }
                     found.append(contentsOf: groupFound)
                 }
+                // 第 95 条：路径模板单独扫一遍，命中进待确认清单，不混进
+                // found——识别计数、自动清理都只认写死规则命中的。
+                var templateFound = LocalADBlockRule.templateTargets(container: info.path, channel: self.channel,
+                                                                     ownerBundleID: info.bundleID, ownerName: info.name,
+                                                                     onVisit: onVisit)
+                for group in groups where !LocalADBlockRule.shouldIgnoreAppGroup(group.bundleID) {
+                    templateFound.append(contentsOf: LocalADBlockRule.templateTargets(container: group.path, channel: self.channel,
+                                                                                      ownerBundleID: info.bundleID, ownerName: info.name,
+                                                                                      onVisit: onVisit))
+                }
+                for file in templateFound {
+                    if file.size == 0, self.channel.isImmutable(file.path) {
+                        skippedFrozen += 1
+                    } else {
+                        allTemplateTargets.append(file)
+                    }
+                }
                 // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
                 // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
                 // 识别计数仍按全量 found 算，攒指纹库的数据不失真。
@@ -1640,6 +1692,7 @@ final class AppState: ObservableObject {
                 self.workProgress = nil
                 self.splash = selfSoldSplash
                 self.scanTargets = allTargets
+                self.templateTargets = allTemplateTargets
                 self.replaceVendorTotals(from: allTargets)
                 self.refreshLaunchHackTargets()
                 self.lastRecognition = recognition
@@ -1675,6 +1728,9 @@ final class AppState: ObservableObject {
                         let mine = allTargets.filter { $0.bundleID == info.bundleID }
                         self.log("\(info.name)：\(mine.count) 个素材文件", .info)
                     }
+                }
+                if !allTemplateTargets.isEmpty {
+                    self.log("另有模板命中 \(allTemplateTargets.count) 个文件：按长相认的，可能认错，已单独列出，确认后才会处理", .notice)
                 }
                 self.log("扫描完成，共 \(allTargets.count) 个素材文件", .success)
                 completion?()
