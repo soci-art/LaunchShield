@@ -1,16 +1,22 @@
 import Foundation
 import UIKit
-import Compression
 
 /// 第 86 条：给应用列表取每个应用自己的图标。
 ///
-/// 准确性口径（Grace 问过，照此实现）：
-/// - 优先从应用自己的安装包（.app）里取图；安装包受系统权限保护时，
-///   兜底查询 Apple App Store 公开目录。
-/// - 本地和商店结果都按 Bundle ID 精确核对，不按应用名称猜测或错配。
-/// - 取图顺序：先按 Info.plist 写的图标文件名拿包里的原图；没有再拆
-///   Assets.car（图标打包文件）里那张扁平的 AppIcon 大图。
-/// - 实在拿不到返回 nil，界面用通用图样占位，绝不拿别的图标顶替。
+/// 现行方案（2026-11-22 Grace 定，沿用此方案）：从 Apple App Store
+/// 公开目录取官方图标。本地从安装包取图的旧方案已删除——真机两轮
+/// 实证：iOS 27 的沙盒不给 Bundle 目录树任何读取许可（根目录列举
+/// 被拒、逐个 .app 读 Info.plist 也是 Operation not permitted），
+/// 只有系统区公开可读的自带应用能读到，第三方应用一个都读不到。
+///
+/// 准确性口径（照此实现，不许放宽）：
+/// - 应用名字只用作商店搜索词；搜回来的结果必须带有一字不差的
+///   Bundle ID 才采用它的图标，绝不按名字模糊对号、绝不拿别的
+///   应用的图标顶替。
+/// - 实在查不到返回 nil，界面用通用图样占位。
+/// - 图标存本地缓存，有效期 30 天：过期后先照常显示旧图，后台
+///   重新查一次，商店有新图就换上；查过没结果的也记下时间，
+///   一个有效期内不重复打扰商店接口。
 private final class IconRequestResult: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Data?
@@ -29,17 +35,17 @@ private final class IconRequestResult: @unchecked Sendable {
 }
 
 final class AppIconProvider {
-    private static let bundleRoot = "/private/var/containers/Bundle/Application"
-    private static let maxCarBytes: UInt64 = 64_000_000
+    /// 商店图标有效期（天）。本地取图时代的缓存靠安装包时间失效，
+    /// 商店图标没有本地信号可依，就按查到的时间算有效期。
+    private static let freshnessDays: TimeInterval = 30
 
-    /// 本轮里安装数据库（LaunchServices）给到路径的应用数，供汇总日志
-    /// 区分「数据库没给路径」和「给了路径但读不出来」两种失败。
-    private(set) var lsPathsGiven = 0
+    /// 本轮通过 App Store 查询新取到（含刷新换新）的图标数。
+    private(set) var appStoreIconsFetched = 0
+    private var lastAppStoreSearchAt = Date.distantPast
 
-    /// bundleID -> (安装包路径, Info.plist 修改时间戳)。落盘跨启动复用。
-    private var pathCache: [String: (path: String, stamp: TimeInterval)] = [:]
-    private var pathCacheLoaded = false
-    private var bundleMapScanned = false
+    /// bundleID -> 上次查询商店的时间戳。落盘跨启动复用。
+    private var storeChecks: [String: TimeInterval] = [:]
+    private var storeChecksLoaded = false
 
     // MARK: - 落盘缓存
 
@@ -51,41 +57,71 @@ final class AppIconProvider {
         return dir
     }
 
-    private func loadPathCacheIfNeeded() {
-        guard !pathCacheLoaded else { return }
-        pathCacheLoaded = true
-        let url = cacheDir.appendingPathComponent("meta.json")
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let dict = obj as? [String: [String: Any]] else { return }
-        for (bid, entry) in dict {
-            if let path = entry["path"] as? String, let stamp = entry["stamp"] as? Double {
-                pathCache[bid] = (path, stamp)
-            }
-        }
-    }
-
-    private func persistPathCache() {
-        var dict: [String: [String: Any]] = [:]
-        for (bid, entry) in pathCache {
-            dict[bid] = ["path": entry.path, "stamp": entry.stamp]
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: dict) {
-            try? data.write(to: cacheDir.appendingPathComponent("meta.json"), options: .atomic)
-        }
-    }
-
     private func iconFileURL(_ bundleID: String) -> URL {
-        cacheDir.appendingPathComponent(bundleID + ".png")
-    }
-
-    private func appStoreIconFileURL(_ bundleID: String) -> URL {
         cacheDir.appendingPathComponent(bundleID + ".appstore.png")
     }
 
-    /// 本轮通过 Apple App Store 公开目录取得的图标数。
-    private(set) var appStoreIconsFetched = 0
-    private var lastAppStoreSearchAt = Date.distantPast
+    private func loadStoreChecksIfNeeded() {
+        guard !storeChecksLoaded else { return }
+        storeChecksLoaded = true
+        // 旧方案（本地安装包取图）留下的缓存文件一并清掉，不再使用。
+        let fm = FileManager.default
+        try? fm.removeItem(at: cacheDir.appendingPathComponent("meta.json"))
+        if let files = try? fm.contentsOfDirectory(atPath: cacheDir.path) {
+            for name in files where name.hasSuffix(".png") && !name.hasSuffix(".appstore.png") {
+                try? fm.removeItem(at: cacheDir.appendingPathComponent(name))
+            }
+        }
+        let url = cacheDir.appendingPathComponent("store-checks.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Double] else { return }
+        storeChecks = dict
+    }
+
+    private func recordStoreCheck(_ bundleID: String) {
+        storeChecks[bundleID] = Date().timeIntervalSince1970
+        if let data = try? JSONSerialization.data(withJSONObject: storeChecks) {
+            try? data.write(to: cacheDir.appendingPathComponent("store-checks.json"),
+                            options: .atomic)
+        }
+    }
+
+    // MARK: - 缓存读取
+
+    /// 缓存里有图就先给界面显示（新旧都给，过期只是排队刷新，
+    /// 不让界面闪占位图）。
+    func iconFromCache(bundleID: String) -> UIImage? {
+        let url = iconFileURL(bundleID)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return UIImage(contentsOfFile: url.path)
+    }
+
+    /// 要不要去商店查：没图、或上次查询已过有效期。
+    func iconNeedsFetch(bundleID: String) -> Bool {
+        loadStoreChecksIfNeeded()
+        let hasIcon = FileManager.default.fileExists(atPath: iconFileURL(bundleID).path)
+        guard hasIcon, let last = storeChecks[bundleID] else { return true }
+        return Date().timeIntervalSince1970 - last >= Self.freshnessDays * 86_400
+    }
+
+    // MARK: - 现取（商店目录）
+
+    func fetchIcon(bundleID: String, appName: String) -> UIImage? {
+        loadStoreChecksIfNeeded()
+        guard let storeImage = fetchAppStoreIcon(bundleID: bundleID, appName: appName) else {
+            // 查过没结果也记时间，有效期内不再重复查。
+            recordStoreCheck(bundleID)
+            return nil
+        }
+        let small = Self.downscale(storeImage)
+        if let png = small.pngData() {
+            try? png.write(to: iconFileURL(bundleID), options: .atomic)
+        }
+        recordStoreCheck(bundleID)
+        appStoreIconsFetched += 1
+        return small
+    }
 
     /// Apple 文档给出的 Search API 参考上限约为每分钟 20 次。
     /// 图标队列串行运行，因此用 3.1 秒间隔避免集中请求触发限流。
@@ -157,165 +193,6 @@ final class AppIconProvider {
         return result.get()
     }
 
-    /// 缓存命中：安装包路径已知、Info.plist 没变过、图标文件还在。
-    func iconFromCache(bundleID: String, channel: Channel) -> UIImage? {
-        loadPathCacheIfNeeded()
-        if let entry = pathCache[bundleID] {
-            let plistPath = entry.path + "/Info.plist"
-            if let item = channel.item(at: plistPath),
-               abs(item.modified.timeIntervalSince1970 - entry.stamp) < 1.0 {
-                let url = iconFileURL(bundleID)
-                if FileManager.default.fileExists(atPath: url.path),
-                   let image = UIImage(contentsOfFile: url.path) {
-                    return image
-                }
-            }
-        }
-        // App Store 图标单独缓存，不伪装成从安装包读取的本地图标。
-        let storeURL = appStoreIconFileURL(bundleID)
-        guard FileManager.default.fileExists(atPath: storeURL.path) else { return nil }
-        return UIImage(contentsOfFile: storeURL.path)
-    }
-
-    // MARK: - 现取
-
-    func fetchIcon(bundleID: String, appName: String, channel: Channel) -> UIImage? {
-        loadPathCacheIfNeeded()
-
-        // 先用 LaunchServices 的 Bundle ID -> .app 路径映射，避免必须列举
-        // 整个 Bundle/Application 根目录。路径仍须通过 WQChannel 授权读取，
-        // 并且 Info.plist 中的 Bundle ID 必须精确匹配。
-        var resolved: (path: String, plist: (id: String, dict: [String: Any], stamp: TimeInterval))?
-        if let entry = pathCache[bundleID],
-           let plist = readPlist(appPath: entry.path, channel: channel),
-           plist.id == bundleID {
-            resolved = (entry.path, plist)
-        }
-
-        if resolved == nil, let appPath = channel.installedAppBundlePath(for: bundleID) {
-            lsPathsGiven += 1
-            if appPath.hasSuffix(".app"),
-               let plist = readPlist(appPath: appPath, channel: channel),
-               plist.id == bundleID {
-                resolved = (appPath, plist)
-                pathCache[bundleID] = (appPath, plist.stamp)
-                persistPathCache()
-            }
-        }
-
-        // LaunchServices 没有给出可用路径时，才回退到原来的目录枚举。
-        if resolved == nil {
-            ensureBundleMap(channel: channel)
-            if let entry = pathCache[bundleID],
-               let plist = readPlist(appPath: entry.path, channel: channel),
-               plist.id == bundleID {
-                resolved = (entry.path, plist)
-            }
-        }
-
-        if let app = resolved {
-            let image = looseIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
-                ?? carIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
-            if let found = image {
-                let small = Self.downscale(found)
-                if let png = small.pngData() {
-                    try? png.write(to: iconFileURL(bundleID), options: .atomic)
-                }
-                return small
-            }
-        }
-
-        // 本地安装包读取被 iOS 沙盒拒绝时，尝试 Apple 公开 App Store 查询。
-        // 返回结果必须带有完全相同的 Bundle ID，绝不按名称模糊匹配。
-        guard let storeImage = fetchAppStoreIcon(bundleID: bundleID, appName: appName) else { return nil }
-        let small = Self.downscale(storeImage)
-        if let png = small.pngData() {
-            try? png.write(to: appStoreIconFileURL(bundleID), options: .atomic)
-        }
-        appStoreIconsFetched += 1
-        return small
-    }
-
-    /// LaunchServices 直达路径不可用时的兼容回退。
-    /// 只有成功列出根目录后才标记扫描完成；授权失败允许后续重试。
-    private func ensureBundleMap(channel: Channel) {
-        guard !bundleMapScanned else { return }
-        guard let roots = try? channel.children(of: Self.bundleRoot) else { return }
-        var changed = false
-        var everyDirectoryListed = true
-        for dir in roots where dir.isDirectory {
-            guard let subs = try? channel.children(of: dir.path) else {
-                everyDirectoryListed = false
-                continue
-            }
-            for sub in subs where sub.isDirectory && sub.name.hasSuffix(".app") {
-                guard let got = readPlist(appPath: sub.path, channel: channel) else { continue }
-                if pathCache[got.id]?.path != sub.path {
-                    pathCache[got.id] = (sub.path, got.stamp)
-                    changed = true
-                }
-            }
-        }
-        // 任一 UUID 目录未能列举时保留重试机会；全部列举成功才缓存扫描完成。
-        bundleMapScanned = everyDirectoryListed
-        if changed { persistPathCache() }
-    }
-
-    private func readPlist(appPath: String, channel: Channel)
-        -> (id: String, dict: [String: Any], stamp: TimeInterval)? {
-        let plistPath = appPath + "/Info.plist"
-        guard let data = try? channel.read(plistPath),
-              let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
-              let dict = obj as? [String: Any],
-              let bid = dict["CFBundleIdentifier"] as? String else { return nil }
-        let stamp = channel.item(at: plistPath)?.modified.timeIntervalSince1970 ?? 0
-        return (bid, dict, stamp)
-    }
-
-    // MARK: 取图第一路：安装包里的散图
-
-    private func looseIcon(appPath: String, plist: [String: Any], channel: Channel) -> UIImage? {
-        var bases: [String] = []
-        if let icons = plist["CFBundleIcons"] as? [String: Any],
-           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
-           let files = primary["CFBundleIconFiles"] as? [String], !files.isEmpty {
-            bases = files
-        }
-        if bases.isEmpty { bases = ["AppIcon60x60"] }
-        var names: [String] = []
-        for base in bases {
-            for suffix in ["@3x.png", "@2x.png", ".png"] { names.append(base + suffix) }
-        }
-        names.append(contentsOf: ["AppIcon60x60@3x.png", "AppIcon60x60@2x.png",
-                                  "AppIcon60x60.png", "AppIcon@3x.png", "AppIcon@2x.png"])
-        var seen = Set<String>()
-        for name in names where seen.insert(name).inserted {
-            let path = appPath + "/" + name
-            if let data = try? channel.read(path, maxBytes: 4_000_000),
-               let image = UIImage(data: data) {
-                return image
-            }
-        }
-        return nil
-    }
-
-    // MARK: 取图第二路：拆 Assets.car
-
-    private func carIcon(appPath: String, plist: [String: Any], channel: Channel) -> UIImage? {
-        let carPath = appPath + "/Assets.car"
-        guard let item = channel.item(at: carPath), item.size > 0,
-              item.size <= Self.maxCarBytes,
-              let data = try? channel.read(carPath, maxBytes: Int(Self.maxCarBytes)),
-              data.count == Int(item.size) else { return nil }
-        var base = "AppIcon"
-        if let icons = plist["CFBundleIcons"] as? [String: Any],
-           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
-           let name = primary["CFBundleIconName"] as? String, !name.isEmpty {
-            base = name
-        }
-        return CarIconExtractor.extract(data: data, baseName: base)
-    }
-
     // MARK: 缩图
 
     static func downscale(_ image: UIImage) -> UIImage {
@@ -330,180 +207,5 @@ final class AppIconProvider {
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: newSize))
         }
-    }
-}
-
-/// Assets.car 里图标 renditions 的提取（已在本机用 LaunchShield 自家和
-/// GoldenNugget 两种打包格式的真实文件验证过，拆出的图和包里的原图
-/// 逐像素对得上）。格式要点：
-/// - 每张图有一份 CSI 头（小端 'CTSI'，文件里字节是 "ISTC"），带名字、
-///   宽高、像素格式（BGRA / ARGB）。
-/// - 像素按横条切片存，每片是一个 'KCBC' 块：块头后跟一段 LZFSE
-///   压缩的原始像素，用系统 Compression 框架解开。
-/// - 每行像素按 8 像素对齐补齐，拼图时按解开的实际字节数推每行长度。
-enum CarIconExtractor {
-    private struct Rendition {
-        var offset: Int
-        var width: Int
-        var height: Int
-        var pixelFormat: String
-        var name: String
-    }
-
-    static func extract(data: Data, baseName: String) -> UIImage? {
-        let bytes = [UInt8](data)
-        var candidates: [Rendition] = []
-        var seen = Set<String>()
-        var i = 0
-        while i + 168 <= bytes.count {
-            if bytes[i] == 0x49, bytes[i + 1] == 0x53, bytes[i + 2] == 0x54, bytes[i + 3] == 0x43,
-               le32(bytes, i + 4) == 1 {
-                let w = le32(bytes, i + 12), h = le32(bytes, i + 16)
-                let pf = String(bytes: Array(bytes[(i + 24)..<(i + 28)]), encoding: .ascii) ?? ""
-                if w >= 20, w <= 4096, h >= 20, h <= 4096, pf == "BGRA" || pf == "ARGB" {
-                    var nameBytes: [UInt8] = []
-                    for j in (i + 40)..<(i + 168) {
-                        if bytes[j] == 0 { break }
-                        nameBytes.append(bytes[j])
-                    }
-                    let name = String(bytes: nameBytes, encoding: .utf8) ?? ""
-                    if isIconRendition(name: name, base: baseName) {
-                        let key = "\(name)|\(w)x\(h)"
-                        if seen.insert(key).inserted {
-                            candidates.append(Rendition(offset: i, width: w, height: h,
-                                                        pixelFormat: pf, name: name))
-                        }
-                    }
-                }
-                i += 4
-            } else {
-                i += 1
-            }
-        }
-        // 选图口径：默认外观（不带 Dark / Tintable）优先；尺寸挑够用的
-        // 最小张（>=180），都没有就挑最大张。
-        let sorted = candidates.sorted { a, b in
-            let pa = appearancePenalty(a.name), pb = appearancePenalty(b.name)
-            if pa != pb { return pa < pb }
-            return sizeRank(a.width) < sizeRank(b.width)
-        }
-        for rendition in sorted {
-            if let image = decode(bytes: bytes, rendition: rendition) { return image }
-        }
-        return nil
-    }
-
-    private static func isIconRendition(name: String, base: String) -> Bool {
-        guard !name.contains("/") else { return false }
-        let trimmed = name.hasSuffix(".png") ? String(name.dropLast(4)) : name
-        if trimmed == base { return true }
-        guard trimmed.hasPrefix(base) else { return false }
-        let next = trimmed[trimmed.index(trimmed.startIndex, offsetBy: base.count)]
-        // "AppIcon" 后面跟 -、_、. 或数字（AppIcon-light / AppIcon1024…）
-        // 才算同一个图标的变体；跟小写字母的是别的名字（如 AppIcons）。
-        return next == "-" || next == "_" || next == "." || next.isNumber
-    }
-
-    private static func appearancePenalty(_ name: String) -> Int {
-        if name.contains("Tintable") { return 4 }
-        if name.contains("Dark") { return 2 }
-        return 0
-    }
-
-    private static func sizeRank(_ width: Int) -> Int {
-        // >=180 里越小越优先；<180 的排后面、越大越优先。
-        width >= 180 ? width : 100_000 - width
-    }
-
-    private static func decode(bytes: [UInt8], rendition r: Rendition) -> UIImage? {
-        guard var pos = findChunk(bytes: bytes, from: r.offset + 168,
-                                  limit: min(bytes.count, r.offset + 4096)) else { return nil }
-        var rowsDone = 0
-        var stride = 0
-        var pixels = Data()
-        while rowsDone < r.height {
-            guard pos + 20 <= bytes.count, isKCBC(bytes, pos) else { return nil }
-            let rows = le32(bytes, pos + 12)
-            let length = le32(bytes, pos + 16)
-            let dataOff = pos + 20
-            guard rows >= 1, rows <= r.height - rowsDone,
-                  length >= 5, dataOff + length <= bytes.count,
-                  bytes[dataOff] == 0x62, bytes[dataOff + 1] == 0x76,
-                  bytes[dataOff + 2] == 0x78 else { return nil }
-            let capacity = rows * (r.width + 64) * 4
-            guard let decoded = lzfseDecode(Array(bytes[dataOff..<(dataOff + length)]),
-                                            capacity: capacity),
-                  decoded.count % rows == 0 else { return nil }
-            let rowBytes = decoded.count / rows
-            guard rowBytes >= r.width * 4, rowBytes <= (r.width + 64) * 4 else { return nil }
-            if stride == 0 { stride = rowBytes } else if stride != rowBytes { return nil }
-            pixels.append(decoded)
-            rowsDone += rows
-            pos = dataOff + length
-            if rowsDone < r.height, !isKCBC(bytes, pos) {
-                guard let next = findChunk(bytes: bytes, from: pos,
-                                           limit: min(bytes.count, pos + 512)) else { return nil }
-                pos = next
-            }
-        }
-        guard rowsDone == r.height, stride > 0,
-              let provider = CGDataProvider(data: pixels as CFData) else { return nil }
-        let bitmapInfo = CGBitmapInfo(rawValue:
-            CGImageAlphaInfo.premultipliedFirst.rawValue
-            | (r.pixelFormat == "BGRA"
-                ? CGBitmapInfo.byteOrder32Little.rawValue
-                : CGBitmapInfo.byteOrder32Big.rawValue))
-        guard let cg = CGImage(width: r.width, height: r.height,
-                               bitsPerComponent: 8, bitsPerPixel: 32,
-                               bytesPerRow: stride,
-                               space: CGColorSpaceCreateDeviceRGB(),
-                               bitmapInfo: bitmapInfo, provider: provider,
-                               decode: nil, shouldInterpolate: true,
-                               intent: .defaultIntent) else { return nil }
-        return UIImage(cgImage: cg)
-    }
-
-    /// 找下一个结构校验过关的 KCBC 块（行数、长度、数据头和结尾标记都对）。
-    private static func findChunk(bytes: [UInt8], from: Int, limit: Int) -> Int? {
-        var pos = from
-        while pos + 20 <= limit {
-            if isKCBC(bytes, pos) {
-                let rows = le32(bytes, pos + 12)
-                let length = le32(bytes, pos + 16)
-                let dataOff = pos + 20
-                if rows >= 1, rows <= 4096, length >= 5, dataOff + length <= bytes.count,
-                   bytes[dataOff] == 0x62, bytes[dataOff + 1] == 0x76, bytes[dataOff + 2] == 0x78,
-                   bytes[dataOff + length - 4] == 0x62, bytes[dataOff + length - 3] == 0x76,
-                   bytes[dataOff + length - 2] == 0x78, bytes[dataOff + length - 1] == 0x24 {
-                    return pos
-                }
-            }
-            pos += 1
-        }
-        return nil
-    }
-
-    private static func isKCBC(_ bytes: [UInt8], _ pos: Int) -> Bool {
-        pos + 4 <= bytes.count
-            && bytes[pos] == 0x4B && bytes[pos + 1] == 0x43
-            && bytes[pos + 2] == 0x42 && bytes[pos + 3] == 0x43
-    }
-
-    private static func le32(_ bytes: [UInt8], _ offset: Int) -> Int {
-        Int(bytes[offset]) | Int(bytes[offset + 1]) << 8
-            | Int(bytes[offset + 2]) << 16 | Int(bytes[offset + 3]) << 24
-    }
-
-    private static func lzfseDecode(_ source: [UInt8], capacity: Int) -> Data? {
-        var dst = [UInt8](repeating: 0, count: capacity)
-        let written = dst.withUnsafeMutableBufferPointer { dstPtr in
-            source.withUnsafeBufferPointer { srcPtr in
-                compression_decode_buffer(dstPtr.baseAddress!, capacity,
-                                          srcPtr.baseAddress!, source.count,
-                                          nil, COMPRESSION_LZFSE)
-            }
-        }
-        guard written > 0 else { return nil }
-        return Data(dst.prefix(written))
     }
 }

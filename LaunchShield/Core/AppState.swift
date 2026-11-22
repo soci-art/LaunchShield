@@ -1156,35 +1156,39 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 第 86 条：容器列表到位后在后台取图标。先读落盘缓存，再现取
-    /// 缺的；取到一个往 appIcons 里补一个。只跑一次。
+    /// 第 86 条：容器列表到位后在后台取图标。缓存里有的先显示；
+    /// 没有的、或缓存已过 30 天有效期的，排队去 App Store 目录
+    /// 现查（过期的是先显示旧图、查到新图再换）。只跑一次。
     func loadAppIconsIfNeeded() {
         guard !iconLoadStarted, channel.isAvailable else { return }
         iconLoadStarted = true
         let targets = containers
         iconQueue.async { [weak self] in
             guard let self else { return }
-            var cached = 0, fetched = 0
+            var cached = 0, newFetched = 0, refreshed = 0
             var missing: [String] = []
             var pending: [ContainerInfo] = []
+            var shownFromCache = Set<String>()
             for info in targets {
-                if let image = self.iconProvider.iconFromCache(bundleID: info.bundleID, channel: self.channel) {
+                if let image = self.iconProvider.iconFromCache(bundleID: info.bundleID) {
                     DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
                     cached += 1
-                } else {
+                    shownFromCache.insert(info.bundleID)
+                }
+                if self.iconProvider.iconNeedsFetch(bundleID: info.bundleID) {
                     pending.append(info)
                 }
             }
             for info in pending {
-                if let image = self.iconProvider.fetchIcon(bundleID: info.bundleID, appName: info.name, channel: self.channel) {
+                if let image = self.iconProvider.fetchIcon(bundleID: info.bundleID, appName: info.name) {
                     DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
-                    fetched += 1
-                } else {
+                    if shownFromCache.contains(info.bundleID) { refreshed += 1 } else { newFetched += 1 }
+                } else if !shownFromCache.contains(info.bundleID) {
                     missing.append(info.bundleID)
                 }
             }
             if !targets.isEmpty {
-                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + fetched) 个（缓存 \(cached)、现取 \(fetched)），其中 Apple App Store 查询取得 \(self.iconProvider.appStoreIconsFetched) 个，没找到 \(missing.count) 个；安装数据库给到路径 \(self.iconProvider.lsPathsGiven) 个", .info)
+                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + newFetched) 个（缓存 \(cached)、新取 \(newFetched)、过期刷新 \(refreshed)），没找到 \(missing.count) 个", .info)
                 if !missing.isEmpty {
                     self.log("没找到图标的应用：\(missing.joined(separator: "、"))", .info)
                 }
