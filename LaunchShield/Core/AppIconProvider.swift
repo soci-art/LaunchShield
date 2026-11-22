@@ -74,13 +74,40 @@ final class AppIconProvider {
 
     func fetchIcon(bundleID: String, channel: Channel) -> UIImage? {
         loadPathCacheIfNeeded()
-        ensureBundleMap(channel: channel)
-        guard let entry = pathCache[bundleID] else { return nil }
-        // 对号校验：安装包里的 Info.plist 必须自称就是这个 Bundle ID。
-        guard let plist = readPlist(appPath: entry.path, channel: channel),
-              plist.id == bundleID else { return nil }
-        let image = looseIcon(appPath: entry.path, plist: plist.dict, channel: channel)
-            ?? carIcon(appPath: entry.path, plist: plist.dict, channel: channel)
+
+        // 先用 LaunchServices 的 Bundle ID -> .app 路径映射，避免必须列举
+        // 整个 Bundle/Application 根目录。路径仍须通过 WQChannel 授权读取，
+        // 并且 Info.plist 中的 Bundle ID 必须精确匹配。
+        var resolved: (path: String, plist: (id: String, dict: [String: Any], stamp: TimeInterval))?
+        if let entry = pathCache[bundleID],
+           let plist = readPlist(appPath: entry.path, channel: channel),
+           plist.id == bundleID {
+            resolved = (entry.path, plist)
+        }
+
+        if resolved == nil,
+           let appPath = channel.installedAppBundlePath(for: bundleID),
+           appPath.hasSuffix(".app"),
+           let plist = readPlist(appPath: appPath, channel: channel),
+           plist.id == bundleID {
+            resolved = (appPath, plist)
+            pathCache[bundleID] = (appPath, plist.stamp)
+            persistPathCache()
+        }
+
+        // LaunchServices 没有给出可用路径时，才回退到原来的目录枚举。
+        if resolved == nil {
+            ensureBundleMap(channel: channel)
+            if let entry = pathCache[bundleID],
+               let plist = readPlist(appPath: entry.path, channel: channel),
+               plist.id == bundleID {
+                resolved = (entry.path, plist)
+            }
+        }
+
+        guard let app = resolved else { return nil }
+        let image = looseIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
+            ?? carIcon(appPath: app.path, plist: app.plist.dict, channel: channel)
         guard let found = image else { return nil }
         let small = Self.downscale(found)
         if let png = small.pngData() {
@@ -89,12 +116,12 @@ final class AppIconProvider {
         return small
     }
 
-    /// 扫一遍系统装应用的文件夹，把 Bundle ID -> 安装包路径的对照表建好。
-    /// 只在第一次有缓存未命中时跑，之后靠落盘的对照表。
+    /// LaunchServices 直达路径不可用时的兼容回退。
+    /// 只有成功列出根目录后才标记扫描完成；授权失败允许后续重试。
     private func ensureBundleMap(channel: Channel) {
         guard !bundleMapScanned else { return }
-        bundleMapScanned = true
         guard let roots = try? channel.children(of: Self.bundleRoot) else { return }
+        bundleMapScanned = true
         var changed = false
         for dir in roots where dir.isDirectory {
             guard let subs = try? channel.children(of: dir.path) else { continue }
