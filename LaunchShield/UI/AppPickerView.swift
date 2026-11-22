@@ -65,7 +65,7 @@ struct AppPickerView: View {
                             if container.id != filtered.last?.id {
                                 Divider()
                                     .overlay(Color.primaryText.opacity(0.06))
-                                    .padding(.leading, 46)
+                                    .padding(.leading, 90)
                             }
                         }
                     }
@@ -95,6 +95,7 @@ struct AppPickerView: View {
                     .font(.system(size: 14, weight: checked ? .bold : .regular))
                     .foregroundStyle(checked ? Color.white : Color.primaryText.opacity(0.7))
             }
+            appIcon(container.bundleID)
             VStack(alignment: .leading, spacing: 3) {
                 Text(container.name)
                     .font(.system(size: 14, weight: .medium))
@@ -114,5 +115,26 @@ struct AppPickerView: View {
         }
         .padding(.vertical, 11)
         .contentShape(Rectangle())
+    }
+
+    /// 第 86 条：打勾方块和名字中间的应用图标。还没取到（或取不到）
+    /// 时用通用图样占位；取到了 AppState 把图补进 appIcons，列表
+    /// 自动刷新。打勾方块保持原样不动。
+    private func appIcon(_ bundleID: String) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primaryText.opacity(0.06))
+            if let icon = state.appIcons[bundleID] {
+                Image(uiImage: icon)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "app")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.primaryText.opacity(0.7))
+            }
+        }
+        .frame(width: 34, height: 34)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
