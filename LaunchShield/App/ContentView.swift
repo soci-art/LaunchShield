@@ -446,9 +446,24 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 15, style: .continuous)
                         .fill(Color.primaryText.opacity(0.08))
                         .frame(width: 54, height: 54)
-                    Image(systemName: "cloud.fill")
-                        .font(.system(size: 25))
-                        .foregroundStyle(Color.primaryText.opacity(0.88))
+                    // 第 92 条：选了单个应用时这里显示它的图标；
+                    // 没选、批量勾选时还是原来的云朵（Grace 定）。
+                    if state.checkedIDs.isEmpty && state.targetChosen,
+                       let icon = state.appIcons[state.target.bundleID] {
+                        Image(uiImage: icon)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 54, height: 54)
+                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    } else if state.checkedIDs.isEmpty && state.targetChosen {
+                        Image(systemName: "app")
+                            .font(.system(size: 22))
+                            .foregroundStyle(Color.primaryText.opacity(0.7))
+                    } else {
+                        Image(systemName: "cloud.fill")
+                            .font(.system(size: 25))
+                            .foregroundStyle(Color.primaryText.opacity(0.88))
+                    }
                 }
                 if state.checkedIDs.isEmpty && !state.targetChosen {
                     VStack(alignment: .leading, spacing: 5) {
@@ -918,10 +933,7 @@ struct ContentView: View {
             if requireSign() { showRecipes = true }
         } label: {
             HStack(spacing: 11) {
-                Image(systemName: summary.recurred > 0 ? "exclamationmark.shield" : "shield.lefthalf.filled")
-                    .font(.system(size: 15))
-                    .foregroundStyle(summary.recurred > 0 ? Color.orange : Color.accentCyan)
-                    .frame(width: 26, height: 34)
+                AppIconView(bundleID: summary.bundleID, size: 34)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(summary.name)
                         .font(.system(size: 13, weight: .medium))
@@ -1070,16 +1082,14 @@ struct ContentView: View {
 }
 
 
-/// App 排除白名单管理：可从已识别应用选择，也可手动录入 Bundle ID。
-private struct AppWhitelistView: View {
+/// 第 86/89/92 条共用：应用图标（state.appIcons 里同一套），
+/// 还没取到的用通用图样占位。
+struct AppIconView: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-    @State private var manualBundleID = ""
+    let bundleID: String
+    var size: CGFloat = 32
 
-    /// 第 89 条：和「选择目标应用」同一套图标（state.appIcons），
-    /// 还没取到的用通用图样占位。
-    private func appIcon(_ bundleID: String) -> some View {
+    var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primaryText.opacity(0.06))
@@ -1089,13 +1099,21 @@ private struct AppWhitelistView: View {
                     .scaledToFill()
             } else {
                 Image(systemName: "app")
-                    .font(.system(size: 13))
+                    .font(.system(size: size * 0.42))
                     .foregroundStyle(Color.primaryText.opacity(0.7))
             }
         }
-        .frame(width: 32, height: 32)
+        .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
+}
+
+/// App 排除白名单管理：可从已识别应用选择，也可手动录入 Bundle ID。
+private struct AppWhitelistView: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var manualBundleID = ""
 
     private var filteredApps: [ContainerInfo] {
         // 第 79 条：和选目标应用一个口径，系统自带应用不显示。
@@ -1140,7 +1158,7 @@ private struct AppWhitelistView: View {
                             VStack(alignment: .leading, spacing: 9) {
                                 ForEach(state.appWhitelist.keys.sorted(), id: \.self) { bundleID in
                                     HStack(spacing: 9) {
-                                        appIcon(bundleID)
+                                        AppIconView(bundleID: bundleID, size: 32)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(state.whitelistName(for: bundleID))
                                                 .font(.system(size: 13, weight: .medium))
@@ -1184,7 +1202,7 @@ private struct AppWhitelistView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(filteredApps) { app in
                                 HStack(spacing: 9) {
-                                    appIcon(app.bundleID)
+                                    AppIconView(bundleID: app.bundleID, size: 32)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(app.name)
                                             .font(.system(size: 12, weight: .medium))
