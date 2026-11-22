@@ -10,9 +10,9 @@ import UIKit
 /// 只有系统区公开可读的自带应用能读到，第三方应用一个都读不到。
 ///
 /// 准确性口径（照此实现，不许放宽）：
-/// - 应用名字只用作商店搜索词；搜回来的结果必须带有一字不差的
-///   Bundle ID 才采用它的图标，绝不按名字模糊对号、绝不拿别的
-///   应用的图标顶替。
+/// - 按 Bundle ID 打包向商店目录查询（一次最多 30 个，连应用
+///   名字都不用发）；结果自带 Bundle ID、逐个精确对号才采用
+///   它的图标，绝不模糊对号、绝不拿别的应用的图标顶替。
 /// - 实在查不到返回 nil，界面用通用图样占位。
 /// - 图标存本地缓存，有效期 30 天：过期后先照常显示旧图，后台
 ///   重新查一次，商店有新图就换上；查过没结果的也记下时间，
@@ -34,6 +34,24 @@ private final class IconRequestResult: @unchecked Sendable {
     }
 }
 
+/// 并发下载时收集结果的小盒子（锁保护，和 IconRequestResult 一个路子）。
+private final class IconBatchResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var images: [String: UIImage] = [:]
+
+    func set(_ image: UIImage, for bundleID: String) {
+        lock.lock()
+        images[bundleID] = image
+        lock.unlock()
+    }
+
+    func all() -> [String: UIImage] {
+        lock.lock()
+        defer { lock.unlock() }
+        return images
+    }
+}
+
 final class AppIconProvider {
     /// 商店图标有效期（天）。本地取图时代的缓存靠安装包时间失效，
     /// 商店图标没有本地信号可依，就按查到的时间算有效期。
@@ -41,7 +59,7 @@ final class AppIconProvider {
 
     /// 本轮通过 App Store 查询新取到（含刷新换新）的图标数。
     private(set) var appStoreIconsFetched = 0
-    private var lastAppStoreSearchAt = Date.distantPast
+    private var lastLookupAt = Date.distantPast
 
     /// bundleID -> 上次查询商店的时间戳。落盘跨启动复用。
     private var storeChecks: [String: TimeInterval] = [:]
@@ -105,71 +123,94 @@ final class AppIconProvider {
         return Date().timeIntervalSince1970 - last >= Self.freshnessDays * 86_400
     }
 
-    // MARK: - 现取（商店目录）
+    // MARK: - 现取（商店目录，批量）
 
-    func fetchIcon(bundleID: String, appName: String) -> UIImage? {
+    /// 一次打包查询最多带多少个 Bundle ID（2026-11-22 实测：
+    /// 30 个一请求、约 1 秒返回，带官方图地址）。
+    private static let lookupBatchSize = 30
+    /// 图标图片同时下载的路数。
+    private static let downloadConcurrency = 8
+
+    /// 批量取图：打包向商店目录查官方图地址，再多路并发下载。
+    /// 返回 Bundle ID -> 图标；查不到、下不到的不会出现在结果里。
+    /// 被查过的每个 ID 都记下查询时间（有效期从此算，查过没
+    /// 结果的也不重复打扰）。
+    func fetchIcons(bundleIDs: [String]) -> [String: UIImage] {
         loadStoreChecksIfNeeded()
-        guard let storeImage = fetchAppStoreIcon(bundleID: bundleID, appName: appName) else {
-            // 查过没结果也记时间，有效期内不再重复查。
-            recordStoreCheck(bundleID)
-            return nil
+        guard !bundleIDs.isEmpty else { return [:] }
+        var artwork: [String: String] = [:]
+        for start in stride(from: 0, to: bundleIDs.count, by: Self.lookupBatchSize) {
+            let chunk = Array(bundleIDs[start..<min(start + Self.lookupBatchSize, bundleIDs.count)])
+            for (bid, url) in lookupArtworkURLs(bundleIDs: chunk) where artwork[bid] == nil {
+                artwork[bid] = url
+            }
         }
-        let small = Self.downscale(storeImage)
-        if let png = small.pngData() {
-            try? png.write(to: iconFileURL(bundleID), options: .atomic)
+        let box = IconBatchResult()
+        if !artwork.isEmpty {
+            let group = DispatchGroup()
+            let slots = DispatchSemaphore(value: Self.downloadConcurrency)
+            let queue = DispatchQueue(label: "com.sociart.launchshield.appicons.download",
+                                      attributes: .concurrent)
+            for (bid, urlString) in artwork {
+                guard let url = URL(string: urlString) else { continue }
+                group.enter()
+                queue.async { [self] in
+                    defer { group.leave() }
+                    slots.wait()
+                    defer { slots.signal() }
+                    guard let data = synchronousRequest(url: url),
+                          let image = UIImage(data: data) else { return }
+                    let small = Self.downscale(image)
+                    if let png = small.pngData() {
+                        try? png.write(to: iconFileURL(bid), options: .atomic)
+                    }
+                    box.set(small, for: bid)
+                }
+            }
+            group.wait()
         }
-        recordStoreCheck(bundleID)
-        appStoreIconsFetched += 1
-        return small
+        let result = box.all()
+        for bid in bundleIDs { recordStoreCheck(bid) }
+        appStoreIconsFetched += result.count
+        return result
     }
 
-    /// Apple 文档给出的 Search API 参考上限约为每分钟 20 次。
-    /// 图标队列串行运行，因此用 3.1 秒间隔避免集中请求触发限流。
-    private func waitForAppStoreSearchSlot() {
-        let interval = Date().timeIntervalSince(lastAppStoreSearchAt)
-        if interval < 3.1 {
-            Thread.sleep(forTimeInterval: 3.1 - interval)
-        }
-        lastAppStoreSearchAt = Date()
-    }
-
-    /// Apple 官方 iTunes Search API。按应用名称搜索软件结果，再用
-    /// 返回的 bundleId 精确匹配；不使用未在官方文档列明的 bundleId lookup 参数。
-    /// 当前 App Store 地区优先，必要时回退 US / CN / KR。
-    private func fetchAppStoreIcon(bundleID: String, appName: String) -> UIImage? {
+    /// 打包查询：一请求带一批 Bundle ID，逐个地区问，没查全的换
+    /// 下一个地区补查。返回 Bundle ID -> 官方图地址；结果条目自带
+    /// bundleId，只收被问到的 ID，不会串到别的 App 上。
+    private func lookupArtworkURLs(bundleIDs: [String]) -> [String: String] {
         let preferred = Locale.current.region?.identifier.lowercased() ?? "us"
-        var regions = [preferred, "us", "cn", "kr"]
+        var regions = [preferred, "cn", "us", "kr"]
         var seen = Set<String>()
         regions = regions.filter { seen.insert($0).inserted }
-
-        for region in regions {
-            waitForAppStoreSearchSlot()
-            var components = URLComponents(string: "https://itunes.apple.com/search")
+        var found: [String: String] = [:]
+        var remaining = bundleIDs
+        for region in regions where !remaining.isEmpty {
+            // 查询请求之间留半秒，避开商店接口的频率限制。
+            let interval = Date().timeIntervalSince(lastLookupAt)
+            if interval < 0.5 { Thread.sleep(forTimeInterval: 0.5 - interval) }
+            lastLookupAt = Date()
+            var components = URLComponents(string: "https://itunes.apple.com/lookup")
             components?.queryItems = [
-                URLQueryItem(name: "term", value: appName),
+                URLQueryItem(name: "bundleId", value: remaining.joined(separator: ",")),
                 URLQueryItem(name: "country", value: region),
-                URLQueryItem(name: "media", value: "software"),
-                URLQueryItem(name: "entity", value: "software"),
-                URLQueryItem(name: "limit", value: "50")
+                URLQueryItem(name: "entity", value: "software")
             ]
             guard let url = components?.url,
                   let data = synchronousRequest(url: url),
                   let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let results = root["results"] as? [[String: Any]] else { continue }
-
-            guard let match = results.first(where: {
-                ($0["bundleId"] as? String) == bundleID
-            }) else { continue }
-
-            guard let artwork = (match["artworkUrl512"] as? String)
-                ?? (match["artworkUrl100"] as? String)
-                ?? (match["artworkUrl60"] as? String),
-                let artworkURL = URL(string: artwork),
-                let imageData = synchronousRequest(url: artworkURL),
-                let image = UIImage(data: imageData) else { continue }
-            return image
+            for entry in results {
+                guard let bid = entry["bundleId"] as? String,
+                      remaining.contains(bid), found[bid] == nil,
+                      let art = (entry["artworkUrl512"] as? String)
+                        ?? (entry["artworkUrl100"] as? String)
+                        ?? (entry["artworkUrl60"] as? String) else { continue }
+                found[bid] = art
+            }
+            remaining = remaining.filter { found[$0] == nil }
         }
-        return nil
+        return found
     }
 
     /// 仅在专用后台图标队列调用；限制单次请求等待时间，避免网络故障卡住界面。

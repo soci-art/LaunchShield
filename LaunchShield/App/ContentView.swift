@@ -1077,6 +1077,26 @@ private struct AppWhitelistView: View {
     @State private var query = ""
     @State private var manualBundleID = ""
 
+    /// 第 89 条：和「选择目标应用」同一套图标（state.appIcons），
+    /// 还没取到的用通用图样占位。
+    private func appIcon(_ bundleID: String) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primaryText.opacity(0.06))
+            if let icon = state.appIcons[bundleID] {
+                Image(uiImage: icon)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "app")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.primaryText.opacity(0.7))
+            }
+        }
+        .frame(width: 32, height: 32)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
     private var filteredApps: [ContainerInfo] {
         // 第 79 条：和选目标应用一个口径，系统自带应用不显示。
         let apps = state.containers.filter {
@@ -1120,8 +1140,7 @@ private struct AppWhitelistView: View {
                             VStack(alignment: .leading, spacing: 9) {
                                 ForEach(state.appWhitelist.keys.sorted(), id: \.self) { bundleID in
                                     HStack(spacing: 9) {
-                                        Image(systemName: "app.fill")
-                                            .foregroundStyle(Color.accentCyan)
+                                        appIcon(bundleID)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(state.whitelistName(for: bundleID))
                                                 .font(.system(size: 13, weight: .medium))
@@ -1165,8 +1184,7 @@ private struct AppWhitelistView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(filteredApps) { app in
                                 HStack(spacing: 9) {
-                                    Image(systemName: "app")
-                                        .foregroundStyle(Color.secondaryText)
+                                    appIcon(app.bundleID)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(app.name)
                                             .font(.system(size: 12, weight: .medium))

@@ -1179,12 +1179,16 @@ final class AppState: ObservableObject {
                     pending.append(info)
                 }
             }
-            for info in pending {
-                if let image = self.iconProvider.fetchIcon(bundleID: info.bundleID, appName: info.name) {
-                    DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
-                    if shownFromCache.contains(info.bundleID) { refreshed += 1 } else { newFetched += 1 }
-                } else if !shownFromCache.contains(info.bundleID) {
-                    missing.append(info.bundleID)
+            if !pending.isEmpty {
+                // 第 90 条：打包批量查商店目录（每批 30 个），不再一个个慢慢搜。
+                let got = self.iconProvider.fetchIcons(bundleIDs: pending.map { $0.bundleID })
+                for info in pending {
+                    if let image = got[info.bundleID] {
+                        DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                        if shownFromCache.contains(info.bundleID) { refreshed += 1 } else { newFetched += 1 }
+                    } else if !shownFromCache.contains(info.bundleID) {
+                        missing.append(info.bundleID)
+                    }
                 }
             }
             if !targets.isEmpty {
