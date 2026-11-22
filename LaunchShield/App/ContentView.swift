@@ -123,7 +123,7 @@ struct ContentView: View {
         .alert("还没有扫描到素材", isPresented: $showNeedScanAlert) {
             Button("确定", role: .cancel) { }
         } message: {
-            Text("全部清零只处理已经扫描到的素材。你还没有扫描，先去扫描一遍，扫完再回来清零。")
+            Text("开始去除广告只处理已经扫描到的素材。你还没有扫描，先去扫描一遍，扫完再回来去除。")
         }
         .confirmationDialog("清除扫描结果？", isPresented: $showClearScanConfirm, titleVisibility: .visible) {
             Button("清除", role: .destructive) {
@@ -131,18 +131,18 @@ struct ContentView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("会把扫描到的结果和 LaunchHack 标记全部清掉，清完要重新扫描、重新标记。不动任何文件、不清零、不解冻。")
+            Text("会把扫描到的结果和 LaunchHack 标记全部清掉，清完要重新扫描、重新标记。不动任何文件、不去除、不解冻。")
         }
-        .confirmationDialog("把已复发的文件重新清零并冻结？", isPresented: $showRefreezeConfirm, titleVisibility: .visible) {
-            Button("重新清零并冻结 \(state.recurredRecipeCount) 个") {
+        .confirmationDialog("把已复发的文件重新去除并冻结？", isPresented: $showRefreezeConfirm, titleVisibility: .visible) {
+            Button("重新去除并冻结 \(state.recurredRecipeCount) 个") {
                 state.refreezeRelapsed()
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("会先备份，再把这些又变大的文件清零并冻结。")
+            Text("会先备份，再把这些又变大的文件去除并冻结。")
         }
-        .confirmationDialog("确定要清零这些素材吗？", isPresented: $showClearConfirm, titleVisibility: .visible) {
-            Button("先备份，再全部清零", role: .destructive) {
+        .confirmationDialog("确定要去除这些素材吗？", isPresented: $showClearConfirm, titleVisibility: .visible) {
+            Button("先备份，再开始去除广告", role: .destructive) {
                 state.clearAllAfterScan()
             }
             Button("取消", role: .cancel) { }
@@ -478,7 +478,7 @@ struct ContentView: View {
                         Text("已勾选 \(state.checkedIDs.count) 个应用")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
-                        Text("游戏除外，扫描和清零会一起处理")
+                        Text("游戏除外，扫描和去除会一起处理")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.secondaryText)
                     }
@@ -582,7 +582,7 @@ struct ContentView: View {
             HStack {
                 SectionHeader(title: "素材清单", subtitle: "扫描到的文件会按来源分类显示")
                 if state.lastScanSkippedFrozen > 0 {
-                    Text("已冻结的跳过了 \(state.lastScanSkippedFrozen) 个，不会重复清零、不会重复备份。")
+                    Text("已冻结的跳过了 \(state.lastScanSkippedFrozen) 个，不会重复去除、不会重复备份。")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.secondaryText)
                 }
@@ -755,7 +755,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("一键冻结已复发（\(state.recurredRecipeCount)）")
                                 .font(.system(size: 16, weight: .semibold))
-                            Text("把又变大的文件重新清零并冻结")
+                            Text("把又变大的文件重新去除并冻结")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.white.opacity(0.76))
                         }
@@ -786,7 +786,7 @@ struct ContentView: View {
                     Image(systemName: "eraser.fill")
                         .font(.system(size: 18, weight: .semibold))
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("全部清零")
+                        Text("开始去除广告")
                             .font(.system(size: 16, weight: .semibold))
                         Text("先备份，再把素材文件截断为 0 字节")
                             .font(.system(size: 11))
@@ -880,7 +880,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
             if state.recipes.isEmpty {
-                Text("还没有配方。清零广告素材后，会自动把清零过的文件存进来，下次打开自动复查。")
+                Text("还没有配方。去除广告素材后，会自动把去除过的文件存进来，下次打开自动复查。")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.secondaryText)
                     .padding(16)

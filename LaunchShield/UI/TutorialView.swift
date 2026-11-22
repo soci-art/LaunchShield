@@ -17,7 +17,7 @@ struct TutorialView: View {
                         HowToUseView()
                     } label: {
                         menuRow(icon: "book", title: "如何使用",
-                                subtitle: "从选应用、扫描、清零到还原，五步走完一遍")
+                                subtitle: "从选应用、扫描、去除到还原，五步走完一遍")
                     }
                     .buttonStyle(.plain)
 
@@ -156,16 +156,16 @@ struct HowToUseView: View {
                         tutorialMockButton("↻ 扫描")
                     }
                 }
-                tutorialStep(4, "全部清零",
-                     "确认列表没问题，点「全部清零」。会先自动备份，再把广告素材清空；同一个文件夹里的素材会整夹一起处理，文件夹也会冻住并登记守护——以后新广告再落回这个文件夹，打开 LaunchShield 时会自动一并清掉。处理前记得先把目标应用完全退出。") {
+                tutorialStep(4, "开始去除广告",
+                     "确认列表没问题，点「开始去除广告」。会先自动备份，再把广告素材清空；同一个文件夹里的素材会整夹一起处理，文件夹也会冻住并登记守护——以后新广告再落回这个文件夹，打开 LaunchShield 时会自动一并清掉。处理前记得先把目标应用完全退出。") {
                     tutorialMockRow {
-                        tutorialSolidButton("全部清零")
+                        tutorialSolidButton("开始去除广告")
                         Spacer()
                         tutorialChip("已冻结 ❄")
                     }
                 }
                 tutorialStep(5, "想恢复，随时还原",
-                     "清零前都自动留了备份。在「备份记录」里点全部还原，素材会原样写回去，应用恢复原状。") {
+                     "去除前都自动留了备份。在「备份记录」里点全部还原，素材会原样写回去，应用恢复原状。") {
                     tutorialMockRow {
                         Text("备份记录").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.primaryText)
                         Spacer()
@@ -237,12 +237,12 @@ struct LaunchHackGuideView: View {
                             .frame(height: 56)
                     }
                 }
-                tutorialStep(4, "回主页清零处理",
-                     "标记会自己同步到主页的素材清单（单独一组）。关掉 LaunchHack，回主页点「全部清零」就处理了。关页面、关应用，标记都不会丢。") {
+                tutorialStep(4, "回主页去除处理",
+                     "标记会自己同步到主页的素材清单（单独一组）。关掉 LaunchHack，回主页点「开始去除广告」就处理了。关页面、关应用，标记都不会丢。") {
                     tutorialMockRow {
                         Text("LaunchHack 手动标记 · 27 项").font(.system(size: 13)).foregroundStyle(Color.primaryText)
                         Spacer()
-                        tutorialSolidButton("全部清零")
+                        tutorialSolidButton("开始去除广告")
                     }
                 }
             }
