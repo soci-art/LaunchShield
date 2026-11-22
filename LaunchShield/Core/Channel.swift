@@ -56,6 +56,13 @@ final class Channel {
         raw.container(forBundleID: bundleID)?.path
     }
 
+    /// 从 LaunchServices 数据库取得已安装应用的 .app 路径。
+    /// 这里只解析路径，不绕过 WQAccess；后续文件读取仍由通道逐路径授权。
+    func installedAppBundlePath(for bundleID: String) -> String? {
+        guard !bundleID.isEmpty else { return nil }
+        return wq_bundle_path_for_id(bundleID)
+    }
+
     /// 配方和备份记录定位用：带组标识的是共享组里的文件，去组容器里找根；
     /// 没有组标识的是应用自己容器里的文件。组容器不在应用容器登记里，
     /// 只能从组容器列表里按组标识对。
