@@ -1159,10 +1159,12 @@ final class AppState: ObservableObject {
     /// 第 86 条：容器列表到位后在后台取图标。缓存里有的先显示；
     /// 没有的、或缓存已过 30 天有效期的，排队去 App Store 目录
     /// 现查（过期的是先显示旧图、查到新图再换）。只跑一次。
+    /// 第 91 条：轮次范围和「选择目标应用」同口径——系统应用直接
+    /// 跳过（它们在选择页不显示、商店里也没条目，白查还刷日志）。
     func loadAppIconsIfNeeded() {
         guard !iconLoadStarted, channel.isAvailable else { return }
         iconLoadStarted = true
-        let targets = containers
+        let targets = containers.filter { !Self.isSystemApp($0) }
         iconQueue.async { [weak self] in
             guard let self else { return }
             var cached = 0, newFetched = 0, refreshed = 0
@@ -1192,10 +1194,9 @@ final class AppState: ObservableObject {
                 }
             }
             if !targets.isEmpty {
+                // 第 91 条：只留一行汇总；没找到的名单不再整串写进
+                // 日志（哪个没图标看列表里的占位图样就知道）。
                 self.log("应用图标：\(targets.count) 个应用，读到 \(cached + newFetched) 个（缓存 \(cached)、新取 \(newFetched)、过期刷新 \(refreshed)），没找到 \(missing.count) 个", .info)
-                if !missing.isEmpty {
-                    self.log("没找到图标的应用：\(missing.joined(separator: "、"))", .info)
-                }
             }
         }
     }
