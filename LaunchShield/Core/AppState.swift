@@ -183,6 +183,12 @@ final class AppState: ObservableObject {
     @Published var containers: [ContainerInfo] = []
     /// 共享组（App Group）容器列表，按组标识命名。
     @Published var groupContainers: [ContainerInfo] = []
+    /// 第 86 条：应用列表的图标（Bundle ID -> 图标），后台慢慢取，
+    /// 取到一个补一个，列表自己会刷新。
+    @Published private(set) var appIcons: [String: UIImage] = [:]
+    private let iconProvider = AppIconProvider()
+    private let iconQueue = DispatchQueue(label: "com.sociart.launchshield.appicons", qos: .utility)
+    private var iconLoadStarted = false
     /// 通道就绪改成异步探明：冷启动先出界面，不再被通道发现堵住首帧。
     @Published private(set) var channelReady = false
     @Published private(set) var channelChecking = true
@@ -1139,12 +1145,49 @@ final class AppState: ObservableObject {
                 self.containers = list
                 self.groupContainers = groups
                 self.didLoadContainers = true
+                self.loadAppIconsIfNeeded()
                 if list.isEmpty {
                     self.log("没有读到应用容器列表，可能是系统版本不支持或权限被拒", .warning)
                 }
                 // 容器到位后，把重启恢复的 LaunchHack 结果补进素材清单。
                 self.refreshLaunchHackTargets()
                 completion?()
+            }
+        }
+    }
+
+    /// 第 86 条：容器列表到位后在后台取图标。先读落盘缓存，再现取
+    /// 缺的；取到一个往 appIcons 里补一个。只跑一次。
+    func loadAppIconsIfNeeded() {
+        guard !iconLoadStarted, channel.isAvailable else { return }
+        iconLoadStarted = true
+        let targets = containers
+        iconQueue.async { [weak self] in
+            guard let self else { return }
+            var cached = 0, fetched = 0
+            var missing: [String] = []
+            var pending: [ContainerInfo] = []
+            for info in targets {
+                if let image = self.iconProvider.iconFromCache(bundleID: info.bundleID, channel: self.channel) {
+                    DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                    cached += 1
+                } else {
+                    pending.append(info)
+                }
+            }
+            for info in pending {
+                if let image = self.iconProvider.fetchIcon(bundleID: info.bundleID, channel: self.channel) {
+                    DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                    fetched += 1
+                } else {
+                    missing.append(info.bundleID)
+                }
+            }
+            if !targets.isEmpty {
+                self.log("应用图标：\(targets.count) 个应用，读到 \(cached + fetched) 个（缓存 \(cached)、现取 \(fetched)），没找到 \(missing.count) 个", .info)
+                if !missing.isEmpty {
+                    self.log("没找到图标的应用：\(missing.joined(separator: "、"))", .info)
+                }
             }
         }
     }
