@@ -9,10 +9,16 @@ enum RulesStore {
     struct Group: Codable {
         let name: String
         let directories: [String]
+        /// 路径模板（第 95 条）：段可以是 *，代表任意一层目录名。
+        /// 治名字带随机哈希的目录——写死路径永远追不上。可缺省，老规则文件没有这项。
+        let templates: [String]?
     }
 
     struct RulesFile: Codable {
         let version: Int
+        /// 显示版号（第 94 条）：给用户看的字符串，如 "9.1"；比大小仍用整数
+        /// version。可缺省，老规则文件没有这项，缺了就显示整数。
+        let displayVersion: String?
         let groups: [Group]
         let keywords: [String]
     }
@@ -29,7 +35,7 @@ enum RulesStore {
 
     // Built-in local rule data is embedded in LocalADBlockRule and scanned locally.
     // No Baidu-only default rule list is maintained here.
-    static let builtinGroups: [(group: String, directories: [String])] = []
+    static let builtinGroups: [(group: String, directories: [String], templates: [String])] = []
 
     static let builtinKeywords = [
         "csj", "pangle", "buadsdk", "gdt", "beizi", "baidumobad", "bd_ad_cache",
@@ -56,6 +62,13 @@ enum RulesStore {
               rules.groups.count <= 100,
               rules.keywords.count <= 500 else { return false }
 
+        if let display = rules.displayVersion {
+            guard !display.isEmpty, display.count <= 20,
+                  !display.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                return false
+            }
+        }
+
         var totalDirectories = 0
         for group in rules.groups {
             let name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -70,6 +83,18 @@ enum RulesStore {
             for directory in group.directories {
                 guard isSafeRelativeDirectory(directory), seen.insert(directory).inserted else {
                     return false
+                }
+            }
+
+            if let templates = group.templates {
+                guard templates.count <= 500 else { return false }
+                totalDirectories += templates.count
+                if totalDirectories > 5000 { return false }
+                var seenTemplates = Set<String>()
+                for template in templates {
+                    guard isSafeTemplate(template), seenTemplates.insert(template).inserted else {
+                        return false
+                    }
                 }
             }
         }
@@ -88,6 +113,27 @@ enum RulesStore {
               !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         return !parts.isEmpty && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    /// 模板的安全口径（第 95 条）：星号只能整段出现、最多两段；至少两段
+    /// 写死的名字打底，防的是 `Library/*` 这类一网打尽的写法。
+    private static func isSafeTemplate(_ path: String) -> Bool {
+        guard !path.isEmpty, path.count <= 512, !path.hasPrefix("/"), !path.contains("\\"),
+              !path.unicodeScalars.contains(where: { $0.value == 0 }) else { return false }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2,
+              parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return false }
+        let stars = parts.filter { $0 == "*" }.count
+        guard stars >= 1, stars <= 2, parts.count - stars >= 2 else { return false }
+        return parts.allSatisfy { $0 == "*" || !$0.contains("*") }
+    }
+
+    /// 模板与实际目录路径逐段比对：段数相同，写死的段一字不差，* 段任意。
+    static func templateMatches(_ template: String, directory: String) -> Bool {
+        let t = template.split(separator: "/", omittingEmptySubsequences: false)
+        let d = directory.split(separator: "/", omittingEmptySubsequences: false)
+        guard t.count == d.count else { return false }
+        return zip(t, d).allSatisfy { $0 == "*" || $0 == $1 }
     }
 
     private static func loadIfNeeded() {
@@ -111,12 +157,14 @@ enum RulesStore {
     }
 
     /// 当前生效的分组名单：下过新规则用新规则，没下过用内置的。
-    static var groups: [(group: String, directories: [String])] {
+    static var groups: [(group: String, directories: [String], templates: [String])] {
         loadIfNeeded()
         lock.lock()
         defer { lock.unlock() }
         guard let downloaded else { return builtinGroups }
-        return downloaded.groups.map { (group: $0.name, directories: $0.directories) }
+        return downloaded.groups.map {
+            (group: $0.name, directories: $0.directories, templates: $0.templates ?? [])
+        }
     }
 
     static var keywords: [String] {
@@ -133,6 +181,17 @@ enum RulesStore {
         lock.lock()
         defer { lock.unlock() }
         return downloaded?.version ?? 0
+    }
+
+    /// 给用户看的版号（第 94 条）：规则文件带了显示版号就用它（如 9.1），
+    /// 没带就显示整数版号。比大小、判新旧永远只看整数 currentVersion。
+    static var currentDisplayVersion: String {
+        loadIfNeeded()
+        lock.lock()
+        defer { lock.unlock() }
+        guard let downloaded else { return "0" }
+        if let display = downloaded.displayVersion, !display.isEmpty { return display }
+        return "\(downloaded.version)"
     }
 
     // MARK: - 用户确认的 LaunchHack 本地规则
@@ -234,8 +293,9 @@ enum RulesStore {
                 return
             }
             let current = currentVersion
+            let parsedDisplay = parsed.displayVersion ?? "\(parsed.version)"
             guard parsed.version > current else {
-                done(true, "规则已是最新（\(current == 0 ? "内置规则" : "第 \(current) 版")）")
+                done(true, "规则已是最新（\(current == 0 ? "内置规则" : "第 \(parsedDisplay) 版")）")
                 return
             }
             do {
@@ -250,7 +310,9 @@ enum RulesStore {
             lock.unlock()
             let groupCount = parsed.groups.count
             let dirCount = parsed.groups.reduce(0) { $0 + $1.directories.count }
-            done(true, "规则已更新到第 \(parsed.version) 版：\(groupCount) 家广告商、\(dirCount) 个目录，扫描会按新规则走")
+            let templateCount = parsed.groups.reduce(0) { $0 + ($1.templates?.count ?? 0) }
+            let templateText = templateCount > 0 ? "、\(templateCount) 条模板" : ""
+            done(true, "规则已更新到第 \(parsedDisplay) 版：\(groupCount) 家广告商、\(dirCount) 个目录\(templateText)，扫描会按新规则走")
         }.resume()
     }
 
