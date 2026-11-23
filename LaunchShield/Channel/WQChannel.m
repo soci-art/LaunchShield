@@ -17,6 +17,11 @@
 #import <sys/stat.h>
 #import <errno.h>
 #import <sys/sysctl.h>
+#import <dlfcn.h>
+#import <fcntl.h>
+#import <stdlib.h>
+#import <unistd.h>
+#import <xpc/xpc.h>
 
 @implementation WQOp
 
@@ -274,6 +279,366 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     return [NSString stringWithFormat:@"%@（%@）", fallback, error];
 }
 
+// MCM bridge adapted from QuinnTang74/3106 (mcm_bridge.m).
+typedef void *(*MCMQueryCreate)(void);
+typedef void (*MCMQuerySetU64)(void *, uint64_t);
+typedef void (*MCMQuerySetXPC)(void *, xpc_object_t);
+typedef void *(*MCMQueryGetPointer)(void *);
+typedef bool (*MCMQueryIterate)(void *, bool (^)(void *));
+typedef char *(*MCMCopyToken)(void *);
+typedef const char *(*MCMGetPath)(void *);
+typedef const char *(*MCMGetIdentifier)(void *);
+typedef void *(*MCMObjectCopy)(void *);
+typedef bool (*MCMObjectActivate)(void *, bool);
+typedef void (*MCMObjectFree)(void *);
+typedef int (*MCMErrorGetInt)(void *);
+typedef const char *(*MCMErrorGetString)(void *);
+typedef void (*MCMQueryFree)(void *);
+
+typedef struct {
+    void *handle;
+    MCMQueryCreate queryCreate;
+    MCMQuerySetU64 querySetClass;
+    MCMQuerySetXPC querySetIdentifiers;
+    MCMQuerySetXPC querySetGroupIdentifiers;
+    MCMQuerySetU64 querySetFlags;
+    MCMQuerySetU64 querySetPart;
+    MCMQueryGetPointer queryGetSingle;
+    MCMQueryGetPointer queryGetLastError;
+    MCMQueryIterate queryIterate;
+    MCMQueryFree queryFree;
+    MCMGetPath objectGetPath;
+    MCMGetIdentifier objectGetIdentifier;
+    MCMObjectCopy objectCopy;
+    MCMCopyToken objectCopyToken;
+    MCMObjectActivate objectActivate;
+    MCMObjectFree objectFree;
+    MCMErrorGetInt errorGetPOSIX;
+    MCMErrorGetString errorGetMessage;
+} MCMAPI;
+
+static MCMAPI *MCMSharedAPI(void) {
+    static MCMAPI api;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        api.handle = dlopen(
+            "/usr/lib/system/libsystem_containermanager.dylib",
+            RTLD_NOW | RTLD_LOCAL
+        );
+        void *handle = api.handle ?: RTLD_DEFAULT;
+#define LOAD(field, symbol) api.field = (__typeof(api.field))dlsym(handle, symbol)
+        LOAD(queryCreate, "container_query_create");
+        LOAD(querySetClass, "container_query_set_class");
+        LOAD(querySetIdentifiers, "container_query_set_identifiers");
+        LOAD(querySetGroupIdentifiers, "container_query_set_group_identifiers");
+        LOAD(querySetFlags, "container_query_operation_set_flags");
+        LOAD(querySetPart, "container_query_operation_set_part");
+        LOAD(queryGetSingle, "container_query_get_single_result");
+        LOAD(queryGetLastError, "container_query_get_last_error");
+        LOAD(queryIterate, "container_query_iterate_results_sync");
+        LOAD(queryFree, "container_query_free");
+        LOAD(objectGetPath, "container_object_get_path");
+        LOAD(objectGetIdentifier, "container_object_get_identifier");
+        LOAD(objectCopy, "container_object_copy");
+        LOAD(objectCopyToken, "container_copy_sandbox_token");
+        LOAD(objectActivate, "container_object_sandbox_extension_activate");
+        LOAD(objectFree, "container_object_free");
+        LOAD(errorGetPOSIX, "container_error_get_posix_errno");
+        LOAD(errorGetMessage, "container_error_get_message");
+#undef LOAD
+    });
+    return &api;
+}
+
+BOOL MCMBridgeAvailable(void) {
+    MCMAPI *api = MCMSharedAPI();
+    return api->queryCreate && api->querySetClass &&
+        api->querySetIdentifiers && api->querySetGroupIdentifiers &&
+        api->querySetFlags && api->queryGetSingle && api->queryFree &&
+        api->objectGetPath && api->objectCopy && api->objectCopyToken &&
+        api->objectActivate && api->objectFree;
+}
+
+NSArray<NSString *> *MCMEnumerateIdentifiersForClass(uint64_t cls, NSUInteger limit, NSString **error) {
+    MCMAPI *api = MCMSharedAPI();
+    if (!api->queryCreate || !api->querySetClass || !api->querySetFlags ||
+        !api->queryIterate || !api->objectGetIdentifier || !api->queryFree ||
+        limit == 0) {
+        if (error) *error = @"missing symbols";
+        return @[];
+    }
+
+    void *query = api->queryCreate();
+    if (!query) { if (error) *error = @"query create failed"; return @[]; }
+
+    api->querySetClass(query, cls);
+    api->querySetFlags(query, 0x100000000ULL);
+    if (api->querySetPart) api->querySetPart(query, 0);
+
+    NSMutableOrderedSet<NSString *> *set = [NSMutableOrderedSet orderedSet];
+    BOOL iterated = api->queryIterate(query, ^bool(void *object) {
+        const char *raw = object ? api->objectGetIdentifier(object) : NULL;
+        NSString *identifier = raw ? [NSString stringWithUTF8String:raw] : nil;
+        if (identifier.length) [set addObject:identifier];
+        return set.count < limit;
+    });
+    if (!iterated && set.count < limit && error) {
+        void *queryError = api->queryGetLastError ? api->queryGetLastError(query) : NULL;
+        int posix = queryError && api->errorGetPOSIX ? api->errorGetPOSIX(queryError) : 0;
+        const char *message = queryError && api->errorGetMessage
+            ? api->errorGetMessage(queryError) : NULL;
+        *error = [NSString stringWithFormat:@"enumeration denied posix=%d message=%s",
+            posix, message ?: "unknown"];
+    }
+
+    api->queryFree(query);
+    return set.array;
+}
+
+NSString *MCMContainerPathForIdentifier(uint64_t cls, NSString *identifier, BOOL group, NSString **error) {
+    MCMAPI *api = MCMSharedAPI();
+    MCMQuerySetXPC setIdentifiers = group
+        ? api->querySetGroupIdentifiers
+        : api->querySetIdentifiers;
+    if (!api->queryCreate || identifier.length == 0) {
+        if (error) *error = @"lib not loaded or identifier empty";
+        return nil;
+    }
+    if (!api->querySetClass || !setIdentifiers || !api->querySetFlags ||
+        !api->queryGetSingle || !api->objectGetPath || !api->queryFree) {
+        if (error) *error = @"missing path lookup symbols";
+        return nil;
+    }
+
+    void *query = api->queryCreate();
+    if (!query) { if (error) *error = @"query create failed"; return nil; }
+
+    api->querySetClass(query, cls);
+    xpc_object_t value = xpc_string_create(identifier.UTF8String);
+    setIdentifiers(query, value);
+#if !OS_OBJECT_USE_OBJC
+    xpc_release(value);
+#endif
+    api->querySetFlags(query, 0x100000000ULL);
+    if (api->querySetPart) api->querySetPart(query, 0);
+
+    void *result = api->queryGetSingle(query);
+    if (!result) {
+        if (error) {
+            void *queryError = api->queryGetLastError ? api->queryGetLastError(query) : NULL;
+            int posix = queryError && api->errorGetPOSIX ? api->errorGetPOSIX(queryError) : 0;
+            const char *message = queryError && api->errorGetMessage
+                ? api->errorGetMessage(queryError) : NULL;
+            *error = [NSString stringWithFormat:@"lookup denied posix=%d message=%s",
+                posix, message ?: "unknown"];
+        }
+        api->queryFree(query);
+        return nil;
+    }
+
+    const char *rawPath = api->objectGetPath(result);
+    NSString *path = rawPath ? [NSString stringWithUTF8String:rawPath] : nil;
+    if ([path isEqualToString:@"/var"] || [path hasPrefix:@"/var/"])
+        path = [@"/private" stringByAppendingString:path];
+    api->queryFree(query);
+    return path.length ? path : nil;
+}
+
+static BOOL MCMSafeIdentifier(NSString *identifier) {
+    if (identifier.length == 0 || identifier.length > 255) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"];
+    return [identifier rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound &&
+        ![identifier isEqualToString:@"."] && ![identifier isEqualToString:@".."];
+}
+
+@interface MCMRetainedLease : NSObject {
+    void *_query;
+    void *_activation;
+}
+@property(nonatomic, copy) NSString *rootPath;
+@property(nonatomic) BOOL activated;
++ (nullable instancetype)leaseForClass:(uint64_t)cls
+                             identifier:(NSString *)identifier
+                                  group:(BOOL)group
+                                  error:(NSString **)error;
+- (BOOL)activate:(NSString **)error;
+@end
+
+@implementation MCMRetainedLease
+
++ (instancetype)leaseForClass:(uint64_t)cls
+                    identifier:(NSString *)identifier
+                         group:(BOOL)group
+                         error:(NSString **)error {
+    MCMAPI *api = MCMSharedAPI();
+    if (!MCMBridgeAvailable() || !MCMSafeIdentifier(identifier)) {
+        if (error) *error = @"MCM unavailable or identifier contains unsupported characters";
+        return nil;
+    }
+
+    void *query = api->queryCreate();
+    if (!query) {
+        if (error) *error = @"query create failed";
+        return nil;
+    }
+
+    api->querySetClass(query, cls);
+    xpc_object_t value = xpc_string_create(identifier.UTF8String);
+    if (group) api->querySetGroupIdentifiers(query, value);
+    else api->querySetIdentifiers(query, value);
+#if !OS_OBJECT_USE_OBJC
+    xpc_release(value);
+#endif
+    api->querySetFlags(query, 0x900000000ULL);
+    if (api->querySetPart) api->querySetPart(query, 0);
+
+    void *result = api->queryGetSingle(query);
+    if (!result) {
+        void *queryError = api->queryGetLastError ? api->queryGetLastError(query) : NULL;
+        int posix = queryError && api->errorGetPOSIX ? api->errorGetPOSIX(queryError) : 0;
+        const char *message = queryError && api->errorGetMessage
+            ? api->errorGetMessage(queryError) : NULL;
+        if (error) *error = [NSString stringWithFormat:@"lookup denied posix=%d message=%s",
+            posix, message ?: "unknown"];
+        api->queryFree(query);
+        return nil;
+    }
+
+    const char *rawPath = api->objectGetPath(result);
+    NSString *rootPath = rawPath ? [NSString stringWithUTF8String:rawPath] : nil;
+    if (rootPath.length == 0 || !rootPath.isAbsolutePath) {
+        if (error) *error = @"MCM returned no absolute container path";
+        api->queryFree(query);
+        return nil;
+    }
+    if ([rootPath isEqualToString:@"/var"] || [rootPath hasPrefix:@"/var/"])
+        rootPath = [@"/private" stringByAppendingString:rootPath];
+
+    MCMRetainedLease *lease = [MCMRetainedLease new];
+    lease->_query = query;
+    lease.rootPath = rootPath;
+    return lease;
+}
+
+- (BOOL)activate:(NSString **)error {
+    if (self.activated) return YES;
+    if (!_query) {
+        if (error) *error = @"lease invalidated";
+        return NO;
+    }
+
+    MCMAPI *api = MCMSharedAPI();
+    void *result = api->queryGetSingle(_query);
+    _activation = result ? api->objectCopy(result) : NULL;
+    char *token = _activation ? api->objectCopyToken(_activation) : NULL;
+    BOOL tokenPresent = token && token[0] != '\0';
+    free(token);
+    self.activated = tokenPresent && api->objectActivate(_activation, false);
+    if (!self.activated && error) {
+        *error = tokenPresent
+            ? @"sandbox extension activation failed"
+            : @"MCM object contained no sandbox token";
+    }
+    return self.activated;
+}
+
+- (void)dealloc {
+    MCMAPI *api = MCMSharedAPI();
+    if (_activation) api->objectFree(_activation);
+    if (_query) api->queryFree(_query);
+}
+
+@end
+
+static NSMutableDictionary<NSString *, MCMRetainedLease *> *MCMActiveLeases(void) {
+    static NSMutableDictionary<NSString *, MCMRetainedLease *> *leases;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        leases = [NSMutableDictionary dictionary];
+    });
+    return leases;
+}
+
+BOOL MCMHostIsMobileHouseArrest(void) {
+    return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.mobile.MobileHouseArrest"];
+}
+
+NSString *MCMActivateContainerPath(uint64_t cls, NSString *identifier, BOOL group, NSString **error) {
+    // 3106 is signed with its own bundle identifier, so the old MHA-only
+    // guard rejected every lookup in this build. MCM itself does not require
+    // the caller to be MobileHouseArrest; keep the check only as a capability
+    // hint and always attempt the lookup. Callers fall back to the filesystem
+    // and LaunchServices store when the daemon denies it.
+    if (!MCMSafeIdentifier(identifier)) {
+        if (error) *error = @"identifier contains unsupported characters";
+        return nil;
+    }
+
+    NSMutableDictionary *leases = MCMActiveLeases();
+    NSString *key = [NSString stringWithFormat:@"%llu:%d:%@", cls, group, identifier];
+    @synchronized (leases) {
+        MCMRetainedLease *existing = leases[key];
+        if (existing.rootPath.length) return existing.rootPath;
+
+        NSString *detail = nil;
+        MCMRetainedLease *lease = [MCMRetainedLease leaseForClass:cls
+            identifier:identifier group:group error:&detail];
+        if (!lease) {
+            // Some builds hand out a readable container path but refuse the
+            // sandbox extension (for example when the caller is not signed as
+            // MobileHouseArrest). The path is still useful: the filesystem
+            // backend grants access separately.
+            NSString *pathOnlyError = nil;
+            NSString *pathOnly = MCMContainerPathForIdentifier(cls, identifier, group, &pathOnlyError);
+            if (pathOnly.length) {
+                int pathOnlyDescriptor = open(
+                    pathOnly.fileSystemRepresentation,
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+                );
+                if (pathOnlyDescriptor >= 0) {
+                    close(pathOnlyDescriptor);
+                    if (error) *error = nil;
+                    return pathOnly;
+                }
+                if (error) {
+                    *error = [NSString stringWithFormat:
+                        @"container path open failed errno=%d (activation: %@)",
+                        errno, detail ?: @"unavailable"];
+                }
+                return nil;
+            }
+            if (error) *error = detail ?: pathOnlyError ?: @"MCM lookup failed";
+            return nil;
+        }
+        [lease activate:&detail];
+
+        if (!lease.rootPath.length) {
+            if (error) *error = detail ?: @"container path unavailable";
+            return nil;
+        }
+
+        int descriptor = open(
+            lease.rootPath.fileSystemRepresentation,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        );
+        if (descriptor < 0) {
+            if (error) {
+                *error = detail ?: [NSString stringWithFormat:
+                    @"container root open failed errno=%d", errno];
+            }
+            return nil;
+        }
+        close(descriptor);
+        leases[key] = lease;
+        return lease.rootPath;
+    }
+}
+
+int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSString **error) {
+    return MCMActivateContainerPath(cls, identifier, group, error) ? 1 : -1;
+}
+
 #pragma mark - Containers
 
 // Last-resort label: read the container's own metadata plist through the
@@ -362,6 +727,36 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     wq_log(@"containers: scan machinery resolved %lu", (unsigned long)rows.count);
     if (!rows.count) rows = [wq_list_containers(2) mutableCopy] ?: [NSMutableArray array];
     if (!rows.count) rows = [[self fallbackContainerRows] mutableCopy];
+    // 3105/3106: merge exact MCM class-2 identifiers as a supplemental source.
+    // Only resolve identifiers missing from the existing path list. Calls are
+    // sequential because containermanagerd concurrency guarantees are undocumented.
+    NSString *enumerationError = nil;
+    NSArray<NSString *> *identifiers = MCMEnumerateIdentifiersForClass(2, 4096, &enumerationError);
+    NSMutableSet<NSString *> *seenIdentifiers = [NSMutableSet set];
+    for (NSDictionary<NSString *, NSString *> *row in rows) {
+        NSString *existingIdentifier = row[@"identifier"];
+        if (existingIdentifier.length) [seenIdentifiers addObject:existingIdentifier];
+    }
+    NSUInteger mcmAdded = 0;
+    for (NSString *identifier in identifiers) {
+        if (![self isCanonicalBundleIdentifier:identifier] ||
+            [seenIdentifiers containsObject:identifier]) continue;
+        NSString *lookupError = nil;
+        NSString *resolved = [self canonicalApplicationDataPath:
+            MCMActivateContainerPath(2, identifier, NO, &lookupError)];
+        if (!resolved.length) continue;
+        NSString *metadataIdentifier = [self metadataLabelForPath:resolved];
+        if (metadataIdentifier.length && ![metadataIdentifier isEqualToString:identifier]) {
+            wq_log(@"containers: MCM path identity mismatch for %@; skipped", identifier);
+            continue;
+        }
+        [rows addObject:@{ @"identifier": identifier, @"path": resolved }];
+        [seenIdentifiers addObject:identifier];
+        mcmAdded++;
+    }
+    wq_log(@"containers: MCM supplement added %lu apps from %lu identifiers (error=%@)",
+           (unsigned long)mcmAdded, (unsigned long)identifiers.count,
+           enumerationError ?: @"none");
     NSDictionary<NSString *, NSString *> *names = wq_app_display_names();
     NSDictionary<NSString *, NSString *> *categories = wq_app_categories();
     NSMutableArray<WQAppContainer *> *result = [NSMutableArray array];
@@ -437,12 +832,104 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     return _groupContainers;
 }
 
+- (BOOL)isCanonicalBundleIdentifier:(NSString *)bundleID
+{
+    if (![bundleID isKindOfClass:NSString.class] || bundleID.length == 0 || bundleID.length > 255) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"];
+    return [bundleID rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound &&
+        ![bundleID hasPrefix:@"."] && ![bundleID hasSuffix:@"."] &&
+        ![bundleID containsString:@".."];
+}
+
+- (NSString *)canonicalApplicationDataPath:(NSString *)rawPath
+{
+    if (![rawPath isKindOfClass:NSString.class] || !rawPath.length) return nil;
+    NSString *path = rawPath.stringByStandardizingPath;
+    if ([path hasPrefix:@"/var/"]) path = [@"/private" stringByAppendingString:path];
+    NSString *root = @"/private/var/mobile/Containers/Data/Application";
+    NSString *prefix = [root stringByAppendingString:@"/"];
+    if (![path hasPrefix:prefix]) return nil;
+    NSString *component = [path substringFromIndex:prefix.length];
+    if (component.length != 36 || [component containsString:@"/"] ||
+        ![[NSUUID alloc] initWithUUIDString:component]) return nil;
+    struct stat st;
+    if (!wq_stat(path, &st) || !S_ISDIR(st.st_mode)) return nil;
+    return path;
+}
+
+- (WQAppContainer *)resolvedContainerForBundleID:(NSString *)bundleID
+{
+    if (![self isCanonicalBundleIdentifier:bundleID]) return nil;
+
+    NSString *lookupError = nil;
+    NSString *path = [self canonicalApplicationDataPath:
+        MCMActivateContainerPath(2, bundleID, NO, &lookupError)];
+    if (path.length) {
+        NSString *metadataIdentifier = [self metadataLabelForPath:path];
+        if (metadataIdentifier.length && ![metadataIdentifier isEqualToString:bundleID]) {
+            wq_log(@"container lookup: MCM identity mismatch for %@; rejecting %@", bundleID, path.lastPathComponent);
+            path = nil;
+        }
+    }
+
+    // If MCM refuses this exact lookup, inspect only UUID children of the
+    // known app-data root and compare their metadata identifier. No volume scan.
+    if (!path.length) {
+        NSString *root = @"/private/var/mobile/Containers/Data/Application";
+        NSString *listError = nil;
+        NSArray<NSString *> *names = wq_list(root, &listError);
+        for (NSString *name in names ?: @[]) {
+            if (name.length != 36 || [name containsString:@"/"] ||
+                ![[NSUUID alloc] initWithUUIDString:name]) continue;
+            NSString *candidate = [self canonicalApplicationDataPath:
+                [root stringByAppendingPathComponent:name]];
+            if (!candidate.length) continue;
+            NSString *metadataIdentifier = [self metadataLabelForPath:candidate];
+            if ([metadataIdentifier isEqualToString:bundleID]) {
+                path = candidate;
+                break;
+            }
+        }
+        if (!path.length) {
+            wq_log(@"container lookup: %@ unresolved (MCM=%@, metadata=%@)",
+                   bundleID, lookupError ?: @"no path", listError ?: @"not found");
+            return nil;
+        }
+        wq_log(@"container lookup: %@ resolved by metadata fallback", bundleID);
+    } else {
+        wq_log(@"container lookup: %@ resolved by MCM", bundleID);
+    }
+
+    WQAppContainer *container = [WQAppContainer new];
+    container.identifier = bundleID;
+    container.path = path;
+    NSDictionary<NSString *, NSString *> *names = wq_app_display_names();
+    NSDictionary<NSString *, NSString *> *categories = wq_app_categories();
+    container.name = names[bundleID] ?: wq_display_name(bundleID) ?: bundleID;
+    container.category = categories[bundleID] ?: @"";
+    container.isSystem = [bundleID hasPrefix:@"com.apple."];
+    return container;
+}
+
 - (WQAppContainer *)containerForBundleID:(NSString *)bundleID
 {
     for (WQAppContainer *container in [self appContainers]) {
         if ([container.identifier isEqualToString:bundleID]) return container;
     }
-    return nil;
+    WQAppContainer *resolved = [self resolvedContainerForBundleID:bundleID];
+    if (resolved) {
+        NSMutableArray<WQAppContainer *> *updated = [_containers mutableCopy] ?: [NSMutableArray array];
+        BOOL exists = NO;
+        for (WQAppContainer *item in updated) {
+            if ([item.identifier isEqualToString:bundleID]) { exists = YES; break; }
+        }
+        if (!exists) [updated addObject:resolved];
+        _containers = [updated copy];
+        _containersAt = NSDate.date.timeIntervalSinceReferenceDate;
+        _containersLoaded = YES;
+    }
+    return resolved;
 }
 
 #pragma mark - Files
