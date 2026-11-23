@@ -90,6 +90,16 @@ private struct LaunchHackGalleryItem: Identifiable, Equatable {
         case .lottie, .htmlBundle: return "整个文件夹，标记为广告素材"
         }
     }
+    /// 第 102 条：有同图组时合并按钮的文案——「这张／这个」换成
+    /// 「这组」，点下去整组一起标记（成套素材不归组，照旧）。
+    var clusterMarkButtonText: String {
+        switch kind {
+        case .image: return "就是这组，标记为广告图"
+        case .video: return "就是这组，标记为广告视频"
+        case .animated: return "就是这组，标记为广告动图"
+        case .lottie, .htmlBundle: return markButtonText
+        }
+    }
 }
 
 extension LaunchHackGalleryItem: Codable {
@@ -1564,8 +1574,8 @@ struct LaunchHackView: View {
                         }
                     }
                     // 第 100 条：同图组——还有几张长得一样的，列个
-                    // 缩略条，点任意一张跳过去看它自己那页；「这一组
-                    // 一起标记」是用户亲手点的动作，逐项走单项标记。
+                    // 缩略条，点任意一张跳过去看它自己那页。整组标记
+                    // 第 102 条起并进下面那个蓝色按钮，不再单设按钮。
                     let clusterPeers = model.galleryClusterPeers(of: item)
                     if !clusterPeers.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
@@ -1598,21 +1608,6 @@ struct LaunchHackView: View {
                                     }
                                 }
                             }
-                            if !model.confirmedGalleryIDs.contains(item.id)
-                                || clusterPeers.contains(where: { !model.confirmedGalleryIDs.contains($0.id) }) {
-                                Button {
-                                    model.confirmGalleryCluster(of: item, state: state)
-                                } label: {
-                                    HStack {
-                                        Image(systemName: "checkmark.circle")
-                                        Text("这一组一起标记")
-                                    }
-                                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.accentCyan)
-                                    .frame(maxWidth: .infinity).frame(height: 42)
-                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12))
-                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accentCyan.opacity(0.5), lineWidth: 1))
-                                }
-                            }
                         }
                     }
                     if model.confirmedGalleryIDs.contains(item.id) {
@@ -1632,12 +1627,19 @@ struct LaunchHackView: View {
                         }
                     } else {
                         Button {
-                            model.confirmGalleryItem(item, state: state)
+                            // 第 102 条：两个按钮合一——有同图组就整组
+                            // 一起标记、文案换「这组」；没有就只标这张。
+                            // 标完照旧关页。
+                            if clusterPeers.isEmpty {
+                                model.confirmGalleryItem(item, state: state)
+                            } else {
+                                model.confirmGalleryCluster(of: item, state: state)
+                            }
                             selectedGalleryItem = nil
                         } label: {
                             HStack {
                                 Image(systemName: "checkmark.circle")
-                                Text(item.markButtonText)
+                                Text(clusterPeers.isEmpty ? item.markButtonText : item.clusterMarkButtonText)
                             }
                             .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
                             .frame(maxWidth: .infinity).frame(height: 48)
