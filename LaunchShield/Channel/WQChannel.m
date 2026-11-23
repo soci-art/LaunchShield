@@ -286,7 +286,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     return [NSString stringWithFormat:@"%@（%@）", fallback, error];
 }
 
-// MCM bridge adapted from QuinnTang74/3106 (mcm_bridge.m).
+// MCM bridge adapted from QuinnTang74's collection (mcm_bridge.m).
 typedef void *(*MCMQueryCreate)(void);
 typedef void (*MCMQuerySetU64)(void *, uint64_t);
 typedef void (*MCMQuerySetXPC)(void *, xpc_object_t);
@@ -572,7 +572,7 @@ BOOL MCMHostIsMobileHouseArrest(void) {
 }
 
 NSString *MCMActivateContainerPath(uint64_t cls, NSString *identifier, BOOL group, NSString **error) {
-    // 3106 is signed with its own bundle identifier, so the old MHA-only
+    // The upstream build is signed with its own bundle identifier, so the old MHA-only
     // guard rejected every lookup in this build. MCM itself does not require
     // the caller to be MobileHouseArrest; keep the check only as a capability
     // hint and always attempt the lookup. Callers fall back to the filesystem
@@ -740,7 +740,7 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
     wq_log(@"containers: scan machinery resolved %lu", (unsigned long)rows.count);
     if (!rows.count) rows = [wq_list_containers(2) mutableCopy] ?: [NSMutableArray array];
     if (!rows.count) rows = [[self fallbackContainerRows] mutableCopy];
-    // 3105/3106: merge exact MCM class-2 identifiers as a supplemental source.
+    // Merge exact MCM class-2 identifiers as a supplemental source.
     // Only resolve identifiers missing from the existing path list. Calls are
     // sequential because containermanagerd concurrency guarantees are undocumented.
     NSString *enumerationError = nil;
