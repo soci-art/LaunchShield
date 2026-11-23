@@ -34,6 +34,9 @@
 #import <sys/mount.h>
 #import <sys/xattr.h>
 #import <unistd.h>
+#import <stdio.h>
+#import <stdlib.h>
+#import <stdarg.h>
 #import <xpc/xpc.h>
 
 @implementation WQScanCancellation {
@@ -82,18 +85,89 @@ BOOL wq_scan_wait(WQScanCancellation *cancellation)
 static NSMutableString *gLog;
 static NSLock *gLogLock;
 
-void wq_log(NSString *format, ...)
+static void wq_log_initialize(void)
 {
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ gLog = [NSMutableString new]; gLogLock = [NSLock new]; });
+    dispatch_once(&once, ^{
+        gLog = [NSMutableString new];
+        gLogLock = [NSLock new];
+    });
+}
+
+static NSString *wq_log_time_string(void)
+{
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"HH:mm:ss";
+    return [formatter stringFromDate:[NSDate date]];
+}
+
+void wq_log(NSString *format, ...)
+{
+    wq_log_initialize();
     va_list args;
     va_start(args, format);
-    NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
-    NSLog(@"[wqfiles] %@", line);
+
+    if (!message) return;
+    NSString *normalized = [message stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
+    NSArray<NSString *> *lines = [normalized componentsSeparatedByString:@"\n"];
+    NSString *timestamp = wq_log_time_string();
+
     [gLogLock lock];
-    [gLog appendFormat:@"%@\n", line];
+    for (NSUInteger index = 0; index < lines.count; index++) {
+        NSString *line = lines[index];
+        if (index == lines.count - 1 && line.length == 0) continue;
+        NSString *timedLine = [NSString stringWithFormat:@"%@ %@", timestamp, line];
+        NSLog(@"[wqfiles] %@", timedLine);
+        [gLog appendFormat:@"%@\n", timedLine];
+    }
     [gLogLock unlock];
+}
+
+// Preserve printf's console output while mirroring the exact formatted text
+// into the application's exportable log. The shared wq_log path timestamps
+// every emitted line, including multi-line printf calls.
+int wq_kernel_printf(const char *format, ...)
+{
+    if (!format) return -1;
+
+    va_list args;
+    va_start(args, format);
+
+    va_list consoleArgs;
+    va_copy(consoleArgs, args);
+    int consoleResult = vfprintf(stdout, format, consoleArgs);
+    va_end(consoleArgs);
+    fflush(stdout);
+
+    va_list lengthArgs;
+    va_copy(lengthArgs, args);
+    int length = vsnprintf(NULL, 0, format, lengthArgs);
+    va_end(lengthArgs);
+
+    if (length >= 0) {
+        char *buffer = malloc((size_t)length + 1);
+        if (buffer) {
+            va_list renderArgs;
+            va_copy(renderArgs, args);
+            vsnprintf(buffer, (size_t)length + 1, format, renderArgs);
+            va_end(renderArgs);
+
+            NSString *message = [[NSString alloc] initWithBytes:buffer
+                                                          length:(NSUInteger)length
+                                                        encoding:NSUTF8StringEncoding];
+            if (message) wq_log(@"%@", message);
+            else wq_log(@"<kernel log contained non-UTF-8 output; %d bytes>", length);
+            free(buffer);
+        } else {
+            wq_log(@"<kernel log formatting allocation failed; %d bytes>", length);
+        }
+    }
+
+    va_end(args);
+    return consoleResult;
 }
 
 NSString *wq_log_text(void)

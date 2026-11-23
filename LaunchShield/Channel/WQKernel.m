@@ -19,6 +19,7 @@ static NSLock *gKernelLock;
 static BOOL gKernelActive;
 static BOOL gKernelRunning;
 static BOOL gKernelFailed;
+static BOOL gKernelAttempted;
 
 static NSLock *wq_kernel_lock(void)
 {
@@ -70,21 +71,27 @@ BOOL wq_kernel_failed(void)
 
 BOOL wq_kernel_start(void)
 {
+    NSLock *lock = wq_kernel_lock();
+    [lock lock];
+    if (gKernelAttempted) {
+        [lock unlock];
+        wq_log(@"kernel: 本进程已尝试过，需重启应用（this process has already attempted the kernel channel）");
+        return NO;
+    }
+    // Consume the one-shot latch before any checks or work. Every result,
+    // including an unsupported OS or a stage-2 failure, requires relaunch.
+    gKernelAttempted = YES;
+    [lock unlock];
+
     if (!wq_kernel_supported()) {
+        [lock lock];
+        gKernelFailed = YES;
+        [lock unlock];
         wq_log(@"kernel: this iOS version is outside the verified 17.0-18.7.1 range; not starting");
         return NO;
     }
 
-    NSLock *lock = wq_kernel_lock();
     [lock lock];
-    if (gKernelActive) {
-        [lock unlock];
-        return YES;
-    }
-    if (gKernelRunning) {
-        [lock unlock];
-        return NO;
-    }
     gKernelRunning = YES;
     gKernelFailed = NO;
     [lock unlock];
@@ -98,7 +105,14 @@ BOOL wq_kernel_start(void)
         gKernelRunning = NO;
         gKernelFailed = YES;
         [lock unlock];
-        wq_log(@"kernel: kexploit_opa334 returned %d (unsupported build, offset mismatch, or a lost race). Relaunch and try again.", exploit);
+
+        if (exploit == -KEXPLOIT_ERROR_UNSUPPORTED_OFFSETS) {
+            wq_log(@"kernel: stage 1 failed [category=unsupported-offsets, point=offsets_init]; code=%d", exploit);
+        } else if (exploit == -KEXPLOIT_ERROR_RACE) {
+            wq_log(@"kernel: stage 1 failed [category=race, point=free_thread:mach_vm_map]; code=%d", exploit);
+        } else {
+            wq_log(@"kernel: stage 1 failed [category=other]; code=%d; inspect the preceding kexploit point log", exploit);
+        }
         return NO;
     }
     wq_log(@"kernel: kernel read/write is up");

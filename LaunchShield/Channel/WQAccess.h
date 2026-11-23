@@ -14,6 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Log shared with the UI.
 void wq_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
+// printf-compatible bridge used by the kernel channel's C/Objective-C sources.
+int wq_kernel_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 NSString *wq_log_text(void);
 
 // Detects signing mode from the app's embedded provisioning profile.
