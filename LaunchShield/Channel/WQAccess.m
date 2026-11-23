@@ -84,13 +84,170 @@ BOOL wq_scan_wait(WQScanCancellation *cancellation)
 
 static NSMutableString *gLog;
 static NSLock *gLogLock;
+static NSUInteger gRecoveredLogLength;
+static const NSUInteger WQLogMaximumBytes = 1024 * 1024;
 
+static NSString *wq_log_persistence_path(void)
+{
+    static NSString *path;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSURL *libraryURL = [[NSFileManager defaultManager]
+            URLForDirectory:NSLibraryDirectory
+                   inDomain:NSUserDomainMask
+          appropriateForURL:nil
+                     create:YES
+                      error:nil];
+        if (!libraryURL) return;
+        NSURL *logsURL = [libraryURL URLByAppendingPathComponent:@"Logs" isDirectory:YES];
+        NSError *error = nil;
+        if (![[NSFileManager defaultManager] createDirectoryAtURL:logsURL
+                                      withIntermediateDirectories:YES
+                                                       attributes:nil
+                                                            error:&error]) {
+            NSLog(@"[wqfiles] log persistence: cannot create Library/Logs: %@",
+                  error.localizedDescription ?: @"unknown error");
+            return;
+        }
+        path = [[logsURL URLByAppendingPathComponent:@"LaunchShield-kernel.log"] path];
+    });
+    return path;
+}
+
+static BOOL wq_log_write_all(int fd, const void *bytes, size_t length)
+{
+    const uint8_t *cursor = bytes;
+    size_t remaining = length;
+    while (remaining > 0) {
+        ssize_t written = write(fd, cursor, remaining);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return NO;
+        cursor += (size_t)written;
+        remaining -= (size_t)written;
+    }
+    return YES;
+}
+
+// Keep the newest complete lines so a crash during trimming cannot make the
+// active log grow without bound. The returned data is always at most 1 MiB.
+static NSData *wq_log_bounded_data(NSData *data)
+{
+    if (data.length <= WQLogMaximumBytes) return data ?: [NSData data];
+    NSUInteger offset = data.length - WQLogMaximumBytes;
+    const uint8_t *bytes = data.bytes;
+    const uint8_t *newline = memchr(bytes + offset, '\n', data.length - offset);
+    if (newline) offset = (NSUInteger)(newline - bytes) + 1;
+    return [data subdataWithRange:NSMakeRange(offset, data.length - offset)];
+}
+
+// Replace by same-directory write + fsync + rename. A crash leaves either the
+// previous complete log or the new complete log, never a half-written file.
+static BOOL wq_log_replace_persisted_data(NSData *data)
+{
+    NSString *path = wq_log_persistence_path();
+    if (!path.length) return NO;
+
+    NSData *bounded = wq_log_bounded_data(data ?: [NSData data]);
+    NSString *temporaryPath = [path stringByAppendingString:@".tmp"];
+    unlink(temporaryPath.fileSystemRepresentation);
+
+    int fd = open(temporaryPath.fileSystemRepresentation,
+                  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        NSLog(@"[wqfiles] log persistence: cannot create replacement (%d)", errno);
+        return NO;
+    }
+
+    BOOL ok = wq_log_write_all(fd, bounded.bytes, bounded.length);
+    if (ok && fsync(fd) != 0) ok = NO;
+    int savedError = ok ? 0 : errno;
+    if (close(fd) != 0 && ok) {
+        ok = NO;
+        savedError = errno;
+    }
+    if (!ok) {
+        unlink(temporaryPath.fileSystemRepresentation);
+        NSLog(@"[wqfiles] log persistence: replacement write failed (%d)", savedError);
+        return NO;
+    }
+
+    if (rename(temporaryPath.fileSystemRepresentation, path.fileSystemRepresentation) != 0) {
+        savedError = errno;
+        unlink(temporaryPath.fileSystemRepresentation);
+        NSLog(@"[wqfiles] log persistence: atomic replacement failed (%d)", savedError);
+        return NO;
+    }
+
+    NSString *directory = path.stringByDeletingLastPathComponent;
+    int directoryFD = open(directory.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (directoryFD >= 0) {
+        if (fsync(directoryFD) != 0)
+            NSLog(@"[wqfiles] log persistence: directory fsync failed (%d)", errno);
+        close(directoryFD);
+    }
+    return YES;
+}
+
+static void wq_log_persist_line(NSString *line)
+{
+    NSString *path = wq_log_persistence_path();
+    if (!path.length) return;
+
+    NSMutableData *record = [[line dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+    if (!record) return;
+    const uint8_t newline = '\n';
+    [record appendBytes:&newline length:1];
+
+    int fd = open(path.fileSystemRepresentation,
+                  O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) {
+        NSLog(@"[wqfiles] log persistence: append open failed (%d)", errno);
+        return;
+    }
+
+    BOOL ok = wq_log_write_all(fd, record.bytes, record.length);
+    if (ok && fsync(fd) != 0) ok = NO;
+    struct stat st;
+    BOOL oversized = ok && fstat(fd, &st) == 0 && st.st_size > (off_t)WQLogMaximumBytes;
+    int savedError = ok ? 0 : errno;
+    close(fd);
+
+    if (!ok) {
+        NSLog(@"[wqfiles] log persistence: append/fsync failed (%d)", savedError);
+        return;
+    }
+    if (oversized) {
+        NSData *existing = [NSData dataWithContentsOfFile:path];
+        if (existing && !wq_log_replace_persisted_data(existing))
+            NSLog(@"[wqfiles] log persistence: size cap trim failed; will retry on next line");
+    }
+}
+
+// Previous-session bytes remain on disk until the first log export. This is
+// deliberate: if the new process crashes before export, the old diagnostic
+// segment is still recoverable on the next launch.
 static void wq_log_initialize(void)
 {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         gLog = [NSMutableString new];
         gLogLock = [NSLock new];
+
+        NSString *path = wq_log_persistence_path();
+        NSData *stored = path.length ? [NSData dataWithContentsOfFile:path] : nil;
+        if (stored.length) {
+            NSData *bounded = wq_log_bounded_data(stored);
+            NSString *previous = [[NSString alloc] initWithData:bounded
+                                                       encoding:NSUTF8StringEncoding];
+            if (previous.length) {
+                [gLog appendString:previous];
+                gRecoveredLogLength = previous.length;
+            }
+            if (bounded.length != stored.length)
+                wq_log_replace_persisted_data(bounded);
+            NSLog(@"[wqfiles] log persistence: restored %lu bytes from the previous session",
+                  (unsigned long)bounded.length);
+        }
     });
 }
 
@@ -122,6 +279,8 @@ void wq_log(NSString *format, ...)
         NSString *timedLine = [NSString stringWithFormat:@"%@ %@", timestamp, line];
         NSLog(@"[wqfiles] %@", timedLine);
         [gLog appendFormat:@"%@\n", timedLine];
+        // Persist each complete timestamped line before releasing the log lock.
+        wq_log_persist_line(timedLine);
     }
     [gLogLock unlock];
 }
@@ -172,8 +331,23 @@ int wq_kernel_printf(const char *format, ...)
 
 NSString *wq_log_text(void)
 {
+    wq_log_initialize();
     [gLogLock lock];
+
     NSString *text = [gLog copy] ?: @"";
+    if (gRecoveredLogLength > 0 && gRecoveredLogLength <= gLog.length) {
+        NSString *currentSession = [gLog substringFromIndex:gRecoveredLogLength];
+        NSData *currentData = [currentSession dataUsingEncoding:NSUTF8StringEncoding];
+        if (wq_log_replace_persisted_data(currentData)) {
+            // The returned snapshot contains the previous session exactly
+            // once. Subsequent exports contain only this process's own logs.
+            [gLog setString:currentSession];
+            gRecoveredLogLength = 0;
+        } else {
+            NSLog(@"[wqfiles] log persistence: previous-session handoff failed; retained for retry");
+        }
+    }
+
     [gLogLock unlock];
     return text;
 }
