@@ -698,10 +698,15 @@ private final class LaunchHackModel: ObservableObject {
             var sniffedMedia = 0
             var galleryPool: [LaunchHackGalleryItem] = []
             var dynamicPool: [LaunchHackGalleryItem] = []
+            // 第 99 条：视频单独一摊，不再和动图/成套抢 dynamicPool
+            // 的 30 个名额；视频自己也封顶 30 个（与原动态池同数，
+            // 视频不再被挤掉，动图/成套的名额也不缩水）。
+            var videoPool: [LaunchHackGalleryItem] = []
             var videoCount = 0
             var animatedCount = 0
             var bundleCount = 0
             var smallSkipped = 0
+            var smallVideoSkipped = 0
             var failures: [String] = []
             var cancelled = false
 
@@ -867,6 +872,9 @@ private final class LaunchHackModel: ObservableObject {
                 // 里的媒体起步 42 分），免得把应用自己的视频内容
                 // 也堆上墙；顺序同样证据高的、时间新的在前。视频
                 // 同时还留在下面的数据线里，机器数据口径不变。
+                // 第 99 条补：视频进单独的 videoPool（自己 30 个
+                // 名额），并照图片同口径加短边 ≥300 的门槛，小
+                // 视频只计数不上墙。
                 let videoWork = entry.work
                     .filter { (kindOf[$0.path] ?? .other) == .video }
                     .map { (file: $0, score: LaunchHackAssessment.assess(relativePath: relativeOf($0)).score) }
@@ -877,7 +885,7 @@ private final class LaunchHackModel: ObservableObject {
                     }
                 for videoEntry in videoWork {
                     if token.isCancelled { cancelled = true; break }
-                    if dynamicPool.count >= 30 { break }
+                    if videoPool.count >= 30 { break }
                     let file = videoEntry.file
                     // 进度计数不在这里加：视频文件在下面的数据线里
                     // 还会再处理一次，那边统一计数，免得进度超 100%。
@@ -890,6 +898,13 @@ private final class LaunchHackModel: ObservableObject {
                     }
                     guard let probe = LaunchHackVideoProbe.probe(path: file.path,
                         relativePath: relative, channel: channel) else { continue }
+                    // 第 99 条：与图片同口径——探针回的天然尺寸短边
+                    // 不到 300 的只计数不上墙（表情级小视频占名额
+                    // 没用），略过数在收尾日志里报。
+                    guard min(probe.pixelWidth, probe.pixelHeight) >= 300 else {
+                        smallVideoSkipped += 1
+                        continue
+                    }
                     var item = LaunchHackGalleryItem(
                         bundleID: target.bundleID, groupID: target.groupID,
                         appName: target.appName, rootPath: target.rootPath,
@@ -900,7 +915,7 @@ private final class LaunchHackModel: ObservableObject {
                     item.kind = .video
                     item.durationSeconds = probe.durationSeconds
                     item.imageHash = probe.imageHash
-                    dynamicPool.append(item)
+                    videoPool.append(item)
                     videoCount += 1
                 }
 
@@ -1045,10 +1060,10 @@ private final class LaunchHackModel: ObservableObject {
                 if $0.score != $1.score { return $0.score > $1.score }
                 return $0.modifiedAt > $1.modifiedAt
             }.prefix(500))
-            let dynamicTotal = dynamicPool.count
+            let dynamicTotal = dynamicPool.count + videoPool.count
             DispatchQueue.main.async {
                 self.candidates = ordered
-                self.gallery = LaunchHackGalleryItem.sortedBySizeDescending(galleryPool + dynamicPool)
+                self.gallery = LaunchHackGalleryItem.sortedBySizeDescending(galleryPool + dynamicPool + videoPool)
                 self.gallerySmallSkipped = smallSkipped
                 self.visitedFiles = visited
                 self.checkedMedia = mediaCount
@@ -1072,6 +1087,9 @@ private final class LaunchHackModel: ObservableObject {
                 }
                 if dynamicTotal > 0 {
                     self.onLog?("LaunchHack 动态素材收录 \(dynamicTotal) 项（视频 \(videoCount)、动图 \(animatedCount)、成套 \(bundleCount)）", .info)
+                }
+                if videoCount > 0 || smallVideoSkipped > 0 {
+                    self.onLog?("LaunchHack 视频墙收录 \(videoCount) 个视频（短边 ≥300），另略过 \(smallVideoSkipped) 个小视频", .info)
                 }
                 if sniffedMedia > 0 {
                     self.onLog?("LaunchHack 有 \(sniffedMedia) 个文件靠内容认出是图片/视频（后缀认不出）", .info)
