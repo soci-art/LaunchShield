@@ -54,7 +54,7 @@ enum CSJIndexParser {
         var materials: [Material] = []
         var adCount = 0
         for meta in collectMetas(from: rootDict) {
-            let found = materials(from: meta)
+            let found = Self.materials(from: meta)
             if !found.isEmpty {
                 adCount += 1
                 materials.append(contentsOf: found)
