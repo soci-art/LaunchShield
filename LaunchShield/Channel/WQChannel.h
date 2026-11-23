@@ -66,8 +66,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSString *signMethod;
 @property (nonatomic, readonly, copy) NSString *unavailableReason;
 
-/// "bad_query" or "worse_query"; a Chinese label when there is no route
-/// (nothing picked yet, or the version cannot run the free-ID route).
+/// "bad_query", "worse_query" or "kernel"; a Chinese label when there is no
+/// route (the version cannot run any backend).
 @property (nonatomic, readonly, copy) NSString *routeName;
 /// Chinese one-liner with the detected system version.
 @property (nonatomic, readonly, copy) NSString *routeDetail;
@@ -77,6 +77,15 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Forgets the cached route so the next query re-reads the signed profile.
 - (void)resetRoute;
+
+/// iOS 17.0-18.7.1 runs the 3105/3106 kernel chain instead of a container
+/// query: no App Group, no signature-method detection, and it must be started
+/// once from the home screen (a failed attempt can restart the app).
+@property (nonatomic, readonly) BOOL kernelSupported;
+@property (nonatomic, readonly) BOOL kernelActive;
+@property (nonatomic, readonly) BOOL kernelRunning;
+/// Runs the chain. Blocks 10-30 s: call it on a background queue.
+- (BOOL)startKernel;
 
 /// Every app data container (the container manager's class 2).
 - (NSArray<WQAppContainer *> *)appContainers;

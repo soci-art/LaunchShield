@@ -35,6 +35,13 @@ final class Channel {
     /// 重新读取签名配置并让底层重判路线。
     func resetRoute() { raw.resetRoute() }
 
+    /// iOS 17/18 走内核链路：不用 App Group，也不用识别签名方式，但要手动启动一次。
+    var kernelSupported: Bool { raw.kernelSupported }
+    var kernelActive: Bool { raw.kernelActive }
+    var kernelRunning: Bool { raw.kernelRunning }
+    /// 启动内核链路，阻塞 10–30 秒；失败时应用可能重启，所以只在后台且用户点按时调。
+    func startKernel() -> Bool { raw.startKernel() }
+
     func containers() -> [ContainerInfo] {
         raw.appContainers().map {
             ContainerInfo(bundleID: $0.identifier, path: $0.path, name: $0.name, isSystem: $0.isSystem, category: $0.category ?? "")

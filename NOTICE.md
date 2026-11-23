@@ -30,6 +30,24 @@ LaunchShield 的跨应用文件通道移植自开源项目 **WQFiles**，并沿�
 WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优先、失败回滚、
 `_if_unchanged` 版本校验）没有改动。
 
+## 内核链路（iOS 17.0–18.7.1）
+
+- **3105** — 作者 YangJiii，<https://github.com/YangJiiii/3105>，GPL-3.0。
+  `LaunchShield/Channel/kexploit/` 下的 `kexploit_opa334`、`krw`、`kutils`、`offsets`、
+  `vnode`、`xpaci`、`machine_info` 与 `sandbox_escape` 取自该项目，逻辑未改动。
+- **FilzaSlop** — 作者 0xjohnnydev、CrazyMind90。3105 的 `sandbox_escape.m` 基于该项目。
+- **Dopamine** — 作者 opa334。3105 的内核漏洞研究基础来自该项目。
+- **3106** — 作者 QuinnTang74，<https://github.com/QuinnTang74/3106>，GPL-3.0。
+  按系统版本选择内核链路／bad_query／worse_query 的分流口径参考该项目。
+
+本工程新增的部分：
+
+1. `WQKernel` 适配层：按顺序跑 `kexploit_opa334()` → `sandbox_escape()`，缓存结果、写日志；
+   内核层源码未改动。
+2. `WQRoute` 在 iOS 17.0–18.7.1 上先判为 kernel 路线（与签名方式、App Group 无关）；
+   内核链路未启动时通道不开。
+3. 内核链路激活后，`wq_grant` 直接放行（沙箱已整体放开），不再申请容器 token。
+
 ## bad_query 路线（iOS 26.0–26.6.1）
 
 - **bad_query** — 作者 Taj C（forcequit），<https://github.com/forcequitOS/bad_query>，

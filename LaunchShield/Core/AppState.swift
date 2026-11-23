@@ -194,6 +194,11 @@ final class AppState: ObservableObject {
     @Published private(set) var channelChecking = true
     /// 自动识别的签名方式："cert" / "free" / "livecontainer"。
     @Published private(set) var signMethod: String? = nil
+    /// iOS 17/18 的内核链路：没启动、正在启动、已就绪、启动失败。
+    enum KernelState { case idle, running, active, failed }
+    @Published private(set) var kernelState: KernelState = .idle
+    /// 这台设备是不是走内核链路（iOS 17.0–18.7.1）。
+    var kernelSupported: Bool { channel.kernelSupported }
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
     /// App 排除白名单：以 Bundle ID 为唯一标识，保存在本机。
@@ -661,8 +666,14 @@ final class AppState: ObservableObject {
                 self.log("访问路线：\(route)", .info)
                 if ok {
                     self.log("文件通道就绪（\(self.channel.routeName)），\(group)", .success)
+                } else if self.channel.kernelSupported {
+                    // iOS 17/18 还没启动内核链路是正常状态，不当成故障提醒。
+                    self.log(self.channel.unavailableReason, .info)
                 } else {
                     self.log(self.channel.unavailableReason, .warning)
+                }
+                if self.channel.kernelActive {
+                    self.kernelState = .active
                 }
                 guard ok else { return }
                 self.refreshTargetPath()
@@ -670,6 +681,30 @@ final class AppState: ObservableObject {
                     self.work.async { self.sweepAdDirectories(reason: "启动补扫") }
                 }
                 self.checkRecipes(silent: true)
+            }
+        }
+    }
+
+    /// iOS 17/18：启动内核链路。要跑 10–30 秒，失败时应用可能重启，
+    /// 所以只在用户点按时跑，不在启动时自动跑。
+    func startKernel() {
+        guard channel.kernelSupported else { return }
+        guard kernelState != .running, kernelState != .active else { return }
+        kernelState = .running
+        log("内核链路：开始启动，可能要 10–30 秒", .notice)
+        work.async {
+            let ok = self.channel.startKernel()
+            DispatchQueue.main.async {
+                self.kernelState = ok ? .active : .failed
+                guard ok else {
+                    self.channelChecking = false
+                    self.channelReady = false
+                    self.log("内核链路没启动成功：重启应用后再试一次", .warning)
+                    return
+                }
+                self.log("内核链路已就绪：沙箱已放开，所有功能可用", .success)
+                // 走一遍正常的通道就绪流程：列应用、复查配方。
+                self.recheckChannel()
             }
         }
     }
