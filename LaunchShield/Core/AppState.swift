@@ -372,6 +372,10 @@ final class AppState: ObservableObject {
     /// 第 103 条：快捷指令在后台唤起跑复查时置真，关掉拉图标这类
     /// 与复查无关的活，省后台时间。
     var headlessRun = false
+    /// 第 103 条修法：补扫防重入（进程内静态标记）——App 开着时
+    /// 启动补扫和快捷指令复查是两个实例，别让两轮补扫同时跑、
+    /// 撞同一批文件。
+    static var sweepInFlight = false
     // 文件在清零期间连续变化时短暂退避，避免重复扫描反复撞同一文件。
     private var unstableClearFailureCounts: [String: Int] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureCounts") as? [String: Int] ?? [:]
     private var unstableClearFailureTimes: [String: Double] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureTimes") as? [String: Double] ?? [:]
@@ -675,6 +679,11 @@ final class AppState: ObservableObject {
     /// 界面、不查更新、不拉图标。跑完把一句话结果交回去，快捷
     /// 指令会显示出来；全程写进日志，事后打开 App 能查。
     func runShortcutRecheck(completion: @escaping (String) -> Void) {
+        if AppState.sweepInFlight {
+            log("快捷指令复查：已经有一轮补扫在跑，这轮没重复跑", .info)
+            completion("已经有一轮复查在跑了，这轮没重复跑")
+            return
+        }
         recipes = store.file.recipes
         directoryGuards = store.file.directoryGuards
         backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
@@ -2272,6 +2281,12 @@ final class AppState: ObservableObject {
         performRestore(records)
     }
 
+    /// 第 104 条：这个错是不是「原来的位置已不存在」（备份层对
+    /// 文件夹整夹被删单独报的那句）。
+    private func isLocationGone(_ error: Error) -> Bool {
+        error.localizedDescription.contains("原来的位置已经不存在")
+    }
+
     private func performRestore(_ records: [BackupRecord]) {
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         let records = records.filter { !isWhitelisted($0.bundleID) }
@@ -2287,6 +2302,7 @@ final class AppState: ObservableObject {
         work.async {
             var restored = 0
             var failures: [String] = []
+            var goneFiles: [String] = []
             var skippedDB = 0
             // 文件夹冻着的话先解开，还原才算全套撤销；共享组也按记录里的 groupID 定位。
             let roots = Set(records.compactMap { self.channel.rootPath(bundleID: $0.bundleID, groupID: $0.groupID) })
@@ -2327,8 +2343,13 @@ final class AppState: ObservableObject {
                     restored += 1
                     self.log("已还原并核对 MD5：\(record.relativePath)", .success)
                 } catch {
-                    failures.append("\(record.relativePath)：\(error.localizedDescription)")
-                    self.log("跳过这个文件（还原不了）：\(record.relativePath)：\(error.localizedDescription)", .warning)
+                    if self.isLocationGone(error) {
+                        goneFiles.append(record.relativePath)
+                        self.log("原来的位置已不存在、写不回去：\(record.relativePath)", .info)
+                    } else {
+                        failures.append("\(record.relativePath)：\(error.localizedDescription)")
+                        self.log("跳过这个文件（还原不了）：\(record.relativePath)：\(error.localizedDescription)", .warning)
+                    }
                 }
                 processed += 1
             }
@@ -2340,12 +2361,18 @@ final class AppState: ObservableObject {
                     ? "另有 \(skippedDB) 个数据库文件已跳过（被应用占用着，还原不了）。"
                     : ""
                 let completionText: String
-                if failures.isEmpty {
+                if failures.isEmpty && goneFiles.isEmpty {
                     self.log("还原完成：\(restored) 个文件已写回，MD5 全部一致", .success)
                     completionText = "还原完成：\(restored) 个文件已写回，MD5 全部一致。" + dbNote
                 } else {
-                    self.log("还原完成：\(restored) 个已写回，\(failures.count) 个没还原成、已跳过：\(failures.joined(separator: "；"))", .warning)
-                    completionText = "还原完成：\(restored) 个文件已写回；\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志。" + dbNote
+                    var logParts = ["还原完成：\(restored) 个已写回"]
+                    if !failures.isEmpty { logParts.append("\(failures.count) 个没还原成、已跳过：\(failures.joined(separator: "；"))") }
+                    if !goneFiles.isEmpty { logParts.append("\(goneFiles.count) 个原来的位置已不存在：\(goneFiles.joined(separator: "；"))") }
+                    self.log(logParts.joined(separator: "，"), .warning)
+                    var textParts = ["还原完成：\(restored) 个文件已写回"]
+                    if !failures.isEmpty { textParts.append("\(failures.count) 个没还原成、已跳过（多半是正被应用占着），详情看日志") }
+                    if !goneFiles.isEmpty { textParts.append("\(goneFiles.count) 个原来的位置已不存在、写不回去，备份还留着，可以直接删掉这几份") }
+                    completionText = textParts.joined(separator: "；") + "。" + dbNote
                 }
                 self.checkRecipes(silent: true)
                 self.presentCompletionAlert(completionText)
@@ -2472,6 +2499,7 @@ final class AppState: ObservableObject {
             var restoredFiles = 0
             var dbOnlyFiles = 0
             var keptFiles: [String] = []
+            var goneFiles: [String] = []
             var processed = 0
             for group in groups.values {
                 let sorted = group.sorted { $0.createdAt < $1.createdAt }
@@ -2493,8 +2521,13 @@ final class AppState: ObservableObject {
                         deletableIDs.formUnion(sorted.map { $0.id })
                         self.log("已先恢复：\(original.relativePath)，这份备份可以删了", .success)
                     } catch {
-                        keptFiles.append(original.relativePath)
-                        self.log("恢复失败、备份已保留：\(original.relativePath)：\(error.localizedDescription)", .warning)
+                        if self.isLocationGone(error) {
+                            goneFiles.append(original.relativePath)
+                            self.log("原来的位置已不存在、备份写不回去（留着也没用，可以删）：\(original.relativePath)", .info)
+                        } else {
+                            keptFiles.append(original.relativePath)
+                            self.log("恢复失败、备份已保留：\(original.relativePath)：\(error.localizedDescription)", .warning)
+                        }
                     }
                 } else {
                     keptFiles.append(original.relativePath)
@@ -2533,6 +2566,7 @@ final class AppState: ObservableObject {
                 if restoredFiles > 0 { parts.append("已先恢复再删除：\(restoredFiles) 个文件已写回、对应备份已删除") }
                 if dbOnlyFiles > 0 { parts.append("\(dbOnlyFiles) 个数据库文件还原不了、备份已直接删除") }
                 if !keptFiles.isEmpty { parts.append("\(keptFiles.count) 个文件恢复失败、备份已保留：\(keptFiles.prefix(3).joined(separator: "；"))") }
+                if !goneFiles.isEmpty { parts.append("\(goneFiles.count) 个文件原来的位置已不存在、写不回去，备份还留着，可以直接删掉这几份：\(goneFiles.prefix(3).joined(separator: "；"))") }
                 let message = parts.isEmpty ? "没有删掉任何备份。" : parts.joined(separator: "。") + "。"
                 self.log(message, keptFiles.isEmpty ? .notice : .warning)
                 self.alertText = message
@@ -4167,7 +4201,9 @@ final class AppState: ObservableObject {
     /// 范围：有配方的应用＋有文件夹守护的应用＋当前目标＋一键勾选的应用。启动时补扫一遍。
     /// 必须在后台队列调用。
     private func sweepAdDirectories(reason: String, completion: ((Int) -> Void)? = nil) {
-        guard channel.isAvailable else { completion?(0); return }
+        if AppState.sweepInFlight { completion?(0); return }
+        AppState.sweepInFlight = true
+        guard channel.isAvailable else { AppState.sweepInFlight = false; completion?(0); return }
         var bundleIDs = Set(recipes.map { $0.bundleID })
         bundleIDs.formUnion(directoryGuards.map { $0.bundleID })
         if targetChosen { bundleIDs.insert(target.bundleID) }
@@ -4200,6 +4236,13 @@ final class AppState: ObservableObject {
                 guard cleared < 300,
                       let root = channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) else { continue }
                 let folderFull = root + "/" + guardItem.relativePath
+                // 第 104 条：守护的文件夹整个没了（多半是应用把临时
+                // 文件夹删了）——记一行普通提醒跳过，别每轮都当
+                // 冻结失败刷警告。
+                if !channel.exists(folderFull) {
+                    log("守护文件夹已不存在，跳过：\(info.name) · \(guardItem.relativePath)", .info)
+                    continue
+                }
                 if let items = try? channel.walkFiles(at: folderFull, limit: 2000) {
                     for item in items where !item.isDirectory && !item.isSymlink && item.size > 0 {
                         guard cleared < 300 else { break }
@@ -4225,6 +4268,7 @@ final class AppState: ObservableObject {
         if cleared > 0 {
             log("\(reason)：共清掉 \(cleared) 个新冒出来的广告文件，已备份并冻结", .notice)
         }
+        AppState.sweepInFlight = false
         if !newBackups.isEmpty || !newRecipes.isEmpty || !newGuards.isEmpty {
             let backupsToAdd = newBackups
             let recipesToAdd = newRecipes

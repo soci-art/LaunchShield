@@ -17,6 +17,11 @@ struct RecheckAdsIntent: AppIntent {
 }
 
 /// 跑复查期间留住那个 AppState 实例，跑完才放。
+/// 第 103 条修法：快捷指令等一个动作的耐心只有约 30 秒，文件多
+/// 的一轮跑不完它就报「未知错误」——所以最多等 25 秒，超时先
+/// 回一句说明，让快捷指令正常收尾；复查本身接着跑（进程还
+/// 活着就跑完，被系统收走也会在下次打开应用时由启动补扫接上），
+/// 最终清了几个照样写进日志。
 private enum ShortcutRecheckRunner {
     private static var runningState: AppState?
 
@@ -24,9 +29,19 @@ private enum ShortcutRecheckRunner {
         await withCheckedContinuation { continuation in
             let state = AppState()
             runningState = state
-            state.runShortcutRecheck { summary in
-                runningState = nil
+            let lock = NSLock()
+            var resumed = false
+            let finish: (String) -> Void = { summary in
+                lock.lock()
+                if resumed { lock.unlock(); return }
+                resumed = true
+                lock.unlock()
+                if runningState === state { runningState = nil }
                 continuation.resume(returning: summary)
+            }
+            state.runShortcutRecheck(completion: finish)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 25) {
+                finish("文件多，这轮没清完；打开 LaunchShield 时会接着清，结果看日志")
             }
         }
     }
