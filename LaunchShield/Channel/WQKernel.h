@@ -28,7 +28,7 @@ BOOL wq_kernel_running(void);
 BOOL wq_kernel_failed(void);
 
 /// Runs kexploit_opa334() and sandbox_escape() for this process. Blocks for
-/// 10-30 seconds; call it off the main thread. A failed attempt can restart
+/// 1-3 minutes; call it off the main thread. A failed attempt can restart
 /// the app, so the UI only calls this after the user taps.
 BOOL wq_kernel_start(void);
 
