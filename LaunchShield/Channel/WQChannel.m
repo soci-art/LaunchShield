@@ -660,7 +660,7 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
     id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
     if (![plist isKindOfClass:NSDictionary.class]) return nil;
     id identifier = plist[@"MCMMetadataIdentifier"];
-    if (![identifier isKindOfClass:NSString.class] || ![identifier isKindOfClass:NSString.class] ||
+    if (![identifier isKindOfClass:NSString.class] ||
         [identifier length] == 0 || [identifier length] > 255) return nil;
     return identifier;
 }
