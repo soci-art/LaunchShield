@@ -369,6 +369,9 @@ final class AppState: ObservableObject {
     private var fullScanTotalIds: Int64 = 0
 
     private var didBootstrap = false
+    /// 第 103 条：快捷指令在后台唤起跑复查时置真，关掉拉图标这类
+    /// 与复查无关的活，省后台时间。
+    var headlessRun = false
     // 文件在清零期间连续变化时短暂退避，避免重复扫描反复撞同一文件。
     private var unstableClearFailureCounts: [String: Int] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureCounts") as? [String: Int] ?? [:]
     private var unstableClearFailureTimes: [String: Double] = UserDefaults.standard.dictionary(forKey: "ls.unstableClearFailureTimes") as? [String: Double] ?? [:]
@@ -663,6 +666,45 @@ final class AppState: ObservableObject {
                     self.work.async { self.sweepAdDirectories(reason: "启动补扫") }
                 }
                 self.checkRecipes(silent: true)
+            }
+        }
+    }
+
+    /// 第 103 条：快捷指令在后台唤起时跑的复查——跟打开 App 时
+    /// 自动做的那一轮同源（目录补扫自动去除＋配方复查），但不碰
+    /// 界面、不查更新、不拉图标。跑完把一句话结果交回去，快捷
+    /// 指令会显示出来；全程写进日志，事后打开 App 能查。
+    func runShortcutRecheck(completion: @escaping (String) -> Void) {
+        recipes = store.file.recipes
+        directoryGuards = store.file.directoryGuards
+        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
+        headlessRun = true
+        if store.loadFailure != nil {
+            log("快捷指令复查：守护库读取失败，没敢动任何文件", .warning)
+            completion("守护库读取失败，这次没敢动任何文件，请打开 LaunchShield 看一下")
+            return
+        }
+        log("快捷指令复查：开始", .info)
+        work.async {
+            let ok = self.channel.isAvailable
+            DispatchQueue.main.async {
+                guard ok else {
+                    self.log("快捷指令复查：通道不可用（\(self.channel.unavailableReason)）", .warning)
+                    completion("通道不可用：\(self.channel.unavailableReason)")
+                    return
+                }
+                self.refreshContainers {
+                    self.work.async {
+                        self.sweepAdDirectories(reason: "快捷指令复查") { cleared in
+                            self.checkRecipes(silent: true)
+                            let text = cleared > 0
+                                ? "复查完成：清掉 \(cleared) 个新冒出来的广告文件，都已备份并冻结"
+                                : "复查完成：没有新冒出来的广告文件"
+                            self.log("快捷指令复查：\(text)", .notice)
+                            completion(text)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1243,7 +1285,7 @@ final class AppState: ObservableObject {
     /// 第 91 条：轮次范围和「选择目标应用」同口径——系统应用直接
     /// 跳过（它们在选择页不显示、商店里也没条目，白查还刷日志）。
     func loadAppIconsIfNeeded() {
-        guard !iconLoadStarted, channel.isAvailable else { return }
+        guard !iconLoadStarted, !headlessRun, channel.isAvailable else { return }
         iconLoadStarted = true
         let targets = containers.filter { !Self.isSystemApp($0) }
         iconQueue.async { [weak self] in
@@ -4124,8 +4166,8 @@ final class AppState: ObservableObject {
     /// 冻结并存入守护列表；名字带冷开/开屏的新目录也一样自动压。
     /// 范围：有配方的应用＋有文件夹守护的应用＋当前目标＋一键勾选的应用。启动时补扫一遍。
     /// 必须在后台队列调用。
-    private func sweepAdDirectories(reason: String) {
-        guard channel.isAvailable else { return }
+    private func sweepAdDirectories(reason: String, completion: ((Int) -> Void)? = nil) {
+        guard channel.isAvailable else { completion?(0); return }
         var bundleIDs = Set(recipes.map { $0.bundleID })
         bundleIDs.formUnion(directoryGuards.map { $0.bundleID })
         if targetChosen { bundleIDs.insert(target.bundleID) }
@@ -4206,9 +4248,13 @@ final class AppState: ObservableObject {
                 self.recipes = self.store.file.recipes
                 self.directoryGuards = self.store.file.directoryGuards
                 self.backups = self.store.file.backups.sorted { $0.createdAt > $1.createdAt }
+                completion?(cleared)
             }
-        } else if cleared > 0 {
-            DispatchQueue.main.async { self.checkRecipes(silent: true) }
+        } else {
+            if cleared > 0 {
+                DispatchQueue.main.async { self.checkRecipes(silent: true) }
+            }
+            completion?(cleared)
         }
     }
 
