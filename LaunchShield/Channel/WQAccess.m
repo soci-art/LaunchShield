@@ -240,8 +240,15 @@ static void wq_log_initialize(void)
             NSString *previous = [[NSString alloc] initWithData:bounded
                                                        encoding:NSUTF8StringEncoding];
             if (previous.length) {
-                [gLog appendString:previous];
-                gRecoveredLogLength = previous.length;
+                // Wrap the recovered segment in separator lines so an exported
+                // log shows where the previous session ends and this one begins.
+                // The separators exist only in memory: the persisted file keeps
+                // the raw lines, so a repeated crash recovery never nests them.
+                NSString *block = [NSString stringWithFormat:
+                    @"———— 以下为上次会话留下的日志 ————\n%@%@———— 上次会话日志到此为止，以下为本次会话 ————\n",
+                    previous, [previous hasSuffix:@"\n"] ? @"" : @"\n"];
+                [gLog appendString:block];
+                gRecoveredLogLength = block.length;
             }
             if (bounded.length != stored.length)
                 wq_log_replace_persisted_data(bounded);
