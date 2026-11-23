@@ -5,7 +5,7 @@
 //  GPL-3.0-or-later. Route selection is capability-based:
 //    supported OS/build + a usable process App Group -> worse_query
 //    supported OS/build + no usable group + iOS 26.0-26.6.1 -> bad_query
-//    iOS 17.0-18.7.1 -> the 3105/3106 kernel chain (any signature, no group)
+//    iOS 17.0-18.7.1 -> the kernel chain (any signature, no group)
 //    otherwise -> unavailable
 //
 //  The signing-method label is diagnostic only. The effective process
