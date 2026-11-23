@@ -676,7 +676,7 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
 {
     NSString *label = wq_container_label(path);
     if (label.length) return label;
-    return [self rawContainerMetadataIdentifierForPath:path];
+    return [self metadataLabelForPath:path];
 }
 
 // Fallback for systems where the scan machinery returns nothing: walk the
