@@ -1,5 +1,4 @@
 import SwiftUI
-import UserNotifications
 
 /// 使用教程：一级三条入口（如何使用 / LaunchHack / 已守护应用），
 /// 点进去是各自的二级页。原「如何手动搜索广告」一节已删：找广告
@@ -133,31 +132,6 @@ private func tutorialSolidButton(_ text: String) -> some View {
 }
 
 /// 二级页：如何使用。
-/// 第 106 条：教程第 6 步里的真按钮——通知权限要在应用里
-/// 先点好，后台复查干完才能弹通知报数（后台唤起时弹不出
-/// 授权框）。没允许不影响复查本身，只是没通知。
-private struct RecheckNotifyButton: View {
-    @State private var label = "允许通知（复查完告诉你清了几个）"
-    @State private var done = false
-
-    var body: some View {
-        Button {
-            UNUserNotificationCenter.current()
-                .requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                    DispatchQueue.main.async {
-                        done = true
-                        label = granted ? "通知已允许" : "没允许——想开的话去系统设置里给 LaunchShield 开通知"
-                    }
-                }
-        } label: {
-            Text(label)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.accentCyan)
-        }
-        .disabled(done)
-    }
-}
-
 struct HowToUseView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -197,14 +171,11 @@ struct HowToUseView: View {
                     }
                 }
                 tutorialStep(6, "每天自动复查，不用打开应用",
-                     "打开系统「快捷指令」，切到「自动化」，点右上角＋号选「特定时间」：挑一个时间（比如每天早上 8 点）、重复选「每天」、选「立即运行」。下一步添加操作，搜 LaunchShield，选「复查并去除复发」。存好以后，每天到点会自动把新冒出来的广告文件备份、去除并冻结，跟你打开应用时做的那一轮一样；跑没跑、清了几个，打开应用看日志就知道。第一次装好新版后，先打开一次 LaunchShield，快捷指令里才会出现这个操作。想在每轮复查完收到一条通知（写清了几个），点下面「允许通知」先把权限开好；不开也不影响复查，只是没通知。") {
-                    VStack(spacing: 9) {
-                        tutorialMockRow {
-                            Text("快捷指令 · 自动化").font(.system(size: 13)).foregroundStyle(Color.primaryText)
-                            Spacer()
-                            tutorialChip("每天 · 立即运行")
-                        }
-                        RecheckNotifyButton()
+                     "打开系统「快捷指令」，切到「自动化」，点右上角＋号选「特定时间」：挑一个时间（比如每天早上 8 点）、重复选「每天」、选「立即运行」。下一步添加操作，搜 LaunchShield，选「复查并去除复发」。存好以后，每天到点会自动把新冒出来的广告文件备份、去除并冻结，跟你打开应用时做的那一轮一样；跑没跑、清了几个，打开应用看日志就知道。第一次装好新版后，先打开一次 LaunchShield，快捷指令里才会出现这个操作。想在复查完收到通知，就在自动化里排在「复查并去除复发」后面再加一个「显示通知」动作，内容选上一步的结果——复查一干完，快捷指令就会弹一条通知，上面写着这一轮清了几个。") {
+                    tutorialMockRow {
+                        Text("快捷指令 · 自动化").font(.system(size: 13)).foregroundStyle(Color.primaryText)
+                        Spacer()
+                        tutorialChip("每天 · 立即运行")
                     }
                 }
                 HStack(alignment: .top, spacing: 8) {
