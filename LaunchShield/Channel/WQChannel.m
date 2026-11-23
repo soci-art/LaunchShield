@@ -23,6 +23,13 @@
 #import <unistd.h>
 #import <xpc/xpc.h>
 
+@interface WQChannel ()
+- (BOOL)isCanonicalBundleIdentifier:(NSString *)bundleID;
+- (NSString *)canonicalApplicationDataPath:(NSString *)rawPath;
+- (NSString *)rawContainerMetadataIdentifierForPath:(NSString *)path;
+- (WQAppContainer *)resolvedContainerForBundleID:(NSString *)bundleID;
+@end
+
 @implementation WQOp
 
 + (instancetype)ok:(id)value
@@ -645,17 +652,23 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
 // channel, without the permission pre-check the shared helper applies (on
 // iOS 27.x that pre-check guesses "unreadable" for files the channel can in
 // fact read).
-- (NSString *)metadataLabelForPath:(NSString *)path
+- (NSString *)rawContainerMetadataIdentifierForPath:(NSString *)path
 {
     NSString *meta = [path stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
-    NSString *error = nil;
-    NSData *data = wq_read(meta, 64 * 1024, &error);
+    NSData *data = wq_read(meta, 64 * 1024, NULL);
     if (!data.length) return nil;
     id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
     if (![plist isKindOfClass:NSDictionary.class]) return nil;
-    NSString *identifier = plist[@"MCMMetadataIdentifier"];
-    if (![identifier isKindOfClass:NSString.class] || ![identifier containsString:@"."]) return nil;
-    if ([identifier hasPrefix:@"com.apple."]) return nil;
+    id identifier = plist[@"MCMMetadataIdentifier"];
+    if (![identifier isKindOfClass:NSString.class] || ![identifier isKindOfClass:NSString.class] ||
+        [identifier length] == 0 || [identifier length] > 255) return nil;
+    return identifier;
+}
+
+- (NSString *)metadataLabelForPath:(NSString *)path
+{
+    NSString *identifier = [self rawContainerMetadataIdentifierForPath:path];
+    if (![identifier containsString:@"."] || [identifier hasPrefix:@"com.apple."]) return nil;
     return identifier;
 }
 
@@ -663,7 +676,7 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
 {
     NSString *label = wq_container_label(path);
     if (label.length) return label;
-    return [self metadataLabelForPath:path];
+    return [self rawContainerMetadataIdentifierForPath:path];
 }
 
 // Fallback for systems where the scan machinery returns nothing: walk the
@@ -733,9 +746,12 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
     NSString *enumerationError = nil;
     NSArray<NSString *> *identifiers = MCMEnumerateIdentifiersForClass(2, 4096, &enumerationError);
     NSMutableSet<NSString *> *seenIdentifiers = [NSMutableSet set];
+    NSMutableSet<NSString *> *seenPaths = [NSMutableSet set];
     for (NSDictionary<NSString *, NSString *> *row in rows) {
         NSString *existingIdentifier = row[@"identifier"];
+        NSString *existingPath = row[@"path"];
         if (existingIdentifier.length) [seenIdentifiers addObject:existingIdentifier];
+        if (existingPath.length) [seenPaths addObject:existingPath.stringByStandardizingPath];
     }
     NSUInteger mcmAdded = 0;
     for (NSString *identifier in identifiers) {
@@ -745,13 +761,15 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
         NSString *resolved = [self canonicalApplicationDataPath:
             MCMActivateContainerPath(2, identifier, NO, &lookupError)];
         if (!resolved.length) continue;
-        NSString *metadataIdentifier = [self metadataLabelForPath:resolved];
+        NSString *metadataIdentifier = [self rawContainerMetadataIdentifierForPath:resolved];
         if (metadataIdentifier.length && ![metadataIdentifier isEqualToString:identifier]) {
             wq_log(@"containers: MCM path identity mismatch for %@; skipped", identifier);
             continue;
         }
+        if ([seenPaths containsObject:resolved]) continue;
         [rows addObject:@{ @"identifier": identifier, @"path": resolved }];
         [seenIdentifiers addObject:identifier];
+        [seenPaths addObject:resolved];
         mcmAdded++;
     }
     wq_log(@"containers: MCM supplement added %lu apps from %lu identifiers (error=%@)",
@@ -885,7 +903,7 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
             NSString *candidate = [self canonicalApplicationDataPath:
                 [root stringByAppendingPathComponent:name]];
             if (!candidate.length) continue;
-            NSString *metadataIdentifier = [self metadataLabelForPath:candidate];
+            NSString *metadataIdentifier = [self rawContainerMetadataIdentifierForPath:candidate];
             if ([metadataIdentifier isEqualToString:bundleID]) {
                 path = candidate;
                 break;
