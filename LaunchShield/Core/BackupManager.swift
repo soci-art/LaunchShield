@@ -105,6 +105,15 @@ struct BackupManager {
         if let existing, existing.isDirectory {
             throw ChannelFailure("目标是文件夹，拒绝按文件恢复")
         }
+        // 第 104 条：文件不在、连它所在的文件夹都没了（多半是应用
+        // 把临时文件夹整夹删了）——没有地方可写，单独报清楚，
+        // 别混进笼统的恢复失败。
+        if existing == nil {
+            let parent = (target as NSString).deletingLastPathComponent
+            if !channel.exists(parent) {
+                throw ChannelFailure("原来的位置已经不存在了（文件夹已被应用删掉），备份写不回去")
+            }
+        }
 
         // Preserve the current target before overwriting it. If the write or
         // post-write verification fails, put these exact bytes back.
