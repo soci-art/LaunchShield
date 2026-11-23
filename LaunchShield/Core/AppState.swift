@@ -685,13 +685,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// iOS 17/18：启动内核链路。要跑 10–30 秒，失败时应用可能重启，
+    /// iOS 17/18：启动内核链路。通常要跑 1–3 分钟，失败时应用可能重启，
     /// 所以只在用户点按时跑，不在启动时自动跑。
     func startKernel() {
         guard channel.kernelSupported else { return }
         guard kernelState != .running, kernelState != .active else { return }
         kernelState = .running
-        log("内核链路：开始启动，可能要 10–30 秒", .notice)
+        log("内核链路：开始启动，通常要 1–3 分钟，期间请保持应用在前台", .notice)
         work.async {
             let ok = self.channel.startKernel()
             DispatchQueue.main.async {

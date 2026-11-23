@@ -84,7 +84,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL kernelSupported;
 @property (nonatomic, readonly) BOOL kernelActive;
 @property (nonatomic, readonly) BOOL kernelRunning;
-/// Runs the chain. Blocks 10-30 s: call it on a background queue.
+/// Runs the chain. Blocks for roughly 1-3 minutes on iOS 17/18: call it on a background queue.
 - (BOOL)startKernel;
 
 /// Every app data container (the container manager's class 2).

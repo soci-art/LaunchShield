@@ -39,7 +39,7 @@ final class Channel {
     var kernelSupported: Bool { raw.kernelSupported }
     var kernelActive: Bool { raw.kernelActive }
     var kernelRunning: Bool { raw.kernelRunning }
-    /// 启动内核链路，阻塞 10–30 秒；失败时应用可能重启，所以只在后台且用户点按时调。
+    /// 启动内核链路，通常阻塞 1–3 分钟；失败时应用可能重启，所以只在后台且用户点按时调。
     func startKernel() -> Bool { raw.startKernel() }
 
     func containers() -> [ContainerInfo] {
