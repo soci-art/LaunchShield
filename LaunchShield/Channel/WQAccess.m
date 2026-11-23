@@ -18,6 +18,7 @@
 #import "WQAccessSafety.h"
 #import "WQLocalization.h"
 #import "WQRoute.h"
+#import "WQKernel.h"
 #import <dlfcn.h>
 #import <CoreFoundation/CFByteOrder.h>
 #import <mach-o/loader.h>
@@ -481,6 +482,9 @@ static int64_t wq_query_token(NSString *group, BOOL altFlags)
 
 BOOL wq_system_areas_reachable(void)
 {
+    // The kernel chain drops the sandbox entirely on iOS 17/18, so the system
+    // areas are reachable there.
+    if (wq_kernel_active()) return YES;
     // worse_query reaches System Data, the system groups and the App Groups
     // parent only on iOS 27; on iOS 26 it reaches the individual app,
     // extension, daemon and app group containers.
@@ -671,6 +675,9 @@ BOOL wq_grant(NSString *path)
         gGrantLock = [NSRecursiveLock new];
     });
     NSString *key = wq_norm(path);
+    // The iOS 17/18 kernel chain removes the sandbox process-wide, so there is
+    // no per-path token to ask for: every path is already open.
+    if (wq_kernel_active()) return YES;
     [gGrantLock lock];
     NSNumber *known = gGrants[key];
     if (known) {
@@ -3117,8 +3124,9 @@ static void wq_full_scan_release(void)
 static WQScanCancellation *wq_full_scan_begin(NSString *what, int64_t ids, double seconds, WQScanCancellation *caller, BOOL resuming)
 {
     // Without an App Group no container can be opened or named, so a long
-    // scan would only produce a list of unusable folders.
-    if (!wq_app_group()) {
+    // scan would only produce a list of unusable folders. The kernel chain
+    // needs no group: the sandbox is gone.
+    if (!wq_app_group() && !wq_kernel_active()) {
         atomic_store(&gFullScanDeclined, YES);
         wq_log(@"scan: no App Group; full scan of %@ skipped", what);
         return nil;

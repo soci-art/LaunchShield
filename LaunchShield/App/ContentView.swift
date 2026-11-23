@@ -30,7 +30,11 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 22) {
                         header
                         announcementEntry
-                        signCard
+                        if state.kernelSupported {
+                            kernelCard
+                        } else {
+                            signCard
+                        }
                         tutorialEntry
                         targetCard
                         fullScanCards
@@ -218,12 +222,78 @@ struct ContentView: View {
                     Circle()
                         .fill(state.channelReady ? Color.green : Color.orange)
                         .frame(width: 7, height: 7)
-                    Text(state.channelChecking ? "正在检测通道" : (state.channelReady ? "通道就绪" : "通道不可用"))
+                    Text(pillText)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
                         .fixedSize()
                 }
             }
+        }
+    }
+
+    private var pillText: String {
+        if state.channelChecking { return "正在检测通道" }
+        if state.channelReady { return "通道就绪" }
+        if state.kernelSupported && state.kernelState != .failed { return "内核链路待启动" }
+        return "通道不可用"
+    }
+
+    // MARK: - Kernel chain (iOS 17/18)
+
+    /// iOS 17/18 走 3105/3106 的内核链路：不用共享组、不用识别签名方式，
+    /// 但内核链路得手动启动（失败可能重启应用）。
+    private var kernelCard: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("内核链路")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(Color.primaryText)
+                Spacer()
+                Text(kernelStatusText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(state.kernelState == .active ? Color.green
+                                     : state.kernelState == .failed ? Color.orange : Color.secondaryText)
+            }
+            Text("这台设备是 iOS 17/18，走 3105/3106 的内核链路：不用共享组，也不用识别签名方式。启动后应用能访问所有应用的数据，全部功能都能用。")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("启动要 10–30 秒；内核链路失败时，应用（有时是整台手机）可能会重启一次，重启后再点一次就行。")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                state.startKernel()
+            } label: {
+                HStack(spacing: 8) {
+                    if state.kernelState == .running {
+                        ProgressView().tint(.white)
+                    }
+                    Text(state.kernelState == .active ? "内核链路已就绪"
+                         : state.kernelState == .running ? "正在启动…" : "启动内核链路")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(Color.accentCyan.opacity(state.kernelState == .active ? 0.25 : 0.9),
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .foregroundStyle(state.kernelState == .active ? Color.accentCyan : .white)
+            }
+            .buttonStyle(.plain)
+            .disabled(state.kernelState == .running || state.kernelState == .active)
+            .padding(.top, 7)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel(radius: 24)
+    }
+
+    private var kernelStatusText: String {
+        switch state.kernelState {
+        case .active: return "已就绪"
+        case .running: return "正在启动…"
+        case .failed: return "启动失败"
+        case .idle: return "还没启动"
         }
     }
 
@@ -248,7 +318,8 @@ struct ContentView: View {
 
     /// 仅在底层无法识别签名方式时拦截文件功能；教程、日志、设置和维护类入口不走这里。
     private func requireSign() -> Bool {
-        guard state.signMethod == nil else { return true }
+        // iOS 17/18 的内核链路与签名方式无关：识别不出签名也不该拦。
+        guard state.signMethod == nil, !state.kernelSupported else { return true }
         state.noteSignGateBlocked()
         state.alertText = "暂时无法自动识别签名方式，文件通道功能已暂停。请重新安装应用；如果仍无法识别，请导出运行日志排查。"
         return false
