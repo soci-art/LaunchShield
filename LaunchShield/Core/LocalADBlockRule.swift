@@ -649,6 +649,142 @@ enum LocalADBlockRule {
         return true
     }
 
+    // MARK: - 第 98 条：穿山甲开屏索引对号
+
+    /// 穿山甲索引文件的固定布局（SDK 写死，照百度自营开屏把路径常量
+    /// 写在本文件的先例，不进规则文件）。目录名带世代（com.csj.plist.v3、
+    /// v4、com.csj.persistence 等），按枚举找，不写死版本号。
+    static let csjIndexFileName = "CSJsplash_CN.plist"
+    /// 真机上同族的另一个文件（无扩展名）：只有键名记录、没见过内容
+    /// 样本，只作可选分支——同一套解包器试解，解出同样字段就用，
+    /// 解不出安静跳过，不为它预设任何字段。
+    static let csjPersistenceFileName = "CSJMaterialsMetaPersistence_CN"
+    /// 索引文件实测 41–93 KB，4 MB 上限留足余量，超了放弃。
+    static let csjIndexMaxBytes = 4 * 1024 * 1024
+
+    /// 穿山甲那一组在规则里的名字（动态认：目录里带 csj/buadsdk 的
+    /// 那一组；认不到就用「穿山甲」兜底）。
+    private static var csjGroupName: String {
+        thirdPartyCacheGroups.first { group in
+            group.directories.contains { $0.lowercased().contains("csj") || $0.lowercased().contains("buadsdk") }
+        }?.group ?? "穿山甲"
+    }
+
+    private static func csjIndexFilePaths(container: String, channel: Channel) -> [String] {
+        let cachesRoot = container + "/Library/Caches"
+        guard let children = try? channel.children(of: cachesRoot) else { return [] }
+        var paths: [String] = []
+        for child in children where child.isDirectory && !child.isSymlink {
+            let lower = child.name.lowercased()
+            guard lower.hasPrefix("com.csj.plist.") || lower == "com.csj.persistence"
+                    || lower == "com.persistence" else { continue }
+            paths.append(child.path + "/" + csjIndexFileName)
+            paths.append(child.path + "/" + csjPersistenceFileName)
+        }
+        return paths.sorted()
+    }
+
+    /// 第 98 条：穿山甲索引命中——与模板/指纹并列的第四个单独入口，
+    /// 同样不混进 targets()。做法是拿穿山甲存在本地的开屏广告记录
+    /// （CSJsplash_CN.plist）逐个对号：记录里每条素材都有文件名哈希，
+    /// 缓存目录里文件名（去后缀）恰好等于它的就是那条开屏的素材。
+    /// 证据分档不齐（视频是对号铁证，图片个别对不上），所以命中照样
+    /// 只进待确认清单，用户点确认才处理；守护巡查、自动清理走
+    /// targets()，拿不到。索引文件没有、是空壳、被冻成 0 字节、解不开
+    /// ——任何失败都当没这回事，返回空结果，扫描照走老路。
+    static func csjIndexTargets(container: String, channel: Channel,
+                                ownerBundleID: String, ownerName: String,
+                                onVisit: (() -> Void)? = nil) -> [TargetFile] {
+        guard !protectedBundleIDs.contains(ownerBundleID) else { return [] }
+        // 1) 找到并解开索引，攒出素材清单（多份索引之间按素材去重）。
+        var materials: [CSJIndexParser.Material] = []
+        var seenMaterial = Set<String>()
+        for path in csjIndexFilePaths(container: container, channel: channel) {
+            guard let item = channel.item(at: path), !item.isDirectory, !item.isSymlink,
+                  item.size > 0, item.size <= UInt64(csjIndexMaxBytes),
+                  let data = try? channel.read(path, maxBytes: csjIndexMaxBytes),
+                  let parsed = CSJIndexParser.parse(data: data) else { continue }
+            for material in parsed.materials {
+                guard let primary = material.candidateStems.first,
+                      !seenMaterial.contains(primary) else { continue }
+                seenMaterial.insert(primary)
+                materials.append(material)
+            }
+        }
+        guard !materials.isEmpty else { return [] }
+        var byStem: [String: CSJIndexParser.Material] = [:]
+        for material in materials {
+            for stem in material.candidateStems where byStem[stem] == nil {
+                byStem[stem] = material
+            }
+        }
+        // 2) 对号：先看已知的几个落盘位置（穿山甲视频目录、专用图缓存、
+        // 开屏图缓存、通用图缓存——通用缓存整目录不敢收，靠索引逐个
+        // 点名正是这条的增量）。
+        var result: [TargetFile] = []
+        var seenPaths = Set<String>()
+        var matched = Set<String>()
+        func consider(_ item: FileItem) {
+            guard !item.isSymlink, !item.isDirectory, !seenPaths.contains(item.path) else { return }
+            let stem = (item.name as NSString).deletingPathExtension.lowercased()
+            guard let material = byStem[stem], let primary = material.candidateStems.first else { return }
+            seenPaths.insert(item.path)
+            matched.insert(primary)
+            result.append(indexTarget(item, material: material, container: container,
+                                      ownerBundleID: ownerBundleID, ownerName: ownerName))
+        }
+        let landingDirs = ["Library/Caches/com.CSJAdSDK.bumedia",
+                           "Library/Caches/com.hackemist.CSJSDImageCache/default",
+                           "Library/Caches/cn_buadsdk_file_cache/bu_splash_cache",
+                           splashCacheRoot]
+        for relative in landingDirs {
+            for item in files(below: container + "/" + relative, channel: channel, depth: 0, limit: 4000, onVisit: onVisit) {
+                consider(item)
+            }
+        }
+        // 3) 兜底：还有素材没对上时，整容器走一遍——文件名干恰好等于
+        // 候选 MD5 的就是它（32 位哈希全名精确匹配，误撞概率可忽略）。
+        if matched.count < materials.count,
+           let walked = try? channel.walkFiles(at: container, limit: 20000,
+                                               skipDirNames: neverTouchOrDescend,
+                                               onVisit: { _ in onVisit?() }) {
+            for item in walked { consider(item) }
+        }
+        return result
+    }
+
+    private static func indexTarget(_ item: FileItem, material: CSJIndexParser.Material,
+                                    container: String, ownerBundleID: String, ownerName: String) -> TargetFile {
+        let relative = relativePath(container: container, path: item.path)
+        // 待确认卡按「应用＋目录」成组：索引命中就按文件所在目录成组。
+        let root = (relative as NSString).deletingLastPathComponent
+        // 文案口径：图片只写「索引对上」，不吹成铁证（个别图片的
+        // image_key 与归档链接对不上，是已知先例）；有效期由
+        // expire_seconds（绝对时刻）换算，过期了照样报、只标注。
+        var note = "索引对上，待确认"
+        if let expire = material.expire {
+            if expire > Date() {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "zh_Hans_CN")
+                formatter.dateFormat = "M月d日"
+                note += "；穿山甲开屏还有效到 \(formatter.string(from: expire))"
+            } else {
+                note += "；这条广告记录已过期"
+            }
+        }
+        return TargetFile(path: item.path,
+                          relativePath: relative,
+                          group: csjGroupName,
+                          note: note,
+                          size: item.size,
+                          isSmallConfig: false,
+                          bundleID: ownerBundleID,
+                          appName: ownerName,
+                          viaTemplate: true,
+                          viaIndex: true,
+                          templateRoot: root)
+    }
+
     /// 沿模板逐段往下走：写死的段直接下探，* 段把当前层的子目录挨个试。
     /// 只在模板圈定的邻里里走，不全盘枚举，开销跟模板条数走。
     static func matchTemplateDirectories(container: String, template: String, channel: Channel) -> [String] {

@@ -461,6 +461,9 @@ struct TargetFile: Identifiable, Hashable {
     /// 第 97 条：结构指纹命中的文件。与模板命中同走待确认清单，
     /// viaTemplate 也一并为真，这个标记只用来在卡上区分是哪种命中。
     var viaFingerprint: Bool = false
+    /// 第 98 条：穿山甲索引对上的文件。与模板命中同走待确认清单，
+    /// viaTemplate 也一并为真，这个标记只用来在卡上区分是哪种命中。
+    var viaIndex: Bool = false
     /// 模板/指纹命中的那个目录（相对路径），界面按它成组展示、成组确认。
     var templateRoot: String = ""
 

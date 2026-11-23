@@ -276,7 +276,8 @@ final class AppState: ObservableObject {
     @Published var scanTargets: [TargetFile] = []
     /// 第 95 条：路径模板命中的文件，单独收着待用户确认；确认前不进
     /// 待处理清单、不参与自动清理和守护巡查。第 97 条的结构指纹命中
-    /// 也并进这同一份清单（文件带 viaFingerprint 标记区分）。
+    /// （viaFingerprint）、第 98 条的穿山甲索引命中（viaIndex）也并进
+    /// 这同一份清单，靠文件上的标记区分。
     @Published var templateTargets: [TargetFile] = []
     /// 第 72 条：各广告商累计识别数（落盘；清零、清除扫描都不清）。
     @Published var vendorTotals: [String: Int] = [:]
@@ -505,6 +506,8 @@ final class AppState: ObservableObject {
         var totalSize: UInt64 { files.reduce(0) { $0 + $1.size } }
         /// 第 97 条：这组是结构指纹命中的（不是就是模板命中），卡上据此标一句。
         var isFingerprint: Bool { files.contains { $0.viaFingerprint } }
+        /// 第 98 条：这组是穿山甲索引对上的，卡上据此标一句。
+        var isIndex: Bool { files.contains { $0.viaIndex } }
     }
 
     var templateHitGroups: [TemplateHitGroup] {
@@ -1734,6 +1737,33 @@ final class AppState: ObservableObject {
                         allTemplateTargets.append(file)
                     }
                 }
+                // 第 98 条：穿山甲索引再单独读一遍——拿开屏广告记录里
+                // 存着的素材名单逐个对号，命中的并进同一份待确认清单
+                // （卡上靠 viaIndex 区分）。写死规则已收的、模板/指纹
+                // 已列的按路径去掉，不重复报；索引读不到就当没有，
+                // 不影响扫描。
+                var indexFound = LocalADBlockRule.csjIndexTargets(container: info.path, channel: self.channel,
+                                                                  ownerBundleID: info.bundleID, ownerName: info.name,
+                                                                  onVisit: onVisit)
+                for group in groups where !LocalADBlockRule.shouldIgnoreAppGroup(group.bundleID) {
+                    indexFound.append(contentsOf: LocalADBlockRule.csjIndexTargets(container: group.path, channel: self.channel,
+                                                                                   ownerBundleID: info.bundleID, ownerName: info.name,
+                                                                                   onVisit: onVisit))
+                }
+                let alreadyListed = Set(found.map { $0.path }).union(allTemplateTargets.map { $0.path })
+                indexFound.removeAll { alreadyListed.contains($0.path) }
+                var indexAdded = 0
+                for file in indexFound {
+                    if file.size == 0, self.channel.isImmutable(file.path) {
+                        skippedFrozen += 1
+                    } else {
+                        allTemplateTargets.append(file)
+                        indexAdded += 1
+                    }
+                }
+                if indexAdded > 0 {
+                    self.log("穿山甲索引：\(info.name) 对上 \(indexAdded) 个文件，已列入待确认清单", .info)
+                }
                 // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
                 // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
                 // 识别计数仍按全量 found 算，攒指纹库的数据不失真。
@@ -1795,7 +1825,7 @@ final class AppState: ObservableObject {
                     }
                 }
                 if !allTemplateTargets.isEmpty {
-                    self.log("另有模板/指纹命中 \(allTemplateTargets.count) 个文件：按长相认的，可能认错，已单独列出，确认后才会处理", .notice)
+                    self.log("另有模板/指纹/索引命中 \(allTemplateTargets.count) 个文件：可能认错，已单独列出，确认后才会处理", .notice)
                 }
                 self.log("扫描完成，共 \(allTargets.count) 个素材文件", .success)
                 completion?()
