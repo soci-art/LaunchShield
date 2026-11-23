@@ -156,11 +156,13 @@ struct BackupManager {
         }
 
         let wasImmutable = existing?.isImmutable ?? false
+        var appliedVersion: ChannelFileVersion?
         do {
             if wasImmutable {
                 try channel.setImmutable(target, false)
             }
             try channel.restore(path: target, from: local.path, matching: existingVersion, expectedMD5: previousMD5)
+            appliedVersion = try channel.fileVersion(target)
             let restored = try channel.md5(target)
             guard restored.caseInsensitiveCompare(record.md5) == .orderedSame else {
                 throw ChannelFailure("写回后校验不一致：现在是 \(restored.prefix(8))…，应为 \(record.md5.prefix(8))…")
@@ -178,7 +180,24 @@ struct BackupManager {
             var rollbackCanWrite = true
             var rollbackContentRestored = false
             var rollbackLockRestored = !wasImmutable
-            if wasImmutable {
+            var rollbackIdentityMatches = true
+            let expectedRollbackVersion = appliedVersion ?? existingVersion
+
+            if let expectedRollbackVersion {
+                do {
+                    let currentVersion = try channel.fileVersion(target)
+                    guard currentVersion.isSameObject(as: expectedRollbackVersion) else {
+                        throw ChannelFailure("目标文件身份已变化")
+                    }
+                } catch {
+                    rollbackIdentityMatches = false
+                    rollbackCanWrite = false
+                    rollbackLockRestored = false
+                    rollbackResult = "目标文件身份已变化，自动回滚停止：\(error.localizedDescription)"
+                }
+            }
+
+            if wasImmutable && rollbackCanWrite {
                 do {
                     try channel.setImmutable(target, false)
                 } catch {
@@ -186,41 +205,75 @@ struct BackupManager {
                     rollbackResult = "无法解冻目标，自动回滚未执行：\(error.localizedDescription)"
                 }
             }
+
             if rollbackCanWrite, let rollbackFile, let previousMD5 {
                 do {
-                    try channel.restore(path: target, from: rollbackFile.path)
+                    let currentVersion = try channel.fileVersion(target)
                     let digest = try channel.md5(target)
-                    guard digest.caseInsensitiveCompare(previousMD5) == .orderedSame else {
-                        throw ChannelFailure("回滚后的 MD5 不一致")
+                    if digest.caseInsensitiveCompare(previousMD5) == .orderedSame {
+                        rollbackResult = "原文件内容仍在，跳过覆盖回滚"
+                        rollbackContentRestored = true
+                    } else {
+                        guard let appliedVersion,
+                              currentVersion.isSameObject(as: appliedVersion),
+                              digest.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                            throw ChannelFailure("目标文件已被外部修改，拒绝自动覆盖回滚")
+                        }
+                        try channel.restore(path: target, from: rollbackFile.path,
+                                            matching: appliedVersion, expectedMD5: record.md5)
+                        let rollbackDigest = try channel.md5(target)
+                        guard rollbackDigest.caseInsensitiveCompare(previousMD5) == .orderedSame else {
+                            throw ChannelFailure("回滚后的 MD5 不一致")
+                        }
+                        rollbackResult = "已恢复原文件"
+                        rollbackContentRestored = true
                     }
-                    rollbackResult = "已恢复原文件"
-                    rollbackContentRestored = true
                 } catch {
                     rollbackResult = "自动回滚失败：\(error.localizedDescription)"
                 }
             } else if rollbackCanWrite, existing == nil {
                 do {
-                    if try channel.inspectItem(at: target) != nil { try channel.delete(target) }
-                    rollbackResult = "已清理本次创建的残留文件"
-                    rollbackContentRestored = true
+                    if let appliedVersion {
+                        let currentVersion = try channel.fileVersion(target)
+                        let digest = try channel.md5(target)
+                        guard currentVersion.isSameObject(as: appliedVersion),
+                              digest.caseInsensitiveCompare(record.md5) == .orderedSame else {
+                            throw ChannelFailure("目标路径已被外部修改，未自动删除")
+                        }
+                        rollbackResult = "目标原先不存在；本次恢复文件保留，未自动删除"
+                    } else {
+                        guard try channel.inspectItem(at: target) == nil else {
+                            throw ChannelFailure("目标原先不存在，但当前路径出现文件，未自动删除")
+                        }
+                        rollbackResult = "目标原先不存在，当前仍不存在"
+                        rollbackContentRestored = true
+                    }
                 } catch {
-                    rollbackResult = "清理残留文件失败：\(error.localizedDescription)"
+                    rollbackResult = "目标原先不存在；未执行自动删除：\(error.localizedDescription)"
                 }
             }
+
             if wasImmutable {
-                do {
-                    try channel.setImmutable(target, true)
-                    guard channel.isImmutable(target) else { throw ChannelFailure("冻结状态校验失败") }
-                    rollbackResult += "；原冻结状态已恢复"
-                    rollbackLockRestored = true
-                } catch {
-                    rollbackResult += "；警告：原冻结状态恢复失败：\(error.localizedDescription)"
+                if rollbackIdentityMatches {
+                    do {
+                        try channel.setImmutable(target, true)
+                        guard channel.isImmutable(target) else { throw ChannelFailure("冻结状态校验失败") }
+                        rollbackResult += "；原冻结状态已恢复"
+                        rollbackLockRestored = true
+                    } catch {
+                        rollbackResult += "；警告：原冻结状态恢复失败：\(error.localizedDescription)"
+                    }
+                } else {
+                    rollbackResult += "；目标身份已变化，未对当前路径修改冻结状态"
                 }
             }
+
             if rollbackContentRestored && rollbackLockRestored {
                 try? FileManager.default.removeItem(at: rollbackDirectory)
-            } else {
+            } else if rollbackFile != nil {
                 rollbackResult += "；回滚快照已保留供手动恢复：\(rollbackDirectory.path)"
+            } else {
+                rollbackResult += "；未删除当前路径文件，避免误删"
             }
             throw ChannelFailure("恢复失败：\(error.localizedDescription)；\(rollbackResult)")
         }
