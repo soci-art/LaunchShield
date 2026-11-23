@@ -369,6 +369,35 @@ enum LaunchImageHint {
     }
 }
 
+struct ChannelFileVersion: Codable, Hashable {
+    let device: UInt64
+    let inode: UInt64
+    let size: UInt64
+    let modifiedSeconds: Int64
+    let modifiedNanoseconds: Int64
+    let changedSeconds: Int64
+    let changedNanoseconds: Int64
+
+    init?(channelValues: [String: NSNumber]) {
+        guard let device = channelValues["device"], let inode = channelValues["inode"],
+              let size = channelValues["size"], let modifiedSeconds = channelValues["modifiedSeconds"],
+              let modifiedNanoseconds = channelValues["modifiedNanoseconds"],
+              let changedSeconds = channelValues["changedSeconds"],
+              let changedNanoseconds = channelValues["changedNanoseconds"] else { return nil }
+        self.device = device.uint64Value; self.inode = inode.uint64Value; self.size = size.uint64Value
+        self.modifiedSeconds = modifiedSeconds.int64Value; self.modifiedNanoseconds = modifiedNanoseconds.int64Value
+        self.changedSeconds = changedSeconds.int64Value; self.changedNanoseconds = changedNanoseconds.int64Value
+    }
+
+    var channelValues: [String: NSNumber] {
+        ["device": NSNumber(value: device), "inode": NSNumber(value: inode), "size": NSNumber(value: size),
+         "modifiedSeconds": NSNumber(value: modifiedSeconds), "modifiedNanoseconds": NSNumber(value: modifiedNanoseconds),
+         "changedSeconds": NSNumber(value: changedSeconds), "changedNanoseconds": NSNumber(value: changedNanoseconds)]
+    }
+
+    func isSameObject(as other: ChannelFileVersion) -> Bool { device == other.device && inode == other.inode }
+}
+
 struct BackupRecord: Codable, Identifiable, Hashable {
     let id: UUID
     let bundleID: String
@@ -381,6 +410,8 @@ struct BackupRecord: Codable, Identifiable, Hashable {
     let md5: String
     let createdAt: Date
     let source: String
+    /// Exact source identity/version captured before backup; nil only for legacy records.
+    var sourceVersion: ChannelFileVersion? = nil
 
     var sizeText: String { Format.bytes(originalSize) }
     var shortMD5: String { String(md5.prefix(8)) }

@@ -12,9 +12,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// YES on the builds the chain was verified on: iOS 17.0-17.7.x and
-/// 18.0-18.7.1. Everywhere else the chain is not offered at all.
+/// YES on supported OS/device combinations: iOS 17.0-17.7.x (except A10)
+/// and iOS 18.0-18.7.1. Unknown combinations fail closed.
 BOOL wq_kernel_supported(void);
+BOOL wq_kernel_unsupported_a10_ios17(void);
 
 /// YES once the chain has run in this process and the sandbox is gone.
 /// Cheap: it only reads the cached result.

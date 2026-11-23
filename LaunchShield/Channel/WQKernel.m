@@ -13,7 +13,9 @@
 #import "WQAccess.h"
 #import "kexploit/kexploit_opa334.h"
 #import "kexploit/kutils.h"
+#import "kexploit/machine_info.h"
 #import "kexploit/sandbox_escape.h"
+#import <sys/sysctl.h>
 
 static NSLock *gKernelLock;
 static BOOL gKernelActive;
@@ -29,10 +31,20 @@ static NSLock *wq_kernel_lock(void)
     return lock;
 }
 
+BOOL wq_kernel_unsupported_a10_ios17(void)
+{
+    NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
+    if (v.majorVersion != 17) return NO;
+    uint32_t family = 0;
+    size_t size = sizeof(family);
+    if (sysctlbyname("hw.cpufamily", &family, &size, NULL, 0) != 0 || size != sizeof(family)) return NO;
+    return family == CPUFAMILY_ARM_HURRICANE;
+}
+
 BOOL wq_kernel_supported(void)
 {
     NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
-    if (v.majorVersion == 17) return v.minorVersion <= 7;
+    if (v.majorVersion == 17) return v.minorVersion <= 7 && !wq_kernel_unsupported_a10_ios17();
     if (v.majorVersion == 18) {
         return v.minorVersion < 7 || (v.minorVersion == 7 && v.patchVersion <= 1);
     }

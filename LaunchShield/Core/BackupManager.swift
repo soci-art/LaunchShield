@@ -26,6 +26,8 @@ struct BackupManager {
         guard let item = try channel.inspectItem(at: path), !item.isDirectory, !item.isSymlink else {
             throw ChannelFailure("目标不是普通文件（或是符号链接），已取消备份")
         }
+        let sourceVersion = try channel.fileVersion(path)
+        guard sourceVersion.size == item.size else { throw ChannelFailure("目标文件在备份前发生变化，已取消备份") }
         let id = UUID()
         let fileName = (relativePath as NSString).lastPathComponent
         guard Self.isSafeFileName(fileName) else {
@@ -44,19 +46,23 @@ struct BackupManager {
             try Self.validateLocalBackup(local, expectedSize: item.size)
             let copiedMD5 = try BackupManager.md5(of: local)
             let sourceMD5 = try channel.md5(path)
+            let finalVersion = try channel.fileVersion(path)
+            guard finalVersion == sourceVersion else { throw ChannelFailure("备份期间目标文件身份或内容发生变化，已放弃这次备份") }
             guard copiedMD5 == sourceMD5 else {
                 throw ChannelFailure("备份校验不一致，已放弃这次备份（没有改动目标文件）")
             }
-            return BackupRecord(id: id,
-                                bundleID: bundleID,
-                                groupID: groupID,
-                                appName: appName,
-                                relativePath: relativePath,
-                                localFileName: fileName,
-                                originalSize: item.size,
-                                md5: sourceMD5,
-                                createdAt: Date(),
-                                source: source)
+            var record = BackupRecord(id: id,
+                                       bundleID: bundleID,
+                                       groupID: groupID,
+                                       appName: appName,
+                                       relativePath: relativePath,
+                                       localFileName: fileName,
+                                       originalSize: item.size,
+                                       md5: sourceMD5,
+                                       createdAt: Date(),
+                                       source: source)
+            record.sourceVersion = sourceVersion
+            return record
         } catch {
             try? FileManager.default.removeItem(at: directory)
             if let failure = error as? ChannelFailure { throw failure }
@@ -99,6 +105,7 @@ struct BackupManager {
 
         let target = container + "/" + record.relativePath
         let existing = try channel.inspectItem(at: target)
+        var existingVersion: ChannelFileVersion?
         if let existing, existing.isSymlink {
             throw ChannelFailure("目标是符号链接，拒绝覆盖")
         }
@@ -123,6 +130,8 @@ struct BackupManager {
         var previousMD5: String?
         if let existing {
             do {
+                let versionBeforeSnapshot = try channel.fileVersion(target)
+                guard versionBeforeSnapshot.size == existing.size else { throw ChannelFailure("恢复前目标文件身份或大小发生变化") }
                 try FileManager.default.createDirectory(at: rollbackDirectory,
                                                         withIntermediateDirectories: true)
                 try Self.validateBackupDirectory(rollbackDirectory, root: store.backupRoot)
@@ -134,6 +143,9 @@ struct BackupManager {
                 guard sourceDigest.caseInsensitiveCompare(copiedDigest) == .orderedSame else {
                     throw ChannelFailure("恢复前快照校验失败，目标未改动")
                 }
+                let versionAfterSnapshot = try channel.fileVersion(target)
+                guard versionAfterSnapshot == versionBeforeSnapshot else { throw ChannelFailure("恢复前目标文件在快照期间发生变化，已取消恢复") }
+                existingVersion = versionBeforeSnapshot
                 rollbackFile = snapshot
                 previousMD5 = sourceDigest
             } catch {
@@ -148,7 +160,7 @@ struct BackupManager {
             if wasImmutable {
                 try channel.setImmutable(target, false)
             }
-            try channel.restore(path: target, from: local.path)
+            try channel.restore(path: target, from: local.path, matching: existingVersion, expectedMD5: previousMD5)
             let restored = try channel.md5(target)
             guard restored.caseInsensitiveCompare(record.md5) == .orderedSame else {
                 throw ChannelFailure("写回后校验不一致：现在是 \(restored.prefix(8))…，应为 \(record.md5.prefix(8))…")

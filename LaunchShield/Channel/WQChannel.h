@@ -104,14 +104,17 @@ skipDirSubstrings:(nullable NSArray<NSString *> *)skipDirSubstrings
    skipAccountDirs:(BOOL)skipAccountDirs
            progress:(nullable void (^)(NSInteger visited))progress;
 - (WQOp *)statPath:(NSString *)path;
+- (WQOp *)fileVersion:(NSString *)path;
 - (WQOp *)readFile:(NSString *)path maxBytes:(NSUInteger)maxBytes;
 
 /// In-place overwrite of an existing file (backed up by WQAccess first).
 - (WQOp *)writeData:(NSString *)path data:(NSData *)data;
 /// In-place 0-byte truncation; the 0-byte replacement the app is built around.
 - (WQOp *)truncateFile:(NSString *)path;
+- (WQOp *)truncateFile:(NSString *)path expectingVersion:(NSDictionary<NSString *, NSNumber *> *)version;
 /// Streams a local file over the target (restore of an existing file).
 - (WQOp *)writeFromLocalFile:(NSString *)path source:(NSString *)source;
+- (WQOp *)writeFromLocalFile:(NSString *)path source:(NSString *)source expectingVersion:(NSDictionary<NSString *, NSNumber *> *)version;
 /// Creates the target from a local file when it no longer exists (restore
 /// after a placeholder or a deletion); leaves no partial file on failure.
 - (WQOp *)createFromLocalFile:(NSString *)path source:(NSString *)source;

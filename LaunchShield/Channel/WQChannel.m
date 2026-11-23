@@ -203,7 +203,8 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
         case WQRouteStateUnset:
             return @"尚未识别访问通道";
         case WQRouteStateUnsupported:
-            return @"当前 iOS 版本或构建号不在 WQFiles 已验证范围内";
+            if (wq_kernel_unsupported_a10_ios17()) return @"A10 + iOS 17 组合未纳入已验证范围，已阻止启动内核链路";
+            return @"当前 iOS 版本、构建号或机型组合不在已验证范围内";
     }
     return @"没有拿到";
 }
@@ -240,6 +241,8 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
             if (wq_kernel_failed()) return @"内核链路没启动成功：重启应用后再点一次「启动内核链路」。";
             return @"内核链路还没启动：点主页的「启动内核链路」。启动要 10–30 秒，失败时应用可能会重启一次。";
         case WQRouteStateUnsupported: {
+            if (wq_kernel_unsupported_a10_ios17())
+                return @"当前设备为 A10 且运行 iOS 17；该组合未纳入已验证范围，已阻止启动内核链路。";
             if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26) {
                 return @"系统不支持：内核链路只支持 iOS 17.0–18.7.1，你现在的系统用不了这条路线。";
             }
@@ -548,6 +551,13 @@ skipDirSubstrings:(NSArray<NSString *> *)skipDirSubstrings
     return [WQOp ok:item];
 }
 
+- (WQOp *)fileVersion:(NSString *)path
+{
+    NSDictionary<NSString *, NSNumber *> *version = wq_file_version(path);
+    if (!version) return [WQOp fail:@"无法读取普通文件身份或版本信息"];
+    return [WQOp ok:version];
+}
+
 - (WQOp *)readFile:(NSString *)path maxBytes:(NSUInteger)maxBytes
 {
     NSString *error = nil;
@@ -574,6 +584,14 @@ skipDirSubstrings:(NSArray<NSString *> *)skipDirSubstrings
     return [WQOp ok:@(0)];
 }
 
+- (WQOp *)truncateFile:(NSString *)path expectingVersion:(NSDictionary<NSString *,NSNumber *> *)version
+{
+    NSString *error = nil;
+    if (!version || !wq_write_if_unchanged(path, [NSData data], version, &error))
+        return [WQOp fail:[self messageFor:error fallback:@"目标文件身份或内容已变化，已取消去除"]];
+    return [WQOp ok:@(0)];
+}
+
 
 - (WQOp *)writeFromLocalFile:(NSString *)path source:(NSString *)source
 {
@@ -581,6 +599,14 @@ skipDirSubstrings:(NSArray<NSString *> *)skipDirSubstrings
     if (!wq_write_from_file(path, source, &error)) {
         return [WQOp fail:[self messageFor:error fallback:@"写回失败"]];
     }
+    return [WQOp ok:nil];
+}
+
+- (WQOp *)writeFromLocalFile:(NSString *)path source:(NSString *)source expectingVersion:(NSDictionary<NSString *,NSNumber *> *)version
+{
+    NSString *error = nil;
+    if (!version || !wq_write_from_file_if_unchanged(path, source, version, &error))
+        return [WQOp fail:[self messageFor:error fallback:@"目标文件身份或内容已变化，已取消恢复"]];
     return [WQOp ok:nil];
 }
 

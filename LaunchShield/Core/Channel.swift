@@ -138,14 +138,49 @@ final class Channel {
         guard op.ok else { throw ChannelFailure(op.error ?? "去除失败") }
     }
 
+    func fileVersion(_ path: String) throws -> ChannelFileVersion {
+        let op = raw.fileVersion(path)
+        guard op.ok, let values = op.value as? [String: NSNumber],
+              let version = ChannelFileVersion(channelValues: values) else {
+            throw ChannelFailure(op.error ?? "无法读取文件身份或版本信息")
+        }
+        return version
+    }
+
+    func truncate(_ path: String, matching sourceVersion: ChannelFileVersion?, expectedMD5: String) throws {
+        guard let sourceVersion else { throw ChannelFailure("备份缺少文件身份记录，已取消去除") }
+        let currentVersion = try fileVersion(path)
+        guard currentVersion.isSameObject(as: sourceVersion) else { throw ChannelFailure("目标文件已被替换，已取消去除") }
+        let currentMD5 = try md5(path)
+        guard currentMD5.caseInsensitiveCompare(expectedMD5) == .orderedSame else {
+            throw ChannelFailure("目标文件内容已变化，已取消去除")
+        }
+        let op = raw.truncateFile(path, expectingVersion: currentVersion.channelValues)
+        guard op.ok else { throw ChannelFailure(op.error ?? "目标文件已变化，取消去除") }
+    }
+
 
     func restore(path: String, from localPath: String) throws {
-        // Overwriting needs the existing inode; a file that was deleted (for a
-        // same-name placeholder, or a recipe that lost it) has to be created.
+        // Legacy unconditional path retained for rollback of a failed restore transaction.
         let op = raw.fileExists(path)
             ? raw.write(fromLocalFile: path, source: localPath)
             : raw.create(fromLocalFile: path, source: localPath)
         guard op.ok else { throw ChannelFailure(op.error ?? "写回失败") }
+    }
+
+    func restore(path: String, from localPath: String, matching sourceVersion: ChannelFileVersion?, expectedMD5: String?) throws {
+        let op: WQOp
+        if let sourceVersion {
+            let currentVersion = try fileVersion(path)
+            guard currentVersion.isSameObject(as: sourceVersion), let expectedMD5,
+                  (try md5(path)).caseInsensitiveCompare(expectedMD5) == .orderedSame else {
+                throw ChannelFailure("恢复目标文件身份或内容已变化，已取消覆盖")
+            }
+            op = raw.write(fromLocalFile: path, source: localPath, expectingVersion: currentVersion.channelValues)
+        } else {
+            op = raw.create(fromLocalFile: path, source: localPath)
+        }
+        guard op.ok else { throw ChannelFailure(op.error ?? "目标文件已变化，取消恢复") }
     }
 
     func copyToLocal(path: String, destination: String) throws {
