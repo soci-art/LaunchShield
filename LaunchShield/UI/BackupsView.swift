@@ -106,7 +106,7 @@ struct BackupsView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("会先把备份恢复回文件，再删除备份；恢复失败的那几份会留着不删，并告诉你。数据库文件的备份还原不了、会直接删除。")
+            Text("会先把备份恢复回文件，再删除备份；恢复失败的那几份会留着不删，并告诉你。数据库文件的备份还原不了、会直接删除；原来的位置已不存在的，也会直接删除。")
         }
         .confirmationDialog("确定要删除这个应用的全部备份吗？", isPresented: Binding(
             get: { appToDelete != nil },
@@ -118,7 +118,7 @@ struct BackupsView: View {
             }
             Button("取消", role: .cancel) { appToDelete = nil }
         } message: {
-            Text("只动这个应用的备份，其他应用的不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删。")
+            Text("只动这个应用的备份，其他应用的不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删（原来的位置已不存在的直接删除）。")
         }
         .confirmationDialog("把选中的备份批量还原吗？", isPresented: $showBatchRestore, titleVisibility: .visible) {
             Button("还原选中的 \(selectedIDs.count) 份") {
@@ -138,7 +138,7 @@ struct BackupsView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("只删选中的这些，其他备份不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删。")
+            Text("只删选中的这些，其他备份不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删（原来的位置已不存在的直接删除）。")
         }
         .confirmationDialog("确定要删除这份备份吗？", isPresented: Binding(
             get: { recordToDelete != nil },
@@ -150,7 +150,7 @@ struct BackupsView: View {
             }
             Button("取消", role: .cancel) { recordToDelete = nil }
         } message: {
-            Text("会先把这份备份恢复回文件，再删除它；恢复失败就留着不删，并告诉你。")
+            Text("会先把这份备份恢复回文件，再删除它；恢复失败就留着不删，并告诉你（原来的位置已不存在的直接删除）。")
         }
     }
 
