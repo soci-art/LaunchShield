@@ -63,8 +63,7 @@ static NSString *wq_route_hardware_model_text(void)
 
 // Upstream WQFiles support window: iOS 26.0-26.7.2 and iOS 27.0 through
 // 27.3 beta 1. Apple fixed worse_query in 27.3 beta 2 (24C5049d).
-// iOS 17/18 intentionally remain unsupported here until a separately
-// validated backend exists; do not route them through either legacy backend.
+// iOS 17/18 use the separately gated kernel chain, not either query backend.
 // Unknown/newer builds fail closed instead of assuming compatibility.
 static BOOL wq_route_version_supports_worse_query(void)
 {
@@ -182,6 +181,8 @@ NSString *wq_route_detail(void)
         case WQRouteStateKernel:
             return [NSString stringWithFormat:@"内核链路（iOS %@，不需要共享组，要手动启动）", version];
         case WQRouteStateUnsupported:
+            if (wq_kernel_unsupported_a10_ios17())
+                return @"系统不支持（A10 + iOS 17 组合未纳入已验证范围，已阻止启动内核链路）";
             if (wq_route_version().majorVersion < 26) {
                 return [NSString stringWithFormat:@"系统不支持（iOS %@%@，内核链路只支持 iOS 17.0–18.7.1）", version,
                         build.length ? [NSString stringWithFormat:@"，构建 %@", build] : @""];

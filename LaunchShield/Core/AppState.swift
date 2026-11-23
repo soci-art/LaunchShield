@@ -2104,7 +2104,7 @@ final class AppState: ObservableObject {
                         guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
                             throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                         }
-                        try self.channel.truncate(targetFile.path)
+                        try self.channel.truncate(targetFile.path, matching: record.sourceVersion, expectedMD5: record.md5)
                         done += 1
                         self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
                         // 清零过的都登记进守护名单，不再挑组：以前只有「软件自营」
@@ -2839,7 +2839,7 @@ final class AppState: ObservableObject {
                     guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
                         throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                     }
-                    try self.channel.truncate(full)
+                    try self.channel.truncate(full, matching: record.sourceVersion, expectedMD5: record.md5)
                     var frozen = false
                     do {
                         self.freezePaceTick(&freezePace)
@@ -3292,7 +3292,7 @@ final class AppState: ObservableObject {
                 guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
                     throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                 }
-                try self.channel.truncate(full)
+                try self.channel.truncate(full, matching: record.sourceVersion, expectedMD5: record.md5)
                 var frozen = false
                 var freezeFailure: String?
                 do {
@@ -3502,7 +3502,7 @@ final class AppState: ObservableObject {
                     guard preWriteMD5.caseInsensitiveCompare(originalMD5) == .orderedSame else {
                         throw ChannelFailure("备份后目标文件内容发生变化，已取消重新去除")
                     }
-                    try self.channel.truncate(full)
+                    try self.channel.truncate(full, matching: originalVersion, expectedMD5: originalMD5)
                     if wasImmutable {
                         try self.channel.setImmutable(full, true)
                         guard self.channel.isImmutable(full) else {
@@ -3888,7 +3888,7 @@ final class AppState: ObservableObject {
                         guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
                             throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
                         }
-                        try self.channel.truncate(full)
+                        try self.channel.truncate(full, matching: record.sourceVersion, expectedMD5: record.md5)
                         try self.channel.setImmutable(full, true)
                         guard self.channel.isImmutable(full) else { throw ChannelFailure("文件已去除，但冻结状态未能确认") }
                     } catch {
@@ -4390,7 +4390,7 @@ final class AppState: ObservableObject {
             guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
                 throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
             }
-            try channel.truncate(file.path)
+            try channel.truncate(file.path, matching: record.sourceVersion, expectedMD5: record.md5)
             var frozen = false
             do {
                 try channel.setImmutable(file.path, true)
