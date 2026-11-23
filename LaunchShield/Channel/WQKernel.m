@@ -131,11 +131,14 @@ BOOL wq_kernel_start(void)
 
     // Stage 2: patch this process's sandbox so ordinary file calls reach
     // every container. Without it LaunchShield cannot read other apps' data.
+    // The escape works from the credential, so a proc that cannot be resolved
+    // (so_background_thread is 0 on iOS 17/18) is no longer fatal: the
+    // credential our own socket carries is the object the sandbox lives in.
     wq_log(@"kernel: stage 2/2, sandbox escape (sandbox_escape)");
     uint64_t selfProc = proc_self();
     // sandbox_escape() already writes, reads back and deletes probe files; it
     // returns 0 only when that probe passed, so trust it here.
-    int escape = selfProc ? sandbox_escape(selfProc) : -1;
+    int escape = sandbox_escape(selfProc);
     BOOL active = escape == 0;
 
     [lock lock];
@@ -147,7 +150,7 @@ BOOL wq_kernel_start(void)
     if (active) {
         wq_log(@"kernel: sandbox escaped; full filesystem read/write is available");
     } else if (selfProc == 0) {
-        wq_log(@"kernel: proc_self() returned 0; the chain is not active");
+        wq_log(@"kernel: proc_self() returned 0 and the socket credential did not escape; the chain is not active");
     } else {
         wq_log(@"kernel: sandbox_escape returned %d; the chain is not active", escape);
     }
