@@ -2,6 +2,7 @@ import Foundation
 import UIKit
 import ImageIO
 import AVFoundation
+import UserNotifications
 
 
 /// 更新提醒的种类：应用新版或规则新版（清单第 12 条）。
@@ -710,9 +711,40 @@ final class AppState: ObservableObject {
                                 ? "复查完成：清掉 \(cleared) 个新冒出来的广告文件，都已备份并冻结"
                                 : "复查完成：没有新冒出来的广告文件"
                             self.log("快捷指令复查：\(text)", .notice)
+                            self.notifyShortcutRecheckFinished(cleared: cleared)
                             completion(text)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// 第 106 条：快捷指令复查真正干完时发一条本地通知报数。
+    /// 挂在补扫完成上——意图 25 秒超时先收尾的那条路也会走到
+    /// 这里，报的是真数。没拿到通知权限就静默跳过，只记日志；
+    /// 权限由用户在教程第 6 步的按钮里预先点好（后台唤起时
+    /// 弹不出授权框）。
+    private func notifyShortcutRecheckFinished(cleared: Int) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { [weak self] settings in
+            guard settings.authorizationStatus == .authorized
+                    || settings.authorizationStatus == .provisional else {
+                self?.log("快捷指令复查：通知没授权，这次没弹通知", .info)
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = "复查完成"
+            content.body = cleared > 0
+                ? "这一轮清理了 \(cleared) 个新冒出来的广告文件，都已备份并冻结。"
+                : "这一轮没有新的复发广告。"
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: "shortcut-recheck-\(UUID().uuidString)",
+                content: content, trigger: nil)
+            center.add(request) { error in
+                if let error {
+                    self?.log("快捷指令复查：通知没发出去：\(error.localizedDescription)", .warning)
                 }
             }
         }

@@ -109,7 +109,7 @@ struct AppPickerView: View {
             Spacer()
             if state.isWhitelisted(container.bundleID) {
                 StatusBadge(text: "已排除", tint: .orange)
-            } else if container.bundleID == state.target.bundleID {
+            } else if state.targetChosen, container.bundleID == state.target.bundleID {
                 StatusBadge(text: "当前", tint: .cyan)
             }
         }
