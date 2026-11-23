@@ -1299,6 +1299,7 @@ final class AppState: ObservableObject {
             completion?()
             return
         }
+        log("诊断[容器] 开始刷新：route=\(channel.routeName)，detail=\(channel.routeDetail)")
         work.async {
             let all = self.channel.containers()
             // 把自己从容器列表里拿掉：选择应用、一键勾选、扫描、找广告、
@@ -1312,6 +1313,7 @@ final class AppState: ObservableObject {
                 self.containers = list
                 self.groupContainers = groups
                 self.didLoadContainers = true
+                self.log("诊断[容器] 刷新完成：应用容器 \(list.count) 个，共享组容器 \(groups.count) 个")
                 self.loadAppIconsIfNeeded()
                 if list.isEmpty {
                     self.log("没有读到应用容器列表，可能是系统版本不支持或权限被拒", .warning)
@@ -1487,16 +1489,22 @@ final class AppState: ObservableObject {
 
     /// 一个文件所在的文件夹（容器内相对路径）；在容器根目录、
     /// 路径不安全或属于大区根时返回 nil，不登记守护。
+    /// 只有明确属于广告 SDK 专属缓存根的目录才允许自动整夹守护。
+    /// 普通缓存、用户内容目录和仅靠关键词猜中的目录不冻结。
+    static func isSafeAdGuardDirectory(_ parent: String) -> Bool {
+        guard !parent.isEmpty,
+              RecipeEngine.isSafeRelativePath(parent),
+              !genericGuardParents.contains(parent),
+              !parent.contains("WebKit") else { return false }
+        var roots = LocalADBlockRule.thirdPartyCacheGroups.flatMap { $0.directories }
+        roots.append(LocalADBlockRule.splashCacheRoot)
+        return roots.contains { parent == $0 || parent.hasPrefix($0 + "/") }
+    }
+
     static func guardParentDirectory(of relativePath: String) -> String? {
         guard let slash = relativePath.lastIndex(of: "/") else { return nil }
         let parent = String(relativePath[..<slash])
-        guard !parent.isEmpty,
-              RecipeEngine.isSafeRelativePath(parent),
-              !genericGuardParents.contains(parent) else { return nil }
-        // WebKit 的缓存是应用网页内容的命脉，整夹冻容易把应用
-        // 弄坏（清单第 52 条边界：这类单独定口径），不自动守护。
-        if parent.contains("WebKit") { return nil }
-        return parent
+        return isSafeAdGuardDirectory(parent) ? parent : nil
     }
 
     /// 按一个文件生成它所在文件夹的守护记录；不适合整夹管的返回 nil。
@@ -1734,6 +1742,11 @@ final class AppState: ObservableObject {
             return
         }
         let singleNetdisk = scanSet.count == 1 && scanSet[0].bundleID == LocalADBlockRule.dynamicSplashBundleID
+        let ruleGroups = LocalADBlockRule.thirdPartyCacheGroups
+        let ruleDirectoryCount = ruleGroups.reduce(0) { $0 + $1.directories.count }
+        let ruleTemplateCount = ruleGroups.reduce(0) { $0 + $1.templates.count }
+        let ruleFingerprintCount = ruleGroups.reduce(0) { $0 + $1.fingerprints.count }
+        log("诊断[扫描] 开始：目标应用 \(scanSet.count) 个，规则版本 \(RulesStore.currentDisplayVersion)，SDK组 \(ruleGroups.count)，固定目录 \(ruleDirectoryCount)，模板 \(ruleTemplateCount)，指纹 \(ruleFingerprintCount)，关键词 \(RulesStore.keywords.count)")
         isBusy = true
         busyText = scanSet.count == 1 ? "正在扫描\(scanSet[0].name)的素材…" : "正在扫描 \(scanSet.count) 个应用的素材…"
         workProgress = WorkProgress(label: busyText, done: 0,
@@ -1853,6 +1866,7 @@ final class AppState: ObservableObject {
                 // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
                 // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
                 // 识别计数仍按全量 found 算，攒指纹库的数据不失真。
+                self.log("诊断[扫描] \(info.name)（\(info.bundleID)）：固定规则命中 \(found.count) 个，模板/指纹/索引待确认 \(templateFound.count + fingerprintFound.count + indexAdded) 个")
                 for file in found {
                     if file.size == 0, self.channel.isImmutable(file.path) {
                         skippedFrozen += 1
@@ -1969,41 +1983,6 @@ final class AppState: ObservableObject {
         performClear()
     }
 
-    /// 第 52 条：清零按文件夹扩展——某个待清文件所在的文件夹里，
-    /// 其他文件一并纳入这次清零（整夹一起备份、截断、冻结），
-    /// 不再只清被点名的那几个文件。必须在后台队列调用。
-    private func expandedWithFolderSiblings(_ targets: [TargetFile]) -> [TargetFile] {
-        var result = targets
-        var seen = Set(targets.map { $0.path })
-        var walkedDirs = Set<String>()
-        var added = 0
-        for target in targets {
-            guard added < 800,
-                  let parentRelative = AppState.guardParentDirectory(of: target.relativePath),
-                  let slash = target.relativePath.lastIndex(of: "/") else { continue }
-            let fileName = String(target.relativePath[target.relativePath.index(after: slash)...])
-            let parentFull = String(target.path.dropLast(fileName.count + 1))
-            guard walkedDirs.insert(parentFull).inserted,
-                  let items = try? channel.walkFiles(at: parentFull, limit: 2000) else { continue }
-            for item in items where !item.isDirectory && !item.isSymlink && !seen.contains(item.path) {
-                guard added < 800 else { break }
-                let suffix = item.path.hasPrefix(parentFull + "/")
-                    ? String(item.path.dropFirst(parentFull.count + 1)) : item.name
-                seen.insert(item.path)
-                result.append(TargetFile(path: item.path,
-                                         relativePath: parentRelative + "/" + suffix,
-                                         group: target.group, note: "同文件夹整夹处理",
-                                         size: item.size, isSmallConfig: false,
-                                         bundleID: target.bundleID, appName: target.appName))
-                added += 1
-            }
-        }
-        if added > 0 {
-            log("按文件夹整夹处理：同一文件夹里另带出 \(added) 个文件一起清零", .notice)
-        }
-        return result
-    }
-
     /// 第 83 条：冻结分批限速。清零收尾一口气连冻上百个文件和
     /// 文件夹时，通道操作在一秒内密集打出，界面出过重影（构建
     /// 39 真机复现：那场清零截断 0 个、失败 0 个，唯一的大动作
@@ -2036,8 +2015,6 @@ final class AppState: ObservableObject {
         log("开始清零：\(targets.count) 个文件，逐个先备份再截断", .notice)
 
         work.async {
-            // 第 52 条：先按文件夹把同夹文件带进来，整夹一起清。
-            let targets = self.expandedWithFolderSiblings(targets)
             self.reportWorkProgress(label: "去除中", done: 0, total: targets.count)
             var done = 0
             var frozenCount = 0
@@ -4253,9 +4230,14 @@ final class AppState: ObservableObject {
         var newRecipes: [Recipe] = []
         var newGuards: [DirectoryGuard] = []
         for bundleID in bundleIDs {
-            guard cleared < 300, let info = channel.container(for: bundleID) else { continue }
+            guard cleared < 300 else { break }
+            guard let info = channel.container(for: bundleID) else {
+                log("诊断[守护补扫] 找不到容器，跳过：\(bundleID)", .warning)
+                continue
+            }
             let files = LocalADBlockRule.targets(container: info.path, channel: channel, splash: nil,
                                              ownerBundleID: info.bundleID, ownerName: info.name)
+            log("诊断[守护补扫] \(info.name)：固定规则发现 \(files.count) 个候选")
             for file in files where file.size > 0 {
                 guard cleared < 300 else { break }
                 // 数据库文件是应用的统计/索引库，常驻占用、清不动，也不是广告素材，跳过。
@@ -4272,6 +4254,10 @@ final class AppState: ObservableObject {
             // 文件先一并清掉，清完再把文件夹冻回去（顺序反了，
             // 冻住的文件夹可能挡住清零本身）。
             for guardItem in directoryGuards where guardItem.bundleID == bundleID {
+                guard Self.isSafeAdGuardDirectory(guardItem.relativePath) else {
+                    log("跳过旧版宽范围目录守护（不在已知广告 SDK 专属目录内）：\(info.name) · \(guardItem.relativePath)", .notice)
+                    continue
+                }
                 guard cleared < 300,
                       let root = channel.rootPath(bundleID: guardItem.bundleID, groupID: guardItem.groupID) else { continue }
                 let folderFull = root + "/" + guardItem.relativePath
@@ -4282,7 +4268,8 @@ final class AppState: ObservableObject {
                     log("守护文件夹已不存在，跳过：\(info.name) · \(guardItem.relativePath)", .info)
                     continue
                 }
-                if let items = try? channel.walkFiles(at: folderFull, limit: 2000) {
+                do {
+                    let items = try channel.walkFiles(at: folderFull, limit: 2000)
                     for item in items where !item.isDirectory && !item.isSymlink && item.size > 0 {
                         guard cleared < 300 else { break }
                         let suffix = item.path.hasPrefix(folderFull + "/")
@@ -4297,6 +4284,8 @@ final class AppState: ObservableObject {
                             log("文件夹守护清掉新文件：\(info.name) · \(file.relativePath)", .success)
                         }
                     }
+                } catch {
+                    log("诊断[守护补扫] 目录遍历失败：\(guardItem.relativePath)：\(error.localizedDescription)", .warning)
                 }
                 if !channel.isImmutable(folderFull) {
                     do { try channel.setImmutable(folderFull, true) }
