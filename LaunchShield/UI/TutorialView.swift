@@ -170,6 +170,14 @@ struct HowToUseView: View {
                         tutorialMockButton("全部还原")
                     }
                 }
+                tutorialStep(6, "每天自动复查，不用打开应用",
+                     "打开系统「快捷指令」，切到「自动化」，点右上角＋号选「特定时间」：挑一个时间（比如每天早上 8 点）、重复选「每天」、选「立即运行」。下一步添加操作，搜 LaunchShield，选「复查并去除复发」。存好以后，每天到点会自动把新冒出来的广告文件备份、去除并冻结，跟你打开应用时做的那一轮一样；跑没跑、清了几个，打开应用看日志就知道。第一次装好新版后，先打开一次 LaunchShield，快捷指令里才会出现这个操作。") {
+                    tutorialMockRow {
+                        Text("快捷指令 · 自动化").font(.system(size: 13)).foregroundStyle(Color.primaryText)
+                        Spacer()
+                        tutorialChip("每天 · 立即运行")
+                    }
+                }
                 HStack(alignment: .top, spacing: 8) {
                     Text("⚠️")
                         .font(.system(size: 12.5))
