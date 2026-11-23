@@ -3455,6 +3455,7 @@ final class AppState: ObservableObject {
                     throw ChannelFailure("目标冻结状态在操作前发生变化，请重新复查")
                 }
                 let originalMD5 = try self.channel.md5(full)
+                let originalVersion = try self.channel.fileVersion(full)
                 if current.size > 0 {
                     let record = try self.backupManager.backup(path: full,
                                                                relativePath: recipe.relativePath,
