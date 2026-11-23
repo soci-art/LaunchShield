@@ -56,6 +56,10 @@ private struct LaunchHackGalleryItem: Identifiable, Equatable {
     var bundleContents: [String] = []
     /// 动图的原始数据（不落盘，重开页面重新探补回），播放用。
     var animationData: Data? = nil
+    /// 第 100 条：图片的差分哈希（dHash），探针解码时顺手算好，
+    /// 用来把长得一样的图归组。跟落盘走，旧落盘没有就为空，
+    /// 重开页面重新探测时自动补上。
+    var imageHash: UInt64? = nil
 
     var id: String { (groupID ?? "app") + "|" + relativePath }
 
@@ -93,6 +97,7 @@ extension LaunchHackGalleryItem: Codable {
         case bundleID, groupID, appName, rootPath, relativePath
         case size, modifiedAt, pixelWidth, pixelHeight, pathScore
         case kind, durationSeconds, bundleFileCount, bundleContents
+        case imageHash
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +118,8 @@ extension LaunchHackGalleryItem: Codable {
         durationSeconds = try box.decodeIfPresent(Double.self, forKey: .durationSeconds)
         bundleFileCount = try box.decodeIfPresent(Int.self, forKey: .bundleFileCount) ?? 0
         bundleContents = try box.decodeIfPresent([String].self, forKey: .bundleContents) ?? []
+        // 第 100 条新增字段：旧落盘没有，给空（第 53 条规矩）。
+        imageHash = try box.decodeIfPresent(UInt64.self, forKey: .imageHash)
         previewData = nil
         animationData = nil
     }
@@ -133,6 +140,7 @@ extension LaunchHackGalleryItem: Codable {
         try box.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
         try box.encode(bundleFileCount, forKey: .bundleFileCount)
         try box.encode(bundleContents, forKey: .bundleContents)
+        try box.encodeIfPresent(imageHash, forKey: .imageHash)
     }
 }
 
@@ -144,6 +152,46 @@ private struct LaunchHackGallerySession: Codable {
     let confirmedIDs: [String]
     let smallSkipped: Int
     let status: String
+}
+
+/// 第 100 条：差分哈希（dHash）——把图缩成 9×8 灰度，相邻像素
+/// 逐个比大小，得 64 位「长相指纹」。同一张图改了尺寸、重新压过，
+/// 指纹基本不变，用来把墙上重复出现的同图归成一组。不引第三方库。
+/// 注意这跟已删除的截图比对不是一回事：这里只比墙上已有的图彼此
+/// 像不像，不拿任何目标图去比对，也不产出任何识别结论。
+private enum LaunchHackImageHash {
+    static func dHash(of image: CGImage) -> UInt64? {
+        let width = 9, height = 8
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width,
+                                          space: CGColorSpaceCreateDeviceGray(),
+                                          bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        var hash: UInt64 = 0
+        for row in 0..<height {
+            for col in 0..<(width - 1) {
+                let bit: UInt64 = pixels[row * width + col] > pixels[row * width + col + 1] ? 1 : 0
+                hash = (hash << 1) | bit
+            }
+        }
+        return hash
+    }
+
+    /// 两个指纹差了多少位（汉明距离）。
+    static func distance(_ a: UInt64, _ b: UInt64) -> Int { (a ^ b).nonzeroBitCount }
+
+    /// 近纯色图的指纹会退化（几乎全 0 或全 1），彼此距离假小；
+    /// 这类图不参与归组，免得一堆纯色图被串成一组。
+    static func isDegenerate(_ hash: UInt64) -> Bool {
+        let ones = hash.nonzeroBitCount
+        return ones <= 3 || ones >= 61
+    }
 }
 
 /// 只把图片解码出来量尺寸、做预览：LaunchHack 不再做任何画面
@@ -158,6 +206,9 @@ private enum LaunchHackImageProbe {
         /// 第 69 条：帧数（动图 >1）与动图原始数据（播放用）。
         let frameCount: Int
         let animationData: Data?
+        /// 第 100 条：长相指纹，在预览再压缩之前的那张图上算，
+        /// 保证同一文件每次扫描算出来都一样。
+        let imageHash: UInt64?
     }
 
     static func probe(path: String, relativePath: String, channel: Channel) -> Result? {
@@ -205,7 +256,8 @@ private enum LaunchHackImageProbe {
                           previewData: preview,
                           detail: "图片 · \(image.width) × \(image.height)",
                           frameCount: frameCount,
-                          animationData: animationData)
+                          animationData: animationData,
+                          imageHash: LaunchHackImageHash.dHash(of: image))
         } catch {
             return nil
         }
@@ -221,6 +273,9 @@ private enum LaunchHackVideoProbe {
         let pixelHeight: Int
         let durationSeconds: Double
         let previewData: Data?
+        /// 第 100 条：抽出的那帧的长相指纹，与图片同款算法——
+        /// 开屏视频的画面常与同活动的开屏图是同一张，能归一组。
+        let imageHash: UInt64?
     }
 
     static func probe(path: String, relativePath: String, channel: Channel) -> Result? {
@@ -260,7 +315,8 @@ private enum LaunchHackVideoProbe {
                 if (preview?.count ?? 0) > 160 * 1024 { preview = nil }
             }
             return Result(pixelWidth: width, pixelHeight: height,
-                          durationSeconds: duration, previewData: preview)
+                          durationSeconds: duration, previewData: preview,
+                          imageHash: LaunchHackImageHash.dHash(of: cg))
         } catch {
             return nil
         }
@@ -548,9 +604,14 @@ private final class LaunchHackModel: ObservableObject {
                     guard let probe = LaunchHackVideoProbe.probe(
                         path: full, relativePath: item.relativePath, channel: channel) else { continue }
                     let preview = probe.previewData
+                    let hash = probe.imageHash
                     DispatchQueue.main.async {
                         if let index = self.gallery.firstIndex(where: { $0.id == item.id }) {
                             self.gallery[index].previewData = preview
+                            // 第 100 条：旧落盘没存指纹的，补探针时顺手补上。
+                            if self.gallery[index].imageHash == nil {
+                                self.gallery[index].imageHash = hash
+                            }
                         }
                     }
                 } else {
@@ -558,11 +619,15 @@ private final class LaunchHackModel: ObservableObject {
                         path: full, relativePath: item.relativePath, channel: channel) else { continue }
                     let preview = probe.previewData
                     let animation = probe.animationData
+                    let hash = probe.imageHash
                     DispatchQueue.main.async {
                         if let index = self.gallery.firstIndex(where: { $0.id == item.id }) {
                             self.gallery[index].previewData = preview
                             if self.gallery[index].kind == .animated {
                                 self.gallery[index].animationData = animation
+                            }
+                            if self.gallery[index].imageHash == nil {
+                                self.gallery[index].imageHash = hash
                             }
                         }
                     }
@@ -778,17 +843,20 @@ private final class LaunchHackModel: ObservableObject {
                                     pathScore: imageEntry.score, previewData: preview)
                                 item.kind = .animated
                                 item.animationData = probe.animationData
+                                item.imageHash = probe.imageHash
                                 dynamicPool.append(item)
                                 animatedCount += 1
                             }
                         } else if galleryPool.count < 60, let preview = probe.previewData {
-                            galleryPool.append(LaunchHackGalleryItem(
+                            var item = LaunchHackGalleryItem(
                                 bundleID: target.bundleID, groupID: target.groupID,
                                 appName: target.appName, rootPath: target.rootPath,
                                 relativePath: relative, size: file.size,
                                 modifiedAt: file.modified,
                                 pixelWidth: probe.pixelWidth, pixelHeight: probe.pixelHeight,
-                                pathScore: imageEntry.score, previewData: preview))
+                                pathScore: imageEntry.score, previewData: preview)
+                            item.imageHash = probe.imageHash
+                            galleryPool.append(item)
                         }
                     } else {
                         smallSkipped += 1
@@ -831,6 +899,7 @@ private final class LaunchHackModel: ObservableObject {
                         pathScore: videoEntry.score, previewData: probe.previewData)
                     item.kind = .video
                     item.durationSeconds = probe.durationSeconds
+                    item.imageHash = probe.imageHash
                     dynamicPool.append(item)
                     videoCount += 1
                 }
@@ -1009,6 +1078,64 @@ private final class LaunchHackModel: ObservableObject {
                 }
                 for failure in failures.prefix(8) { self.onLog?("LaunchHack 容器异常：\(failure)", .warning) }
             }
+        }
+    }
+
+    /// 第 100 条：把墙上长得一样的图归组——指纹距离 ≤5、宽高比
+    /// 差 ≤5% 才算同图；逐项只跟每组的第一个成员（代表）比，防
+    /// A 像 B、B 像 C、A 不像 C 也被链成一组。近纯色图的退化
+    /// 指纹不参与。归组只影响显示和整组标记，绝不自动标记。
+    var galleryClusters: [[LaunchHackGalleryItem]] {
+        var groups: [[LaunchHackGalleryItem]] = []
+        for item in gallery {
+            guard let hash = item.imageHash, !LaunchHackImageHash.isDegenerate(hash),
+                  item.pixelWidth > 0, item.pixelHeight > 0 else { continue }
+            let ratio = Double(item.pixelWidth) / Double(item.pixelHeight)
+            var placed = false
+            for index in groups.indices {
+                guard let rep = groups[index].first, let repHash = rep.imageHash,
+                      rep.pixelWidth > 0, rep.pixelHeight > 0 else { continue }
+                let repRatio = Double(rep.pixelWidth) / Double(rep.pixelHeight)
+                guard abs(ratio - repRatio) / repRatio <= 0.05,
+                      LaunchHackImageHash.distance(hash, repHash) <= 5 else { continue }
+                groups[index].append(item)
+                placed = true
+                break
+            }
+            if !placed { groups.append([item]) }
+        }
+        return groups.filter { $0.count >= 2 }
+    }
+
+    /// 某一项所在同图组的总张数（含它自己）；不在组里回 0。
+    func galleryClusterSize(of item: LaunchHackGalleryItem) -> Int {
+        for group in galleryClusters where group.contains(where: { $0.id == item.id }) {
+            return group.count
+        }
+        return 0
+    }
+
+    /// 格子角标文案：同图几张；不在组里就不显示。
+    func galleryClusterBadge(of item: LaunchHackGalleryItem) -> String? {
+        let size = galleryClusterSize(of: item)
+        return size >= 2 ? "同图 \(size) 张" : nil
+    }
+
+    /// 某一项的同图组其他成员（不含它自己）；不在组里回空。
+    func galleryClusterPeers(of item: LaunchHackGalleryItem) -> [LaunchHackGalleryItem] {
+        for group in galleryClusters where group.contains(where: { $0.id == item.id }) {
+            return group.filter { $0.id != item.id }
+        }
+        return []
+    }
+
+    /// 第 100 条：整组一起标记——必须是用户在详情页亲手点的动作，
+    /// 对组内还没标记的逐个走现成的单项标记；已标记的自动跳过
+    /// （单项标记自己有防重复）。取消仍逐项走单项取消。
+    func confirmGalleryCluster(of item: LaunchHackGalleryItem, state: AppState) {
+        confirmGalleryItem(item, state: state)
+        for peer in galleryClusterPeers(of: item) {
+            confirmGalleryItem(peer, state: state)
         }
     }
 
@@ -1309,6 +1436,19 @@ struct LaunchHackView: View {
                                                     .padding(4)
                                             }
                                         }
+                                        .overlay(alignment: .bottomTrailing) {
+                                            // 第 100 条：同图归组角标（右下，
+                                            // 与左下种类角标、右上已标记勾错开）。
+                                            if let badge = model.galleryClusterBadge(of: item) {
+                                                Text(badge)
+                                                    .font(.system(size: 9, weight: .semibold))
+                                                    .foregroundStyle(.white)
+                                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                                    .background(Color.black.opacity(0.55),
+                                                                in: RoundedRectangle(cornerRadius: 5))
+                                                    .padding(4)
+                                            }
+                                        }
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
                                         // 第 74 条：太宽的图画面虽被裁住，
                                         // 点击区域却会溢出到左右邻格（从
@@ -1403,6 +1543,58 @@ struct LaunchHackView: View {
                         } else {
                             Text("尺寸 \(item.pixelWidth) × \(item.pixelHeight) · 大小 \(ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file))")
                                 .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                        }
+                    }
+                    // 第 100 条：同图组——还有几张长得一样的，列个
+                    // 缩略条，点任意一张跳过去看它自己那页；「这一组
+                    // 一起标记」是用户亲手点的动作，逐项走单项标记。
+                    let clusterPeers = model.galleryClusterPeers(of: item)
+                    if !clusterPeers.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("还有 \(clusterPeers.count) 张长得一样的，应该是同一张图在不同地方存了多份：")
+                                .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(clusterPeers) { peer in
+                                        Button { selectedGalleryItem = peer } label: {
+                                            ZStack {
+                                                if let data = peer.previewData, let ui = UIImage(data: data) {
+                                                    Image(uiImage: ui).resizable().scaledToFill()
+                                                } else {
+                                                    Rectangle().fill(Color.secondaryText.opacity(0.15))
+                                                }
+                                            }
+                                            .frame(width: 54, height: 54)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            .overlay(alignment: .topTrailing) {
+                                                if model.confirmedGalleryIDs.contains(peer.id) {
+                                                    Image(systemName: "checkmark.circle.fill")
+                                                        .font(.system(size: 13))
+                                                        .foregroundStyle(.green)
+                                                        .background(Circle().fill(.white).padding(2))
+                                                        .padding(2)
+                                                }
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                            if !model.confirmedGalleryIDs.contains(item.id)
+                                || clusterPeers.contains(where: { !model.confirmedGalleryIDs.contains($0.id) }) {
+                                Button {
+                                    model.confirmGalleryCluster(of: item, state: state)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "checkmark.circle")
+                                        Text("这一组一起标记")
+                                    }
+                                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.accentCyan)
+                                    .frame(maxWidth: .infinity).frame(height: 42)
+                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accentCyan.opacity(0.5), lineWidth: 1))
+                                }
+                            }
                         }
                     }
                     if model.confirmedGalleryIDs.contains(item.id) {
