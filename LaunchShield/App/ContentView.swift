@@ -258,7 +258,7 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("启动要 10–30 秒；内核链路失败时，应用（有时是整台手机）可能会重启一次，重启后再点一次就行。")
+            Text("启动通常要 1–3 分钟，期间请保持应用在前台；内核链路失败时，应用（有时是整台手机）可能会重启一次，重启后再点一次就行。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)

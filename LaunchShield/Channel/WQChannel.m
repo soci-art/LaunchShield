@@ -264,7 +264,7 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
         case WQRouteStateKernel:
             if (wq_kernel_running()) return @"内核链路正在启动：等它跑完，应用可能会重启一次。";
             if (wq_kernel_failed()) return @"内核链路没启动成功：重启应用后再点一次「启动内核链路」。";
-            return @"内核链路还没启动：点主页的「启动内核链路」。启动要 10–30 秒，失败时应用可能会重启一次。";
+            return @"内核链路还没启动：点主页的「启动内核链路」。启动通常要 1–3 分钟，期间请保持应用在前台；失败时应用可能会重启一次。";
         case WQRouteStateUnsupported: {
             if (wq_kernel_unsupported_a10_ios17())
                 return @"当前设备为 A10 且运行 iOS 17；该组合未纳入已验证范围，已阻止启动内核链路。";
