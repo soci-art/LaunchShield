@@ -729,7 +729,8 @@ struct ContentView: View {
 
     /// 第 95 条：模板命中单独成卡。按长相认出来的目录，可能认错，
     /// 用户逐组看过、点「加入处理」才进待处理清单，之后跟普通素材
-    /// 一样走备份、去除、守护。
+    /// 一样走备份、去除、守护。第 97 条的结构指纹命中也进这张卡，
+    /// 行里标明是「指纹命中」还是「模板命中」。
     private var templateSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "模板命中（待确认）",
@@ -748,7 +749,7 @@ struct ContentView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(Color.secondaryText)
                                 .lineLimit(2)
-                            Text("\(hit.files.count) 个文件 · \(Format.bytes(hit.totalSize))")
+                            Text("\(hit.isFingerprint ? "指纹命中" : "模板命中") · \(hit.files.count) 个文件 · \(Format.bytes(hit.totalSize))")
                                 .font(.system(size: 11))
                                 .foregroundStyle(Color.secondaryText)
                         }

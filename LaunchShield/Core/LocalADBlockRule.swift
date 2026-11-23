@@ -25,7 +25,7 @@ enum LocalADBlockRule {
 
     /// 分组名单改由 RulesStore 提供：内置保底一份，用户点「更新规则」
     /// 下载到新名单后，这里自动跟着换。
-    static var thirdPartyCacheGroups: [(group: String, directories: [String], templates: [String])] {
+    static var thirdPartyCacheGroups: [(group: String, directories: [String], templates: [String], fingerprints: [RulesStore.Fingerprint])] {
         RulesStore.groups
     }
 
@@ -571,9 +571,87 @@ enum LocalADBlockRule {
         return result
     }
 
+    /// 第 97 条：结构指纹命中——与模板并列的第三个单独入口，同样不混进
+    /// targets()。指纹不认名字、只认目录的「长相」（文件数、总大小、图片
+    /// 视频占比、扩展名占比），比模板更容易认错，所以命中照样只进待确认
+    /// 清单，用户点确认才处理；守护巡查、自动清理走 targets()，拿不到。
+    /// 写死目录已覆盖的、本轮模板已命中的目录不重复报。候选目录要逐个
+    /// 整树统计，一个应用一轮最多看 200 个，超了截断，防扫描耗时失控。
+    static func fingerprintTargets(container: String, channel: Channel,
+                                   ownerBundleID: String, ownerName: String,
+                                   excludingRoots: Set<String> = [],
+                                   onVisit: (() -> Void)? = nil) -> [TargetFile] {
+        guard !protectedBundleIDs.contains(ownerBundleID) else { return [] }
+        let literalDirs = thirdPartyCacheGroups.flatMap { $0.directories }
+        func coveredByLiteral(_ relative: String) -> Bool {
+            literalDirs.contains { relative == $0 || relative.hasPrefix($0 + "/") }
+        }
+        var result: [TargetFile] = []
+        var seen = Set<String>()
+        var seenRoots = Set<String>()
+        var candidatesChecked = 0
+        let candidateLimit = 200
+        fingerprintLoop: for group in thirdPartyCacheGroups {
+            for fingerprint in group.fingerprints {
+                for instance in matchTemplateDirectories(container: container, template: fingerprint.under, channel: channel) {
+                    if seenRoots.contains(instance) { continue }
+                    seenRoots.insert(instance)
+                    guard !coveredByLiteral(instance), !excludingRoots.contains(instance) else { continue }
+                    guard candidatesChecked < candidateLimit else { break fingerprintLoop }
+                    candidatesChecked += 1
+                    let root = container + "/" + instance
+                    let items = files(below: root, channel: channel, depth: 0, limit: 4000, onVisit: onVisit)
+                    guard !items.isEmpty, fingerprintMatches(fingerprint, items: items) else { continue }
+                    for item in items {
+                        guard !item.isSymlink, !item.isDirectory, seen.insert(item.path).inserted else { continue }
+                        result.append(TargetFile(path: item.path,
+                                                 relativePath: relativePath(container: container, path: item.path),
+                                                 group: group.group,
+                                                 note: "指纹命中，待确认",
+                                                 size: item.size,
+                                                 isSmallConfig: false,
+                                                 bundleID: ownerBundleID,
+                                                 appName: ownerName,
+                                                 viaTemplate: true,
+                                                 viaFingerprint: true,
+                                                 templateRoot: instance))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /// 一条指纹的数值条件逐项核对：文件数、总大小落在区间内，
+    /// 图片＋视频占比够线，指纹里列的每种扩展名占比都够线。
+    private static func fingerprintMatches(_ fingerprint: RulesStore.Fingerprint, items: [FileItem]) -> Bool {
+        let count = items.count
+        if let minFiles = fingerprint.minFiles, count < minFiles { return false }
+        if let maxFiles = fingerprint.maxFiles, count > maxFiles { return false }
+        let totalSize = items.reduce(UInt64(0)) { $0 + $1.size }
+        if let minSize = fingerprint.minTotalSize, totalSize < UInt64(clamping: minSize) { return false }
+        if let maxSize = fingerprint.maxTotalSize, totalSize > UInt64(clamping: maxSize) { return false }
+        if let mediaShare = fingerprint.mediaShare {
+            let mediaCount = items.filter { $0.kind != .other }.count
+            guard count > 0, Double(mediaCount) / Double(count) >= mediaShare else { return false }
+        }
+        if let extensions = fingerprint.extensions, !extensions.isEmpty {
+            guard count > 0 else { return false }
+            var extCounts: [String: Int] = [:]
+            for item in items {
+                let ext = (item.name as NSString).pathExtension.lowercased()
+                if !ext.isEmpty { extCounts[ext, default: 0] += 1 }
+            }
+            for (ext, share) in extensions {
+                guard Double(extCounts[ext] ?? 0) / Double(count) >= share else { return false }
+            }
+        }
+        return true
+    }
+
     /// 沿模板逐段往下走：写死的段直接下探，* 段把当前层的子目录挨个试。
     /// 只在模板圈定的邻里里走，不全盘枚举，开销跟模板条数走。
-    private static func matchTemplateDirectories(container: String, template: String, channel: Channel) -> [String] {
+    static func matchTemplateDirectories(container: String, template: String, channel: Channel) -> [String] {
         let segments = template.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         var results: [String] = []
         func walk(_ relative: String, _ index: Int) {

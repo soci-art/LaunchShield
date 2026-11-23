@@ -12,6 +12,27 @@ enum RulesStore {
         /// 路径模板（第 95 条）：段可以是 *，代表任意一层目录名。
         /// 治名字带随机哈希的目录——写死路径永远追不上。可缺省，老规则文件没有这项。
         let templates: [String]?
+        /// 结构指纹（第 97 条）：不认名字、认目录的「长相」（文件数、总大小、
+        /// 图片视频占比、扩展名占比）。可缺省，老规则文件没有这项。
+        let fingerprints: [Fingerprint]?
+    }
+
+    /// 一条结构指纹（第 97 条）：under 用模板语法圈定候选目录的位置范围，
+    /// 其余是数值条件，全部可选、缺省不设限；至少要有一项数值条件才有效
+    /// （校验里把关）。区间和占比由收集箱台账的真实分布反推，不拍脑袋写。
+    struct Fingerprint: Codable {
+        let under: String
+        let minFiles: Int?
+        let maxFiles: Int?
+        let minTotalSize: Int64?
+        let maxTotalSize: Int64?
+        let mediaShare: Double?
+        let extensions: [String: Double]?
+
+        var hasNumericCondition: Bool {
+            minFiles != nil || maxFiles != nil || minTotalSize != nil || maxTotalSize != nil
+                || mediaShare != nil || !(extensions?.isEmpty ?? true)
+        }
     }
 
     struct RulesFile: Codable {
@@ -35,7 +56,7 @@ enum RulesStore {
 
     // Built-in local rule data is embedded in LocalADBlockRule and scanned locally.
     // No Baidu-only default rule list is maintained here.
-    static let builtinGroups: [(group: String, directories: [String], templates: [String])] = []
+    static let builtinGroups: [(group: String, directories: [String], templates: [String], fingerprints: [Fingerprint])] = []
 
     static let builtinKeywords = [
         "csj", "pangle", "buadsdk", "gdt", "beizi", "baidumobad", "bd_ad_cache",
@@ -97,6 +118,15 @@ enum RulesStore {
                     }
                 }
             }
+
+            if let fingerprints = group.fingerprints {
+                guard fingerprints.count <= 100 else { return false }
+                totalDirectories += fingerprints.count
+                if totalDirectories > 5000 { return false }
+                for fingerprint in fingerprints {
+                    guard isValidFingerprint(fingerprint) else { return false }
+                }
+            }
         }
 
         for keyword in rules.keywords {
@@ -128,6 +158,31 @@ enum RulesStore {
         return parts.allSatisfy { $0 == "*" || !$0.contains("*") }
     }
 
+    /// 指纹的安全与自洽口径（第 97 条，与模板同档）：under 必须过模板那关
+    /// （至少两段写死、星号至多两段且只能整段），数值区间不能反着写，
+    /// 占比都得落在 0–1，扩展名占比加起来不能超过全部。
+    private static func isValidFingerprint(_ fingerprint: Fingerprint) -> Bool {
+        guard isSafeTemplate(fingerprint.under), fingerprint.hasNumericCondition else { return false }
+        if let minFiles = fingerprint.minFiles, !(0...100_000).contains(minFiles) { return false }
+        if let maxFiles = fingerprint.maxFiles, !(0...100_000).contains(maxFiles) { return false }
+        if let minFiles = fingerprint.minFiles, let maxFiles = fingerprint.maxFiles, minFiles > maxFiles { return false }
+        if let minSize = fingerprint.minTotalSize, minSize < 0 { return false }
+        if let maxSize = fingerprint.maxTotalSize, maxSize < 0 { return false }
+        if let minSize = fingerprint.minTotalSize, let maxSize = fingerprint.maxTotalSize, minSize > maxSize { return false }
+        if let share = fingerprint.mediaShare, !(0...1).contains(share) { return false }
+        if let extensions = fingerprint.extensions {
+            guard extensions.count <= 10 else { return false }
+            var sum = 0.0
+            for (ext, share) in extensions {
+                guard !ext.isEmpty, ext.count <= 10, ext == ext.lowercased(),
+                      !ext.contains("."), share > 0, share <= 1 else { return false }
+                sum += share
+            }
+            guard sum <= 1.0 + 0.000_001 else { return false }
+        }
+        return true
+    }
+
     /// 模板与实际目录路径逐段比对：段数相同，写死的段一字不差，* 段任意。
     static func templateMatches(_ template: String, directory: String) -> Bool {
         let t = template.split(separator: "/", omittingEmptySubsequences: false)
@@ -157,13 +212,14 @@ enum RulesStore {
     }
 
     /// 当前生效的分组名单：下过新规则用新规则，没下过用内置的。
-    static var groups: [(group: String, directories: [String], templates: [String])] {
+    static var groups: [(group: String, directories: [String], templates: [String], fingerprints: [Fingerprint])] {
         loadIfNeeded()
         lock.lock()
         defer { lock.unlock() }
         guard let downloaded else { return builtinGroups }
         return downloaded.groups.map {
-            (group: $0.name, directories: $0.directories, templates: $0.templates ?? [])
+            (group: $0.name, directories: $0.directories, templates: $0.templates ?? [],
+             fingerprints: $0.fingerprints ?? [])
         }
     }
 
@@ -312,7 +368,9 @@ enum RulesStore {
             let dirCount = parsed.groups.reduce(0) { $0 + $1.directories.count }
             let templateCount = parsed.groups.reduce(0) { $0 + ($1.templates?.count ?? 0) }
             let templateText = templateCount > 0 ? "、\(templateCount) 条模板" : ""
-            done(true, "规则已更新到第 \(parsedDisplay) 版：\(groupCount) 家广告商、\(dirCount) 个目录\(templateText)，扫描会按新规则走")
+            let fingerprintCount = parsed.groups.reduce(0) { $0 + ($1.fingerprints?.count ?? 0) }
+            let fingerprintText = fingerprintCount > 0 ? "、\(fingerprintCount) 条指纹" : ""
+            done(true, "规则已更新到第 \(parsedDisplay) 版：\(groupCount) 家广告商、\(dirCount) 个目录\(templateText)\(fingerprintText)，扫描会按新规则走")
         }.resume()
     }
 
