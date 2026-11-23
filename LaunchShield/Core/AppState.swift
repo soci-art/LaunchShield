@@ -2522,8 +2522,12 @@ final class AppState: ObservableObject {
                         self.log("已先恢复：\(original.relativePath)，这份备份可以删了", .success)
                     } catch {
                         if self.isLocationGone(error) {
+                            // 第 104 条补正：原位置整个没了，恢复永远
+                            // 不可能成功，「先恢复再删」对它没有意义
+                            // ——跟数据库文件一个口径，直接删。
                             goneFiles.append(original.relativePath)
-                            self.log("原来的位置已不存在、备份写不回去（留着也没用，可以删）：\(original.relativePath)", .info)
+                            deletableIDs.formUnion(sorted.map { $0.id })
+                            self.log("原来的位置已不存在、恢复不了，备份直接删除：\(original.relativePath)", .info)
                         } else {
                             keptFiles.append(original.relativePath)
                             self.log("恢复失败、备份已保留：\(original.relativePath)：\(error.localizedDescription)", .warning)
@@ -2566,7 +2570,7 @@ final class AppState: ObservableObject {
                 if restoredFiles > 0 { parts.append("已先恢复再删除：\(restoredFiles) 个文件已写回、对应备份已删除") }
                 if dbOnlyFiles > 0 { parts.append("\(dbOnlyFiles) 个数据库文件还原不了、备份已直接删除") }
                 if !keptFiles.isEmpty { parts.append("\(keptFiles.count) 个文件恢复失败、备份已保留：\(keptFiles.prefix(3).joined(separator: "；"))") }
-                if !goneFiles.isEmpty { parts.append("\(goneFiles.count) 个文件原来的位置已不存在、写不回去，备份还留着，可以直接删掉这几份：\(goneFiles.prefix(3).joined(separator: "；"))") }
+                if !goneFiles.isEmpty { parts.append("\(goneFiles.count) 个文件原来的位置已不存在、恢复不了，备份已直接删除：\(goneFiles.prefix(3).joined(separator: "；"))") }
                 let message = parts.isEmpty ? "没有删掉任何备份。" : parts.joined(separator: "。") + "。"
                 self.log(message, keptFiles.isEmpty ? .notice : .warning)
                 self.alertText = message
