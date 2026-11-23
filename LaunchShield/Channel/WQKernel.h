@@ -2,8 +2,8 @@
 //  WQKernel.h
 //  LaunchShield
 //
-//  Adapter for the iOS 17/18 kernel chain ported from 3105 (YangJiii,
-//  GPL-3.0). kexploit_opa334 establishes kernel read/write and
+//  Adapter for the iOS 17/18 kernel chain ported from YangJiii's
+//  upstream project (GPL-3.0). kexploit_opa334 establishes kernel read/write and
 //  sandbox_escape patches this process's sandbox so ordinary POSIX calls
 //  reach every container, so no App Group and no container query is needed.
 //

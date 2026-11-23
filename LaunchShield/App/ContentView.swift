@@ -240,7 +240,7 @@ struct ContentView: View {
 
     // MARK: - Kernel chain (iOS 17/18)
 
-    /// iOS 17/18 走 3105/3106 的内核链路：不用共享组、不用识别签名方式，
+    /// iOS 17/18 走内核链路：不用共享组、不用识别签名方式，
     /// 但内核链路得手动启动（失败可能重启应用）。
     private var kernelCard: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -254,7 +254,7 @@ struct ContentView: View {
                     .foregroundStyle(state.kernelState == .active ? Color.green
                                      : state.kernelState == .failed ? Color.orange : Color.secondaryText)
             }
-            Text("这台设备是 iOS 17/18，走 3105/3106 的内核链路：不用共享组，也不用识别签名方式。启动后应用能访问所有应用的数据，全部功能都能用。")
+            Text("这台设备是 iOS 17/18，走内核链路：不用共享组，也不用识别签名方式。启动后应用能访问所有应用的数据，全部功能都能用。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)

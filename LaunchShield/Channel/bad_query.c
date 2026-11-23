@@ -3,7 +3,7 @@
  *  LaunchShield
  *
  *  bad_query sandbox grant: Taj C / forcequit (forcequitOS/bad_query,
- *  GPL-3.0-or-later), as shipped in QuinnTang74/3106 (GPL-3.0). Kept verbatim
+ *  GPL-3.0-or-later), as shipped in QuinnTang74's collection (GPL-3.0). Kept verbatim
  *  apart from dropping the fsgetpath inode scan. iOS 26.0-26.6.1 only.
  */
 

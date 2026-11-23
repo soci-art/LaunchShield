@@ -32,12 +32,12 @@ WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优
 
 ## 内核链路（iOS 17.0–18.7.1）
 
-- **3105** — 作者 YangJiii，<https://github.com/YangJiiii/3105>，GPL-3.0。
+- **内核链路上游项目** — 作者 YangJiii，GPL-3.0。
   `LaunchShield/Channel/kexploit/` 下的 `kexploit_opa334`、`krw`、`kutils`、`offsets`、
   `vnode`、`xpaci`、`machine_info` 与 `sandbox_escape` 取自该项目，逻辑未改动。
-- **FilzaSlop** — 作者 0xjohnnydev、CrazyMind90。3105 的 `sandbox_escape.m` 基于该项目。
-- **Dopamine** — 作者 opa334。3105 的内核漏洞研究基础来自该项目。
-- **3106** — 作者 QuinnTang74，<https://github.com/QuinnTang74/3106>，GPL-3.0。
+- **FilzaSlop** — 作者 0xjohnnydev、CrazyMind90。内核链路的 `sandbox_escape.m` 基于该项目。
+- **Dopamine** — 作者 opa334。内核链路的漏洞研究基础来自该项目。
+- **分流口径参考项目** — 作者 QuinnTang74，GPL-3.0。
   按系统版本选择内核链路／bad_query／worse_query 的分流口径参考该项目。
 
 本工程新增的部分：
@@ -51,9 +51,9 @@ WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优
 ## bad_query 路线（iOS 26.0–26.6.1）
 
 - **bad_query** — 作者 Taj C（forcequit），<https://github.com/forcequitOS/bad_query>，
-  GPL-3.0-or-later。`bad_query.c` / `bad_query.h` 取自该项目（经 3106 收录的版本），
+  GPL-3.0-or-later。`bad_query.c` / `bad_query.h` 取自该项目（经 QuinnTang74 的合集收录的版本），
   去掉了其中的 fsgetpath 暴力扫描，只保留 `bad_query` / `bad_query_release`。
-- **3106** — 作者 QuinnTang74，<https://github.com/QuinnTang74/3106>，GPL-3.0。
+- **分流范围参考项目** — 作者 QuinnTang74，GPL-3.0。
   按系统版本分流的范围参考该项目：26.0–26.6.1 用 bad_query，26.7+/27.x 用 worse_query。
 
 本工程的改动：

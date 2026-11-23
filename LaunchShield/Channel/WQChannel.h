@@ -78,7 +78,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Forgets the cached route so the next query re-reads the signed profile.
 - (void)resetRoute;
 
-/// iOS 17.0-18.7.1 runs the 3105/3106 kernel chain instead of a container
+/// iOS 17.0-18.7.1 runs the kernel chain instead of a container
 /// query: no App Group, no signature-method detection, and it must be started
 /// once from the home screen (a failed attempt can restart the app).
 @property (nonatomic, readonly) BOOL kernelSupported;

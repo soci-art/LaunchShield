@@ -2,8 +2,8 @@
 //  WQKernel.m
 //  LaunchShield
 //
-//  GPL-3.0-or-later. The kernel chain itself is 3105's
-//  (YangJiii, https://github.com/YangJiiii/3105, GPL-3.0):
+//  GPL-3.0-or-later. The kernel chain itself is YangJiii's
+//  upstream project (GPL-3.0):
 //  kexploit_opa334 establishes kernel read/write, then sandbox_escape patches
 //  this process's sandbox extension set so plain file calls work everywhere.
 //  This file only sequences the two stages and caches the result.
