@@ -458,7 +458,10 @@ struct TargetFile: Identifiable, Hashable {
     /// 第 95 条：路径模板命中的文件。模板是认长相不是认全名，可能认错，
     /// 所以扫描时单独收着，用户确认后才并入待处理清单。
     var viaTemplate: Bool = false
-    /// 模板命中的那个目录（相对路径），界面按它成组展示、成组确认。
+    /// 第 97 条：结构指纹命中的文件。与模板命中同走待确认清单，
+    /// viaTemplate 也一并为真，这个标记只用来在卡上区分是哪种命中。
+    var viaFingerprint: Bool = false
+    /// 模板/指纹命中的那个目录（相对路径），界面按它成组展示、成组确认。
     var templateRoot: String = ""
 
     var id: String { path }

@@ -275,7 +275,8 @@ final class AppState: ObservableObject {
     @Published var backups: [BackupRecord] = []
     @Published var scanTargets: [TargetFile] = []
     /// 第 95 条：路径模板命中的文件，单独收着待用户确认；确认前不进
-    /// 待处理清单、不参与自动清理和守护巡查。
+    /// 待处理清单、不参与自动清理和守护巡查。第 97 条的结构指纹命中
+    /// 也并进这同一份清单（文件带 viaFingerprint 标记区分）。
     @Published var templateTargets: [TargetFile] = []
     /// 第 72 条：各广告商累计识别数（落盘；清零、清除扫描都不清）。
     @Published var vendorTotals: [String: Int] = [:]
@@ -502,6 +503,8 @@ final class AppState: ObservableObject {
         let files: [TargetFile]
         var id: String { bundleID + "|" + root }
         var totalSize: UInt64 { files.reduce(0) { $0 + $1.size } }
+        /// 第 97 条：这组是结构指纹命中的（不是就是模板命中），卡上据此标一句。
+        var isFingerprint: Bool { files.contains { $0.viaFingerprint } }
     }
 
     var templateHitGroups: [TemplateHitGroup] {
@@ -1710,6 +1713,27 @@ final class AppState: ObservableObject {
                         allTemplateTargets.append(file)
                     }
                 }
+                // 第 97 条：结构指纹再单独扫一遍，命中并进同一份待确认清单
+                // （卡上靠文件 note 区分是模板还是指纹命中）；模板这一轮已
+                // 命中的目录不重复报。
+                let templateRoots = Set(templateFound.map { $0.templateRoot })
+                var fingerprintFound = LocalADBlockRule.fingerprintTargets(container: info.path, channel: self.channel,
+                                                                           ownerBundleID: info.bundleID, ownerName: info.name,
+                                                                           excludingRoots: templateRoots,
+                                                                           onVisit: onVisit)
+                for group in groups where !LocalADBlockRule.shouldIgnoreAppGroup(group.bundleID) {
+                    fingerprintFound.append(contentsOf: LocalADBlockRule.fingerprintTargets(container: group.path, channel: self.channel,
+                                                                                              ownerBundleID: info.bundleID, ownerName: info.name,
+                                                                                              excludingRoots: templateRoots,
+                                                                                              onVisit: onVisit))
+                }
+                for file in fingerprintFound {
+                    if file.size == 0, self.channel.isImmutable(file.path) {
+                        skippedFrozen += 1
+                    } else {
+                        allTemplateTargets.append(file)
+                    }
+                }
                 // 去重：此刻是 0 字节并且正冻着的文件跳过待清零清单——
                 // 不重复清零、不重复备份；变大或没冻上的照常列出，复发漏不掉。
                 // 识别计数仍按全量 found 算，攒指纹库的数据不失真。
@@ -1771,7 +1795,7 @@ final class AppState: ObservableObject {
                     }
                 }
                 if !allTemplateTargets.isEmpty {
-                    self.log("另有模板命中 \(allTemplateTargets.count) 个文件：按长相认的，可能认错，已单独列出，确认后才会处理", .notice)
+                    self.log("另有模板/指纹命中 \(allTemplateTargets.count) 个文件：按长相认的，可能认错，已单独列出，确认后才会处理", .notice)
                 }
                 self.log("扫描完成，共 \(allTargets.count) 个素材文件", .success)
                 completion?()
