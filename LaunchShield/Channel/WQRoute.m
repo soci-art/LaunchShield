@@ -47,8 +47,22 @@ static NSString *wq_route_build_text(void)
     return [build stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
 }
 
+// Hardware identifier (for example, iPhone15,3), distinct from the marketing
+// model name returned by UIDevice. This is diagnostic only; it never selects
+// or enables a sandbox-access route.
+static NSString *wq_route_hardware_model_text(void)
+{
+    char machine[128] = {0};
+    size_t size = sizeof(machine);
+    if (sysctlbyname("hw.machine", machine, &size, NULL, 0) != 0 || machine[0] == '\0')
+        return @"unknown";
+    return [NSString stringWithUTF8String:machine] ?: @"unknown";
+}
+
 // Upstream WQFiles support window: iOS 26.0-26.7.2 and iOS 27.0 through
 // 27.3 beta 1. Apple fixed worse_query in 27.3 beta 2 (24C5049d).
+// iOS 17/18 intentionally remain unsupported here until a separately
+// validated backend exists; do not route them through either legacy backend.
 // Unknown/newer builds fail closed instead of assuming compatibility.
 static BOOL wq_route_version_supports_worse_query(void)
 {
@@ -116,9 +130,10 @@ WQRouteState wq_route_state(void)
     NSString *effectiveGroup = gState == WQRouteStateWorse ? wq_app_group() : nil;
     wq_log(@"route: effectiveAppGroup=%@",
            effectiveGroup ?: @"none");
-    wq_log(@"route: signMethod=%@ iOS=%@ build=%@ state=%@",
+    wq_log(@"route: signMethod=%@ iOS=%@ build=%@ hw.machine=%@ state=%@",
            wq_route_sign_method() ?: @"none",
            wq_route_version_text(), wq_route_build_text(),
+           wq_route_hardware_model_text(),
            wq_route_state_label(gState));
     return gState;
 }
