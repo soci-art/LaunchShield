@@ -29,6 +29,19 @@
 - (NSString *)rawContainerMetadataIdentifierForPath:(NSString *)path;
 - (WQAppContainer *)resolvedContainerForBundleID:(NSString *)bundleID;
 @end
+@interface MCMRetainedLease : NSObject {
+    void *_query;
+    void *_activation;
+}
+@property(nonatomic, copy) NSString *rootPath;
+@property(nonatomic) BOOL activated;
++ (nullable instancetype)leaseForClass:(uint64_t)cls
+                             identifier:(NSString *)identifier
+                                  group:(BOOL)group
+                                  error:(NSString **)error;
+- (BOOL)activate:(NSString **)error;
+@end
+
 
 @implementation WQOp
 
@@ -459,104 +472,6 @@ static BOOL MCMSafeIdentifier(NSString *identifier) {
         ![identifier isEqualToString:@"."] && ![identifier isEqualToString:@".."];
 }
 
-@interface MCMRetainedLease : NSObject {
-    void *_query;
-    void *_activation;
-}
-@property(nonatomic, copy) NSString *rootPath;
-@property(nonatomic) BOOL activated;
-+ (nullable instancetype)leaseForClass:(uint64_t)cls
-                             identifier:(NSString *)identifier
-                                  group:(BOOL)group
-                                  error:(NSString **)error;
-- (BOOL)activate:(NSString **)error;
-@end
-
-@implementation MCMRetainedLease
-
-+ (instancetype)leaseForClass:(uint64_t)cls
-                    identifier:(NSString *)identifier
-                         group:(BOOL)group
-                         error:(NSString **)error {
-    MCMAPI *api = MCMSharedAPI();
-    if (!MCMBridgeAvailable() || !MCMSafeIdentifier(identifier)) {
-        if (error) *error = @"MCM unavailable or identifier contains unsupported characters";
-        return nil;
-    }
-
-    void *query = api->queryCreate();
-    if (!query) {
-        if (error) *error = @"query create failed";
-        return nil;
-    }
-
-    api->querySetClass(query, cls);
-    xpc_object_t value = xpc_string_create(identifier.UTF8String);
-    if (group) api->querySetGroupIdentifiers(query, value);
-    else api->querySetIdentifiers(query, value);
-#if !OS_OBJECT_USE_OBJC
-    xpc_release(value);
-#endif
-    api->querySetFlags(query, 0x900000000ULL);
-    if (api->querySetPart) api->querySetPart(query, 0);
-
-    void *result = api->queryGetSingle(query);
-    if (!result) {
-        void *queryError = api->queryGetLastError ? api->queryGetLastError(query) : NULL;
-        int posix = queryError && api->errorGetPOSIX ? api->errorGetPOSIX(queryError) : 0;
-        const char *message = queryError && api->errorGetMessage
-            ? api->errorGetMessage(queryError) : NULL;
-        if (error) *error = [NSString stringWithFormat:@"lookup denied posix=%d message=%s",
-            posix, message ?: "unknown"];
-        api->queryFree(query);
-        return nil;
-    }
-
-    const char *rawPath = api->objectGetPath(result);
-    NSString *rootPath = rawPath ? [NSString stringWithUTF8String:rawPath] : nil;
-    if (rootPath.length == 0 || !rootPath.isAbsolutePath) {
-        if (error) *error = @"MCM returned no absolute container path";
-        api->queryFree(query);
-        return nil;
-    }
-    if ([rootPath isEqualToString:@"/var"] || [rootPath hasPrefix:@"/var/"])
-        rootPath = [@"/private" stringByAppendingString:rootPath];
-
-    MCMRetainedLease *lease = [MCMRetainedLease new];
-    lease->_query = query;
-    lease.rootPath = rootPath;
-    return lease;
-}
-
-- (BOOL)activate:(NSString **)error {
-    if (self.activated) return YES;
-    if (!_query) {
-        if (error) *error = @"lease invalidated";
-        return NO;
-    }
-
-    MCMAPI *api = MCMSharedAPI();
-    void *result = api->queryGetSingle(_query);
-    _activation = result ? api->objectCopy(result) : NULL;
-    char *token = _activation ? api->objectCopyToken(_activation) : NULL;
-    BOOL tokenPresent = token && token[0] != '\0';
-    free(token);
-    self.activated = tokenPresent && api->objectActivate(_activation, false);
-    if (!self.activated && error) {
-        *error = tokenPresent
-            ? @"sandbox extension activation failed"
-            : @"MCM object contained no sandbox token";
-    }
-    return self.activated;
-}
-
-- (void)dealloc {
-    MCMAPI *api = MCMSharedAPI();
-    if (_activation) api->objectFree(_activation);
-    if (_query) api->queryFree(_query);
-}
-
-@end
 
 static NSMutableDictionary<NSString *, MCMRetainedLease *> *MCMActiveLeases(void) {
     static NSMutableDictionary<NSString *, MCMRetainedLease *> *leases;
@@ -1221,6 +1136,93 @@ skipDirSubstrings:(NSArray<NSString *> *)skipDirSubstrings
 {
     struct stat st;
     return path.length > 0 && wq_stat(path, &st) && S_ISDIR(st.st_mode);
+}
+
+@end
+
+
+@implementation MCMRetainedLease
+
++ (instancetype)leaseForClass:(uint64_t)cls
+                    identifier:(NSString *)identifier
+                         group:(BOOL)group
+                         error:(NSString **)error {
+    MCMAPI *api = MCMSharedAPI();
+    if (!MCMBridgeAvailable() || !MCMSafeIdentifier(identifier)) {
+        if (error) *error = @"MCM unavailable or identifier contains unsupported characters";
+        return nil;
+    }
+
+    void *query = api->queryCreate();
+    if (!query) {
+        if (error) *error = @"query create failed";
+        return nil;
+    }
+
+    api->querySetClass(query, cls);
+    xpc_object_t value = xpc_string_create(identifier.UTF8String);
+    if (group) api->querySetGroupIdentifiers(query, value);
+    else api->querySetIdentifiers(query, value);
+#if !OS_OBJECT_USE_OBJC
+    xpc_release(value);
+#endif
+    api->querySetFlags(query, 0x900000000ULL);
+    if (api->querySetPart) api->querySetPart(query, 0);
+
+    void *result = api->queryGetSingle(query);
+    if (!result) {
+        void *queryError = api->queryGetLastError ? api->queryGetLastError(query) : NULL;
+        int posix = queryError && api->errorGetPOSIX ? api->errorGetPOSIX(queryError) : 0;
+        const char *message = queryError && api->errorGetMessage
+            ? api->errorGetMessage(queryError) : NULL;
+        if (error) *error = [NSString stringWithFormat:@"lookup denied posix=%d message=%s",
+            posix, message ?: "unknown"];
+        api->queryFree(query);
+        return nil;
+    }
+
+    const char *rawPath = api->objectGetPath(result);
+    NSString *rootPath = rawPath ? [NSString stringWithUTF8String:rawPath] : nil;
+    if (rootPath.length == 0 || !rootPath.isAbsolutePath) {
+        if (error) *error = @"MCM returned no absolute container path";
+        api->queryFree(query);
+        return nil;
+    }
+    if ([rootPath isEqualToString:@"/var"] || [rootPath hasPrefix:@"/var/"])
+        rootPath = [@"/private" stringByAppendingString:rootPath];
+
+    MCMRetainedLease *lease = [MCMRetainedLease new];
+    lease->_query = query;
+    lease.rootPath = rootPath;
+    return lease;
+}
+
+- (BOOL)activate:(NSString **)error {
+    if (self.activated) return YES;
+    if (!_query) {
+        if (error) *error = @"lease invalidated";
+        return NO;
+    }
+
+    MCMAPI *api = MCMSharedAPI();
+    void *result = api->queryGetSingle(_query);
+    _activation = result ? api->objectCopy(result) : NULL;
+    char *token = _activation ? api->objectCopyToken(_activation) : NULL;
+    BOOL tokenPresent = token && token[0] != '\0';
+    free(token);
+    self.activated = tokenPresent && api->objectActivate(_activation, false);
+    if (!self.activated && error) {
+        *error = tokenPresent
+            ? @"sandbox extension activation failed"
+            : @"MCM object contained no sandbox token";
+    }
+    return self.activated;
+}
+
+- (void)dealloc {
+    MCMAPI *api = MCMSharedAPI();
+    if (_activation) api->objectFree(_activation);
+    if (_query) api->queryFree(_query);
 }
 
 @end
