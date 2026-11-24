@@ -124,17 +124,24 @@ BOOL wq_kernel_failed(void)
 // successful stage 1. Reading is best effort and needs no kernel access.
 void wq_kernel_log_recent_panics(void)
 {
+    // Before the kernel route is up the CrashReporter folders are outside the
+    // sandbox: every listing fails, then wq_grant() runs sandbox IPC and logs
+    // "grant: failed" - all of it on a thread that can race the stage-1
+    // physical primitive (build 21 log shows those grant lines interleaved
+    // with the wiring and the scan). It can never read anything there, so do
+    // nothing until the escape has happened; the post-escape call is the one
+    // that actually reports the reports.
+    if (!wq_kernel_active()) return;
     NSString *summary = wq_recent_panic_summary();
     if (!summary.length) {
-        // Before the kernel route is up this folder is outside the sandbox, so
-        // "nothing here" and "cannot look" are the same answer. Say that once
-        // per process instead of once per attempt.
+        // The route is up, so an empty answer really means "no report on
+        // disk". Say it once per process.
         static BOOL noted;
         @synchronized (NSNull.null) {
             if (noted) return;
             noted = YES;
         }
-        wq_log(@"panic log: no report readable (none exists, or the folder needs the kernel route)");
+        wq_log(@"panic log: none found (no recent kernel panic report on this device)");
         return;
     }
     for (NSString *line in [summary componentsSeparatedByString:@"\n"]) {
@@ -258,18 +265,10 @@ BOOL wq_kernel_start(void)
         wq_log(@"kernel: sandbox escaped; full filesystem read/write is available");
         // A panic leaves nothing in this app's log, so the previous session
         // ends mid-line and the only way to know what the kernel tripped on is
-        // the system's own report. Read it now, off the main thread: the file
-        // can be a few hundred KB and lives on a slow, previously unreadable
-        // path.
+        // the system's own report - which only becomes readable once the
+        // escape has happened, i.e. right now. Read it off the main thread.
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            NSString *summary = wq_recent_panic_summary();
-            if (!summary.length) {
-                wq_log(@"panic log: none found (no kernel panic report on this device)");
-                return;
-            }
-            for (NSString *line in [summary componentsSeparatedByString:@"\n"]) {
-                if (line.length) wq_log(@"panic log: %@", line);
-            }
+            wq_kernel_log_recent_panics();
         });
     } else if (selfProc == 0) {
         wq_log(@"kernel: no proc was resolved and the socket credential did not escape; the chain is not active");
