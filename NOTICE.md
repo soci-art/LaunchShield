@@ -34,19 +34,34 @@ WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优
 
 - **内核链路上游项目** — 作者 YangJiii，GPL-3.0。
   `LaunchShield/Channel/kexploit/` 下的 `kexploit_opa334`、`krw`、`kutils`、`offsets`、
-  `vnode`、`xpaci`、`machine_info` 与 `sandbox_escape` 取自该项目，逻辑未改动。
+  `vnode`、`xpaci`、`machine_info` 与 `sandbox_escape` 取自该项目，作为基线；本工程对内核层的修改见本节末尾。
 - **FilzaSlop** — 作者 0xjohnnydev、CrazyMind90。内核链路的 `sandbox_escape.m` 基于该项目。
 - **Dopamine** — 作者 opa334。内核链路的漏洞研究基础来自该项目。
 - **分流口径参考项目** — 作者 QuinnTang74，GPL-3.0。
   按系统版本选择内核链路／bad_query／worse_query 的分流口径参考该项目。
+- **3106** — 作者 QuinnTang74，<https://github.com/QuinnTang74/3106>，GPL-3.0。
+  `sandbox_escape.m` 的“两个容器根任一根可写即视为逃逸成功”探针口径参考 3106；
+  LaunchShield 保留了自己的 socket 凭证兜底（`ucred_self`），`proc_self()==0` 时仍会尝试逃逸。
 
 本工程新增的部分：
 
-1. `WQKernel` 适配层：按顺序跑 `kexploit_opa334()` → `sandbox_escape()`，缓存结果、写日志；
-   内核层源码未改动。
+1. `WQKernel` 适配层：按顺序跑 `kexploit_opa334()` → `sandbox_escape()`，缓存结果、写日志。
 2. `WQRoute` 在 iOS 17.0–18.7.1 上先判为 kernel 路线（与签名方式、App Group 无关）；
    内核链路未启动时通道不开。
 3. 内核链路激活后，`wq_grant` 直接放行（沙箱已整体放开），不再申请容器 token。
+
+本工程对内核层的修改：
+
+1. `kexploit_opa334.m` / A18 `pe_v2`：wired window 上限 1 GB，物理 OOB 读取与
+   icmp6filter 回写改为有界重试，socket 预算耗尽后短暂退避而不是 `sleep(20)`，
+   起跑前检查可用内存与 `RLIMIT_NOFILE`。
+2. `kexploit_opa334.m` / A15 `pe_v1`：每轮 256 MB × 4 轮（原来每轮 1 GB 且无轮数上限），
+   轮末同时释放 search mapping 的 IOSurface，避免每轮泄漏 1 GB；失败分支正常清理。
+3. `sandbox_escape.m`：探针改为“两个容器根任一根可写即成功”，并新增
+   `sandbox_probe_report` 把每个根的结果写进内核日志；`proc_self()==0` 的
+   socket 凭证兜底保留。
+4. `WQAccess.m`：底层内核日志的导出改为只读快照，不再在每次复制/导出时截断落盘文件；
+   文件仍按 1 MiB 上限裁旧行。
 
 ## bad_query 路线（iOS 26.0–26.6.1）
 
