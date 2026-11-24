@@ -557,6 +557,27 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
         if (name) [samples addObject:[NSString stringWithFormat:@"%@ = %@", bid, name]];
     }
     if (samples.count) wq_log(@"names: sample: %@", [samples componentsJoinedByString:@", "]);
+    // Diagnostic: a name count alone cannot tell a correct pairing from a
+    // shifted one (iOS 18's leading candidate yields hundreds of names yet
+    // the picker still shows ids), so show what the winning pairs actually
+    // are and whether well-known ids are among them.
+    NSArray<NSString *> *probeIDs = @[@"com.apple.mobilesafari", @"com.apple.Preferences",
+        @"com.apple.camera", @"com.apple.mobilenotes", @"cn.12306.rails12306",
+        @"com.alipay.iphoneclient", @"com.360buy.jdmobile", @"com.tencent.xin", @"com.autonavi.amap"];
+    NSMutableArray *probeResults = [NSMutableArray new];
+    for (NSString *bid in probeIDs) {
+        NSString *name = display[bid] ?: bundleName[bid];
+        [probeResults addObject:[NSString stringWithFormat:@"%@=%@", bid, name ?: @"-"]];
+    }
+    wq_log(@"names: probes (%s): %@", kWQLSLayouts[chosen].label,
+           [probeResults componentsJoinedByString:@", "]);
+    NSArray<NSString *> *sortedKeys = [display.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    NSMutableArray *firstPairs = [NSMutableArray new];
+    for (NSUInteger i = 0; i < MIN((NSUInteger)8, sortedKeys.count); i++)
+        [firstPairs addObject:[NSString stringWithFormat:@"%@=%@", sortedKeys[i], display[sortedKeys[i]]]];
+    if (firstPairs.count)
+        wq_log(@"names: first pairs (%s): %@", kWQLSLayouts[chosen].label,
+               [firstPairs componentsJoinedByString:@", "]);
     wq_ls_log_summary(b, n, @(kWQLSLayouts[chosen].label), layoutRecs[chosen].length / (5 * sizeof(uint32_t)),
                       layoutPlugins[chosen].length / (2 * sizeof(uint32_t)), display.count, containers.count);
     if (bundlePathsOut) *bundlePathsOut = [bundlePaths copy];
