@@ -39,8 +39,8 @@ WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优
 - **Dopamine** — 作者 opa334。内核链路的漏洞研究基础来自该项目。
 - **分流口径参考项目** — 作者 QuinnTang74，GPL-3.0。
   按系统版本选择内核链路／bad_query／worse_query 的分流口径参考该项目。
-- **3106** — 作者 QuinnTang74，<https://github.com/QuinnTang74/3106>，GPL-3.0。
-  `sandbox_escape.m` 的“两个容器根任一根可写即视为逃逸成功”探针口径参考 3106；
+- **探针口径参考项目** — 作者 QuinnTang74，GPL-3.0。
+  `sandbox_escape.m` 的“两个容器根任一根可写即视为逃逸成功”探针口径参考该项目；
   LaunchShield 保留了自己的 socket 凭证兜底（`ucred_self`），`proc_self()==0` 时仍会尝试逃逸。
 
 本工程新增的部分：
