@@ -11,6 +11,7 @@
 
 #import "WQKernel.h"
 #import "WQAccess.h"
+#import "WQAppCatalog.h"
 #import "kexploit/kexploit_opa334.h"
 #import "kexploit/kutils.h"
 #import "kexploit/machine_info.h"
@@ -175,6 +176,13 @@ BOOL wq_kernel_start(void)
     gKernelActive = active;
     gKernelFailed = !active;
     [lock unlock];
+
+    // The first LaunchServices lookup can run before the kernel escape and
+    // cache an empty catalog, which leaves the picker with bundle ids, no app
+    // names, and an empty extension set. Rebuild it now that LS is reachable.
+    if (active) {
+        wq_app_catalog_invalidate();
+    }
 
     if (active) {
         wq_log(@"kernel: sandbox escaped; full filesystem read/write is available");

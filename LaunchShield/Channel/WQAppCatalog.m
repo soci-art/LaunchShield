@@ -13,6 +13,25 @@ static NSDictionary<NSString *, NSString *> *gNames;
 static NSDictionary<NSString *, NSString *> *gCategories;
 static NSSet<NSString *> *gMainAppIDs;
 static NSSet<NSString *> *gExtensionIDs;
+static BOOL gCatalogLoaded;
+
+static NSLock *wq_catalog_lock(void) {
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    return lock;
+}
+
+void wq_app_catalog_invalidate(void) {
+    NSLock *lock = wq_catalog_lock();
+    [lock lock];
+    gCatalogLoaded = NO;
+    gNames = nil;
+    gCategories = nil;
+    gMainAppIDs = nil;
+    gExtensionIDs = nil;
+    [lock unlock];
+}
 
 NSDictionary<NSString *, NSString *> *wq_app_categories(void)
 {
@@ -35,8 +54,9 @@ NSSet<NSString *> *wq_extension_bundle_ids(void)
 
 NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
 {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
+    NSLock *lock = wq_catalog_lock();
+    [lock lock];
+    if (!gCatalogLoaded) {
         NSMutableDictionary<NSString *, NSString *> *names = [NSMutableDictionary dictionary];
         NSMutableDictionary<NSString *, NSString *> *categories = [NSMutableDictionary dictionary];
         NSMutableSet<NSString *> *mainIDs = [NSMutableSet set];
@@ -106,6 +126,9 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
         gMainAppIDs = [mainIDs copy];
         gExtensionIDs = [extensionIDs copy];
         wq_log(@"app catalog: %lu app ids, %lu extension ids", (unsigned long)mainIDs.count, (unsigned long)extensionIDs.count);
-    });
-    return gNames;
+        gCatalogLoaded = YES;
+    }
+    NSDictionary<NSString *, NSString *> *result = gNames;
+    [lock unlock];
+    return result;
 }
