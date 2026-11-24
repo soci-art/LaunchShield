@@ -3836,6 +3836,27 @@ NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode, WQScanCancell
         wq_log(@"enumerate %@: base is missing (%@)", dir, wq_errno(errno));
         return nil;
     }
+    // iOS 17/18 kernel chain: the sandbox is gone, so every directory can be
+    // listed directly. Scanning tens of millions of inode ids to rediscover
+    // the children of a readable folder is pure waste; the app folder refresh
+    // used to spend 7-8 minutes here. Fall through only if listing fails.
+    if (wq_kernel_active()) {
+        NSArray<NSString *> *names = wq_list(base, NULL);
+        if (names) {
+            NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:names.count];
+            for (NSString *name in names) {
+                if (!name.length || [name isEqualToString:@"."] || [name isEqualToString:@".."]) continue;
+                [paths addObject:[base stringByAppendingPathComponent:name]];
+            }
+            [paths sortUsingSelector:@selector(compare:)];
+            if ([wq_shared_scan_roots() containsObject:base] ||
+                [base isEqualToString:@"/private/var/mobile/Containers/Shared/AppGroup"]) {
+                wq_log(@"scan: kernel direct listing of %@: %lu entries", base, (unsigned long)paths.count);
+            }
+            if (progress) progress(1, 1, paths.count);
+            return paths;
+        }
+    }
     struct statfs sfs;
     if (statfs(base.fileSystemRepresentation, &sfs) != 0) {
         // The container parent may not even be stat-able without a token. In
