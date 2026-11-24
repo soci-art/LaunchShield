@@ -1644,14 +1644,32 @@ final class AppState: ObservableObject {
         return seen
     }
 
-    /// Installed app, not an app extension/plug-in. The container list comes
-    /// from MCM class 2 and includes every extension; those are not targets
-    /// for ad clearing and have no App Store icon of their own. When
-    /// LaunchServices is unavailable the set is empty and we do not filter.
+    /// Installed app, not an app extension/plug-in.
+    ///
+    /// On iOS 17/18 the kernel route lists MCM class 2, which includes every
+    /// extension container, and the App Store lookup can never find an icon
+    /// for one. Those are the blank rows in the target picker. On iOS 26/27
+    /// the container query already returns app data containers only, and the
+    /// per-container LS walk on those systems can miss apps that the catalog
+    /// does list, so filtering there risks hiding real apps.
+    ///
+    /// The filter therefore only runs on the kernel route. The rule is keyed
+    /// on the bundle id rather than the container: an extension is a parent
+    /// app id plus at least one more component, and the parent id itself is
+    /// in the catalog. When the catalog is empty (LaunchServices unavailable)
+    /// nothing is filtered.
     static func isMainApp(_ container: ContainerInfo) -> Bool {
         if container.isGroup { return false }
+        guard wq_kernel_active() else { return true }
         let ids = wq_main_app_bundle_ids()
-        return ids.isEmpty || ids.contains(container.bundleID)
+        if ids.isEmpty { return true }
+        if ids.contains(container.bundleID) { return true }
+        var parent = container.bundleID
+        while let dot = parent.lastIndex(of: ".") {
+            parent = String(parent[..<dot])
+            if ids.contains(parent) { return false }
+        }
+        return true
     }
 
     /// 系统应用的第二道判断（清单第 21 条）：底层只按 com.apple. 前缀
