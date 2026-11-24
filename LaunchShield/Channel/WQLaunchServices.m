@@ -578,6 +578,39 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
     if (firstPairs.count)
         wq_log(@"names: first pairs (%s): %@", kWQLSLayouts[chosen].label,
                [firstPairs componentsJoinedByString:@", "]);
+    // Diagnostic: dump every decodable field around the first reference to
+    // one app id and one extension id, so the true record layout can be
+    // read off directly (which offset holds the id, the name, the path)
+    // instead of being guessed layout by layout.
+    for (NSString *target in @[@"cn.12306.rails12306", @"com.apple.ActionKit.BundledIntentHandler"]) {
+        NSNumber *sidBox = nil;
+        for (NSNumber *key in strings)
+            if ([strings[key] isEqualToString:target]) { sidBox = key; break; }
+        if (!sidBox) {
+            wq_log(@"names: record dump %@: string not decoded", target);
+            continue;
+        }
+        uint32_t targetRef = sidBox.unsignedIntValue << 2;
+        size_t hitAt = SIZE_MAX;
+        for (size_t q = 0; q + 4 <= n; q += 4)
+            if (wq_rd32(b + q) == targetRef) { hitAt = q; break; }
+        if (hitAt == SIZE_MAX) {
+            wq_log(@"names: record dump %@: no reference found", target);
+            continue;
+        }
+        NSMutableArray *fields = [NSMutableArray new];
+        size_t from = hitAt >= 0x30 ? hitAt - 0x30 : 0;
+        for (size_t x = from; x < hitAt + 0xD0 && x + 4 <= n; x += 4) {
+            uint32_t w = wq_rd32(b + x);
+            if (!w || (w & 3)) continue;
+            NSString *s = pathFor(w) ?: strings[@(w >> 2)];
+            if (!s) continue;
+            if (s.length > 48) s = [[s substringToIndex:48] stringByAppendingString:@"..."];
+            [fields addObject:[NSString stringWithFormat:@"%+ld:%@", (long)x - (long)hitAt, s]];
+        }
+        wq_log(@"names: record dump %@ (ref at 0x%zx): %@", target, hitAt,
+               [fields componentsJoinedByString:@" | "]);
+    }
     wq_ls_log_summary(b, n, @(kWQLSLayouts[chosen].label), layoutRecs[chosen].length / (5 * sizeof(uint32_t)),
                       layoutPlugins[chosen].length / (2 * sizeof(uint32_t)), display.count, containers.count);
     if (bundlePathsOut) *bundlePathsOut = [bundlePaths copy];

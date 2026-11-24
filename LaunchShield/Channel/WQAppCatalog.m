@@ -16,6 +16,72 @@ static NSSet<NSString *> *gMainAppIDs;
 static NSSet<NSString *> *gExtensionIDs;
 static BOOL gCatalogLoaded;
 
+static NSArray<NSString *> *wq_name_probe_ids(void) {
+    return @[@"com.apple.mobilesafari", @"com.apple.Preferences",
+             @"com.apple.camera", @"com.apple.mobilenotes", @"cn.12306.rails12306",
+             @"com.alipay.iphoneclient", @"com.360buy.jdmobile", @"com.tencent.xin",
+             @"com.autonavi.amap"];
+}
+
+// Read installed apps' names from the bundles themselves: every .app's
+// Info.plist carries its bundle id and name, and the Simplified Chinese
+// strings file carries the localized display name. The bundle roots only
+// list once the sandbox is open (the kernel route on iOS 17/18, where the
+// workspace walk below returns nothing); before that this finds nothing
+// and the catalog simply stays empty until the post-escape reload.
+static void wq_scan_bundle_plists(NSMutableDictionary<NSString *, NSString *> *names,
+                                  NSMutableSet<NSString *> *mainIDs)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSMutableArray<NSString *> *appDirs = [NSMutableArray new];
+    NSString *userRoot = @"/private/var/containers/Bundle/Application";
+    for (NSString *uuid in [fm contentsOfDirectoryAtPath:userRoot error:nil]) {
+        NSString *dir = [userRoot stringByAppendingPathComponent:uuid];
+        for (NSString *entry in [fm contentsOfDirectoryAtPath:dir error:nil])
+            if ([entry hasSuffix:@".app"]) [appDirs addObject:[dir stringByAppendingPathComponent:entry]];
+    }
+    for (NSString *root in @[@"/System/Applications", @"/Applications"])
+        for (NSString *entry in [fm contentsOfDirectoryAtPath:root error:nil])
+            if ([entry hasSuffix:@".app"]) [appDirs addObject:[root stringByAppendingPathComponent:entry]];
+    NSUInteger named = 0;
+    for (NSString *appDir in appDirs) {
+        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+            [appDir stringByAppendingPathComponent:@"Info.plist"]];
+        NSString *bid = info[@"CFBundleIdentifier"];
+        if (![bid isKindOfClass:NSString.class] || !bid.length) continue;
+        [mainIDs addObject:bid];
+        if (names[bid]) continue;
+        NSString *name = nil;
+        for (NSString *lproj in @[@"zh-Hans.lproj", @"zh-CN.lproj"]) {
+            NSData *data = [NSData dataWithContentsOfFile:
+                [[appDir stringByAppendingPathComponent:lproj]
+                    stringByAppendingPathComponent:@"InfoPlist.strings"]];
+            if (!data) continue;
+            id parsed = [NSPropertyListSerialization propertyListWithData:data
+                options:0 format:nil error:nil];
+            if ([parsed isKindOfClass:NSDictionary.class]) {
+                NSString *localized = parsed[@"CFBundleDisplayName"] ?: parsed[@"CFBundleName"];
+                if ([localized isKindOfClass:NSString.class] && localized.length) {
+                    name = localized;
+                    break;
+                }
+            }
+        }
+        if (!name) {
+            NSString *display = info[@"CFBundleDisplayName"];
+            NSString *plain = info[@"CFBundleName"];
+            name = ([display isKindOfClass:NSString.class] && display.length) ? display
+                 : ([plain isKindOfClass:NSString.class] && plain.length) ? plain : nil;
+        }
+        if (name) {
+            names[bid] = name;
+            named++;
+        }
+    }
+    wq_log(@"app catalog: bundle plists scanned %lu bundles, %lu names",
+           (unsigned long)appDirs.count, (unsigned long)named);
+}
+
 static NSLock *wq_catalog_lock(void) {
     static NSLock *lock;
     static dispatch_once_t once;
@@ -157,11 +223,42 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
         } @catch (NSException *exception) {
             wq_log(@"app names: LaunchServices unavailable (%@)", exception.reason);
         }
+        if (!names.count) {
+            // The workspace walk returned nothing (iOS 17/18 kernel route:
+            // 0 ids even after the escape). Fall back to the bundles' own
+            // Info.plists, which the open sandbox lets us read directly.
+            wq_scan_bundle_plists(names, mainIDs);
+        }
         gNames = [names copy];
         gCategories = [categories copy];
         gMainAppIDs = [mainIDs copy];
         gExtensionIDs = [extensionIDs copy];
         wq_log(@"app catalog: %lu app ids, %lu extension ids", (unsigned long)mainIDs.count, (unsigned long)extensionIDs.count);
+        {
+            NSMutableArray *parts = [NSMutableArray new];
+            for (NSString *bid in wq_name_probe_ids())
+                [parts addObject:[NSString stringWithFormat:@"%@=%@", bid, names[bid] ?: @"-"]];
+            wq_log(@"app catalog: name probes: %@", [parts componentsJoinedByString:@", "]);
+        }
+        // Probe: the workspace enumeration returns empty on the kernel
+        // route, but a per-id proxy lookup goes through a different path
+        // and may still answer. Log what it gives for well-known ids.
+        @try {
+            Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+            if (proxyClass && [proxyClass respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
+                NSMutableArray *parts = [NSMutableArray new];
+                for (NSString *bid in wq_name_probe_ids()) {
+                    NSString *nm = nil;
+                    @try {
+                        id proxy = [proxyClass performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
+                        id value = [proxy valueForKey:@"localizedName"];
+                        if ([value isKindOfClass:NSString.class] && [value length]) nm = value;
+                    } @catch (NSException *e) { }
+                    [parts addObject:[NSString stringWithFormat:@"%@=%@", bid, nm ?: @"-"]];
+                }
+                wq_log(@"app catalog: proxy probes: %@", [parts componentsJoinedByString:@", "]);
+            }
+        } @catch (NSException *e) { }
         gCatalogLoaded = YES;
     }
     NSDictionary<NSString *, NSString *> *result = gNames;
