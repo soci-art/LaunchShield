@@ -90,6 +90,76 @@ enum GitHubUpdate {
         fetchLatest(mirror: 0, prerelease: isPrereleaseChannel, completion: completion)
     }
 
+    /// 检测更新用的查法：正式版构建在用户打开「检测预发行更新」开关时，
+    /// 正式版与预发行一起看，哪个新报哪个；预发行构建、或开关关着时，
+    /// 都跟 fetchLatest 一样只看本通道。公告跟着这次取回的发行版走。
+    static func fetchLatestForUpdate(includePrerelease: Bool,
+                                     completion: @escaping (VersionInfo?, String) -> Void) {
+        guard includePrerelease, !isPrereleaseChannel else {
+            fetchLatest(completion: completion)
+            return
+        }
+        fetchNewestOfBothChannels(mirror: 0, completion: completion)
+    }
+
+    private static func fetchNewestOfBothChannels(mirror: Int, completion: @escaping (VersionInfo?, String) -> Void) {
+        guard mirror < mirrors.count else {
+            completion(nil, "三条线路都没连上 GitHub")
+            return
+        }
+        guard let url = URL(string: mirrors[mirror] + releasesListAPI) else {
+            fetchNewestOfBothChannels(mirror: mirror + 1, completion: completion)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let info = data.flatMap { parseNewestOfBothChannels($0) }
+            DispatchQueue.main.async {
+                if info != nil, (response as? HTTPURLResponse)?.statusCode == 200 {
+                    completion(info, "")
+                } else {
+                    fetchNewestOfBothChannels(mirror: mirror + 1, completion: completion)
+                }
+            }
+        }.resume()
+    }
+
+    /// 列表按发布时间倒序：第一个非草稿的正式版就是最新正式版，
+    /// 第一个预发行就是最新预发行；两者取更新的一个
+    /// （先比版本号，再比构建号）。
+    private static func parseNewestOfBothChannels(_ data: Data) -> VersionInfo? {
+        guard let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+        var formal: VersionInfo?
+        var prerelease: VersionInfo?
+        for object in list {
+            if (object["draft"] as? Bool) == true { continue }
+            guard let info = parseRelease(object) else { continue }
+            if info.isPrerelease {
+                if prerelease == nil { prerelease = info }
+            } else if formal == nil { formal = info }
+            if formal != nil, prerelease != nil { break }
+        }
+        guard let formal else { return prerelease }
+        guard let prerelease else { return formal }
+        if isVersion(prerelease.version, newerThan: formal.version) { return prerelease }
+        if prerelease.version == formal.version,
+           (prerelease.build ?? 0) > (formal.build ?? 0) { return prerelease }
+        return formal
+    }
+
+    private static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
+        let a = candidate.split(separator: ".").map { Int($0) ?? 0 }
+        let b = current.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0
+            let y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+
     private static func fetchLatest(mirror: Int, prerelease: Bool, completion: @escaping (VersionInfo?, String) -> Void) {
         guard mirror < mirrors.count else {
             completion(nil, "三条线路都没连上 GitHub")

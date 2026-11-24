@@ -262,6 +262,11 @@ final class AppState: ObservableObject {
     /// 最近一次扫描跳过的已冻结 0 字节文件数（去重：不重复清零、不重复备份）。
     @Published var lastScanSkippedFrozen = 0
     @Published var updateStatus = ""
+    /// 「检测预发行更新」开关（正式版构建才有这一行）：打开后检测更新时
+    /// 正式版与预发行一起看，哪个新报哪个；默认关，关了只看正式版。
+    @Published var checkPrereleaseUpdates = UserDefaults.standard.bool(forKey: "app.checkPrereleaseUpdates") {
+        didSet { UserDefaults.standard.set(checkPrereleaseUpdates, forKey: "app.checkPrereleaseUpdates") }
+    }
     @Published var rulesStatus = ""
     @Published var availableVersion: String?
     /// 有新版时要弹的更新提醒（清单第 12 条的新弹窗：一句话＋取消／更新两个按钮）。
@@ -4902,7 +4907,7 @@ final class AppState: ObservableObject {
     }
 
     private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {
-        GitHubUpdate.fetchLatest { [weak self] info, _ in
+        GitHubUpdate.fetchLatestForUpdate(includePrerelease: checkPrereleaseUpdates) { [weak self] info, _ in
             guard let self else { completion(); return }
             defer { completion() }
             guard let info else { return }
@@ -4928,7 +4933,7 @@ final class AppState: ObservableObject {
         availableVersion = nil
         availableDownloadURL = nil
         downloadedIPA = nil
-        GitHubUpdate.fetchLatest { [weak self] info, message in
+        GitHubUpdate.fetchLatestForUpdate(includePrerelease: checkPrereleaseUpdates) { [weak self] info, message in
             guard let self = self else { return }
             guard let info else {
                 self.updateStatus = "检查失败"
