@@ -3821,6 +3821,94 @@ static NSArray<NSString *> *wq_shared_children(NSString *base, fsid_t fsid, WQSc
     return result;
 }
 
+// Panic reports name the faulting kernel object ("zone_require failed",
+// "element modified after free", a data abort with a register dump). They live
+// outside this app's sandbox, so only the kernel route can read them, and only
+// the next launch can: the panic itself kills the process mid-syscall.
+static NSArray<NSString *> *wq_panic_report_dirs(void)
+{
+    return @[ @"/private/var/mobile/Library/Logs/CrashReporter",
+              @"/private/var/mobile/Library/Logs/CrashReporter/DiagnosticLogs",
+              @"/private/var/mobile/Library/Logs/CrashReporter/Retired",
+              @"/private/var/logs/CrashReporter" ];
+}
+
+static NSString *wq_newest_panic_report(void)
+{
+    NSString *bestPath = nil;
+    time_t bestTime = 0;
+    double bestAge = 0;
+    time_t now = time(NULL);
+    for (NSString *dir in wq_panic_report_dirs()) {
+        for (NSString *name in wq_list(dir, NULL) ?: @[]) {
+            NSString *lower = name.lowercaseString;
+            if (![lower containsString:@"panic"]) continue;
+            if (!([lower hasSuffix:@".ips"] || [lower hasSuffix:@".panic"] ||
+                  [lower containsString:@"panic-full"] || [lower containsString:@"panic-base"])) continue;
+            NSString *path = [dir stringByAppendingPathComponent:name];
+            struct stat st;
+            if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+            // A report from months ago says nothing about this week's reboots.
+            if (now > 0 && st.st_mtime > 0 && now - st.st_mtime > 14 * 24 * 3600) continue;
+            if (st.st_mtime > bestTime || (st.st_mtime == bestTime && bestPath == nil)) {
+                bestPath = path;
+                bestTime = st.st_mtime;
+                bestAge = now > 0 ? (double)(now - st.st_mtime) : 0;
+            }
+        }
+    }
+    (void)bestAge;
+    return bestPath;
+}
+
+NSString *wq_recent_panic_summary(void)
+{
+    NSString *path = wq_newest_panic_report();
+    if (!path.length) return nil;
+    NSData *data = wq_read(path, 512 * 1024, NULL);
+    if (!data.length) return [NSString stringWithFormat:@"panic report %@ could not be read", path.lastPathComponent];
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!text.length) text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    if (!text.length) return [NSString stringWithFormat:@"panic report %@ is not text", path.lastPathComponent];
+
+    NSMutableArray<NSString *> *parts = [NSMutableArray new];
+    [parts addObject:[NSString stringWithFormat:@"%@ (%lu bytes)", path.lastPathComponent, (unsigned long)data.length]];
+
+    // .ips files start with one JSON header line and then a JSON body; older
+    // .panic files are plain text. Both carry the fault in "panicString".
+    NSRange panicRange = [text rangeOfString:@"panicString"];
+    if (panicRange.location != NSNotFound) {
+        NSUInteger from = panicRange.location;
+        NSUInteger limit = MIN(text.length - from, (NSUInteger)2000);
+        NSString *snippet = [text substringWithRange:NSMakeRange(from, limit)];
+        snippet = [snippet stringByReplacingOccurrencesOfString:@"\\n" withString:@" | "];
+        snippet = [snippet stringByReplacingOccurrencesOfString:@"\n" withString:@" | "];
+        // Keep the first 6 fields of the panic string; the rest is a backtrace
+        // the app's log does not need.
+        NSArray<NSString *> *chunks = [snippet componentsSeparatedByString:@" | "];
+        NSMutableArray<NSString *> *kept = [NSMutableArray new];
+        for (NSString *chunk in chunks) {
+            NSString *trimmed = [chunk stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (!trimmed.length) continue;
+            [kept addObject:trimmed];
+            if (kept.count >= 6) break;
+        }
+        NSString *joined = [kept componentsJoinedByString:@" | "];
+        if (joined.length > 1500) joined = [[joined substringToIndex:1500] stringByAppendingString:@"..."];
+        [parts addObject:joined];
+    } else {
+        NSMutableArray<NSString *> *lines = [NSMutableArray new];
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+            NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (!trimmed.length) continue;
+            [lines addObject:trimmed];
+            if (lines.count >= 8) break;
+        }
+        [parts addObject:[lines componentsJoinedByString:@" | "]];
+    }
+    return [parts componentsJoinedByString:@"\npanic log: "];
+}
+
 NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode, WQScanCancellation *cancellation,
                                   void (^progress)(int64_t, int64_t, NSUInteger))
 {
