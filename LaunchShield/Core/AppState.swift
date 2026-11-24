@@ -1333,7 +1333,7 @@ final class AppState: ObservableObject {
     func loadAppIconsIfNeeded() {
         guard !iconLoadStarted, !headlessRun, channel.isAvailable else { return }
         iconLoadStarted = true
-        let targets = containers.filter { !Self.isSystemApp($0) }
+        let targets = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) }
         iconQueue.async { [weak self] in
             guard let self else { return }
             var cached = 0, newFetched = 0, refreshed = 0
@@ -1644,6 +1644,16 @@ final class AppState: ObservableObject {
         return seen
     }
 
+    /// Installed app, not an app extension/plug-in. The container list comes
+    /// from MCM class 2 and includes every extension; those are not targets
+    /// for ad clearing and have no App Store icon of their own. When
+    /// LaunchServices is unavailable the set is empty and we do not filter.
+    static func isMainApp(_ container: ContainerInfo) -> Bool {
+        if container.isGroup { return false }
+        let ids = wq_main_app_bundle_ids()
+        return ids.isEmpty || ids.contains(container.bundleID)
+    }
+
     /// 系统应用的第二道判断（清单第 21 条）：底层只按 com.apple. 前缀
     /// 标 isSystem，标识对不上就漏。应用层再自己复核一遍：前缀照查，
     /// 再加一份内置的系统应用名单，任一命中就算系统应用，一键勾选
@@ -1674,7 +1684,7 @@ final class AppState: ObservableObject {
     ]
 
     var allUserAppsChecked: Bool {
-        let userApps = containers.filter { !Self.isSystemApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
+        let userApps = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
         return !userApps.isEmpty && userApps.allSatisfy { checkedIDs.contains($0.bundleID) }
     }
 
@@ -1697,8 +1707,8 @@ final class AppState: ObservableObject {
             alertText = "已取消一键勾选，现在按单个目标应用处理。"
             return
         }
-        let userApps = containers.filter { !Self.isSystemApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
-        let games = containers.filter { !Self.isSystemApp($0) && $0.isGame }
+        let userApps = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
+        let games = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) && $0.isGame }
         guard !userApps.isEmpty else {
             alertText = "当前没有可勾选的应用（可能都已加入排除白名单）。"
             return
