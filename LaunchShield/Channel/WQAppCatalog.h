@@ -16,6 +16,9 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void);
 /// LaunchServices is unavailable; callers must treat empty as "unknown".
 NSSet<NSString *> *wq_main_app_bundle_ids(void);
 
+/// Bundle ids of app extensions/plug-ins reported by each installed app.
+NSSet<NSString *> *wq_extension_bundle_ids(void);
+
 /// App Store category per bundle id (e.g. "public.app-category.games"),
 /// best effort like the display names. Missing entries mean "unknown".
 NSDictionary<NSString *, NSString *> *wq_app_categories(void);
