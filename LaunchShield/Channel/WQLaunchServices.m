@@ -177,6 +177,15 @@ static const WQLSLayout kWQLSLayouts[] = {
     { "27.2b", 0x25c, 0x10, 0x6c, 0x70, 0x78, 0x00, 0x120, 0x04, 0x58 },
     { "27.2c", 0x25c, 0x0c, 0x6c, 0x70, 0x78, 0x00, 0x120, 0x04, 0x58 },
     { "27.2d", 0x25c, 0x10, 0x6c, 0x70, 0x78, 0x00, 0x120, 0x00, 0x58 },
+    // iOS 18 candidates, from an iOS 18.5 device's layout hint: the plug-in
+    // side matches 26.1 (0xec, id +0x0c, container +0x60; its hint vote tied
+    // the mapped-path count). The bundle side is unproven, so the plausible
+    // geometries from the hint are tried side by side and the parser's
+    // scoring (most containers mapped, then most names) picks the winner.
+    { "18a", 0x100, 0x0c, 0xb4, 0xb8, 0xc0, 0x00, 0x0ec, 0x0c, 0x60 },
+    { "18b", 0x0d0, 0x0c, 0x4c, 0x50, 0x58, 0x00, 0x0ec, 0x0c, 0x60 },
+    { "18c", 0x100, 0x04, 0x0c, 0x10, 0x18, 0x00, 0x0ec, 0x0c, 0x60 },
+    { "18d", 0x100, 0x08, 0x0c, 0x10, 0x18, 0x00, 0x0ec, 0x0c, 0x60 },
 };
 static const size_t kWQLSLayoutCount = sizeof(kWQLSLayouts) / sizeof(kWQLSLayouts[0]);
 static const size_t kWQLSMaxRecordSize = 0x25c;
@@ -771,6 +780,34 @@ NSString *wq_bundle_id_for_container(NSString *path)
         NSString *bid = gLSContainers[key];
         return [bid isKindOfClass:NSString.class] ? bid : nil;
     }
+}
+
+// The parsed store's container table, classified by container kind. Read
+// only: these never trigger a load (the container scan can call them while
+// a name load waits on that scan), so they report "unknown" (empty) until
+// a snapshot exists.
+static NSSet<NSString *> *wq_ls_ids_for_container_kind(NSString *kind)
+{
+    @synchronized (wq_ls_lock()) {
+        if (!gLSLoaded) return [NSSet set];
+        NSMutableSet<NSString *> *ids = [NSMutableSet set];
+        for (NSString *path in gLSContainers) {
+            if (![path containsString:kind]) continue;
+            NSString *bid = gLSContainers[path];
+            if ([bid isKindOfClass:NSString.class] && bid.length) [ids addObject:bid];
+        }
+        return [ids copy];
+    }
+}
+
+NSSet<NSString *> *wq_ls_main_app_bundle_ids(void)
+{
+    return wq_ls_ids_for_container_kind(@"/Data/Application/");
+}
+
+NSSet<NSString *> *wq_ls_extension_bundle_ids(void)
+{
+    return wq_ls_ids_for_container_kind(@"/Data/PluginKitPlugin/");
 }
 
 NSString *wq_display_name(NSString *bundleID)
