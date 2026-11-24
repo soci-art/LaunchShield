@@ -77,11 +77,30 @@ struct ContentView: View {
             // 回到前台时补查一次更新提醒（节流在 AppState 里）：
             // 发版时应用正开着的情况，靠这次补查才不会漏弹。
             if phase == .active {
+                // 第 92 条：回前台把内核读写重新武装（离开前台时已恢复成
+                // 合法缓冲区）。放后台线程，别卡住界面。
+                if wq_kernel_active() {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        _ = wq_kernel_set_quiesced(false)
+                    }
+                }
                 state.recheckRemindersIfStale()
                 // 第 76 条：前台期间实时检测复发。
                 state.startForegroundRecurrenceMonitor()
-            } else if phase == .background {
-                state.stopForegroundRecurrenceMonitor()
+            } else {
+                // 第 92 条：用户随时可能划掉应用。控制 socket 的 icmp6filt 还
+                // 指着 rw 的 PCB 时退出，内核会把这个字段当 32 字节对象释放，
+                // 整机 panic（panic 报告："not in the expected zone
+                // data.kalloc.32"）。一旦离开前台就恢复成合法缓冲区；.inactive
+                // 比 .background 早，留的余量更大。
+                if wq_kernel_active() {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        _ = wq_kernel_set_quiesced(true)
+                    }
+                }
+                if phase == .background {
+                    state.stopForegroundRecurrenceMonitor()
+                }
             }
         }
         .onAppear {

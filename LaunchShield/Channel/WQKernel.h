@@ -32,4 +32,13 @@ BOOL wq_kernel_failed(void);
 /// the app, so the UI only calls this after the user taps.
 BOOL wq_kernel_start(void);
 
+/// 第 92 条：把控制 socket 的 icmp6filt 指针恢复成合法缓冲区 / 重新指回 rw 的
+/// PCB。进程退出时内核会把这个字段当 32 字节对象释放，指针还指着 PCB 就会
+/// panic（panic 报告："not in the expected zone data.kalloc.32"）。所以进后台
+/// （用户随时可能划掉应用）就恢复，回前台再武装。quiesced=YES 表示"不放内核
+/// 状态了"，NO 表示"继续用内核读写"。返回 0 表示状态已是目标值。
+int wq_kernel_set_quiesced(BOOL quiesced);
+/// 内核链路是否处于"已恢复、可安全退出"的状态。
+BOOL wq_kernel_quiesced(void);
+
 NS_ASSUME_NONNULL_END

