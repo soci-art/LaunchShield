@@ -124,7 +124,7 @@ NSSet<NSString *> *wq_main_app_bundle_ids(void)
             static BOOL logged = NO;
             if (!logged) {
                 logged = YES;
-                wq_log(@"app catalog: workspace walk empty; using store app set (%lu ids)",
+                wq_log(@"app catalog: the walk found no app ids; using the store app set (%lu ids)",
                        (unsigned long)storeIDs.count);
             }
             return storeIDs;
@@ -145,7 +145,7 @@ NSSet<NSString *> *wq_extension_bundle_ids(void)
             static BOOL logged = NO;
             if (!logged) {
                 logged = YES;
-                wq_log(@"app catalog: workspace walk empty; using store extension set (%lu ids)",
+                wq_log(@"app catalog: the walk found no extension ids; using the store extension set (%lu ids)",
                        (unsigned long)storeIDs.count);
             }
             return storeIDs;

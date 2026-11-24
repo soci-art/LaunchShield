@@ -186,6 +186,21 @@ BOOL wq_kernel_start(void)
 
     if (active) {
         wq_log(@"kernel: sandbox escaped; full filesystem read/write is available");
+        // A panic leaves nothing in this app's log, so the previous session
+        // ends mid-line and the only way to know what the kernel tripped on is
+        // the system's own report. Read it now, off the main thread: the file
+        // can be a few hundred KB and lives on a slow, previously unreadable
+        // path.
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSString *summary = wq_recent_panic_summary();
+            if (!summary.length) {
+                wq_log(@"panic log: none found (no kernel panic report on this device)");
+                return;
+            }
+            for (NSString *line in [summary componentsSeparatedByString:@"\n"]) {
+                if (line.length) wq_log(@"panic log: %@", line);
+            }
+        });
     } else if (selfProc == 0) {
         wq_log(@"kernel: no proc was resolved and the socket credential did not escape; the chain is not active");
     } else {
