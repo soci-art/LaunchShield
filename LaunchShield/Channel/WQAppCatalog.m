@@ -52,8 +52,15 @@ NSSet<NSString *> *wq_main_app_bundle_ids(void)
         // use its app set when the walk has none.
         NSSet<NSString *> *storeIDs = wq_ls_main_app_bundle_ids();
         if (storeIDs.count) {
-            wq_log(@"app catalog: workspace walk empty; using store app set (%lu ids)",
-                   (unsigned long)storeIDs.count);
+            // Logged once per process: this getter runs once per container
+            // per picker pass, and a line per call flooded the persisted
+            // log and froze the UI on iOS 18 (build 14).
+            static BOOL logged = NO;
+            if (!logged) {
+                logged = YES;
+                wq_log(@"app catalog: workspace walk empty; using store app set (%lu ids)",
+                       (unsigned long)storeIDs.count);
+            }
             return storeIDs;
         }
     }
@@ -68,8 +75,13 @@ NSSet<NSString *> *wq_extension_bundle_ids(void)
         // Same fallback as the app set: the store's plug-in containers.
         NSSet<NSString *> *storeIDs = wq_ls_extension_bundle_ids();
         if (storeIDs.count) {
-            wq_log(@"app catalog: workspace walk empty; using store extension set (%lu ids)",
-                   (unsigned long)storeIDs.count);
+            // Once per process, same reason as the app set above.
+            static BOOL logged = NO;
+            if (!logged) {
+                logged = YES;
+                wq_log(@"app catalog: workspace walk empty; using store extension set (%lu ids)",
+                       (unsigned long)storeIDs.count);
+            }
             return storeIDs;
         }
     }

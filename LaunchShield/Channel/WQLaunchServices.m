@@ -532,6 +532,15 @@ static BOOL wq_parse_ls_store(NSData *data, NSDictionary **displayOut,
         }
         for (NSString *path in layoutContainers.allKeys)
             if (layoutContainers[path] == NSNull.null) [layoutContainers removeObjectForKey:path];
+        // Per-layout score, so a device log shows how every candidate did,
+        // not just the winner (an iOS 18 candidate can collect records yet
+        // still lose; without this line that failure is invisible).
+        NSUInteger appClaims = 0;
+        for (NSString *path in layoutContainers)
+            if ([path containsString:@"/Data/Application/"]) appClaims++;
+        wq_log(@"names: layout %s claims: %lu containers (%lu app), %lu names",
+               kWQLSLayouts[l].label, (unsigned long)layoutContainers.count,
+               (unsigned long)appClaims, (unsigned long)layoutDisplay.count);
         if (!containers || layoutContainers.count > containers.count ||
             (layoutContainers.count == containers.count && layoutDisplay.count > display.count)) {
             display = layoutDisplay;
@@ -785,18 +794,36 @@ NSString *wq_bundle_id_for_container(NSString *path)
 // The parsed store's container table, classified by container kind. Read
 // only: these never trigger a load (the container scan can call them while
 // a name load waits on that scan), so they report "unknown" (empty) until
-// a snapshot exists.
+// a snapshot exists. The classified sets are cached against the published
+// container table and rebuilt only when a new snapshot replaces it: the
+// picker asks once per container per pass, and rebuilding the set on every
+// call froze the UI on iOS 18 (build 14).
+static NSDictionary *gLSClassifiedSource;
+static NSSet<NSString *> *gLSMainIDsCache;
+static NSSet<NSString *> *gLSExtensionIDsCache;
+
 static NSSet<NSString *> *wq_ls_ids_for_container_kind(NSString *kind)
 {
     @synchronized (wq_ls_lock()) {
         if (!gLSLoaded) return [NSSet set];
+        BOOL isApp = [kind isEqualToString:@"/Data/Application/"];
+        if (gLSClassifiedSource == gLSContainers) {
+            NSSet<NSString *> *cached = isApp ? gLSMainIDsCache : gLSExtensionIDsCache;
+            if (cached) return cached;
+        } else {
+            gLSClassifiedSource = gLSContainers;
+            gLSMainIDsCache = nil;
+            gLSExtensionIDsCache = nil;
+        }
         NSMutableSet<NSString *> *ids = [NSMutableSet set];
         for (NSString *path in gLSContainers) {
             if (![path containsString:kind]) continue;
             NSString *bid = gLSContainers[path];
             if ([bid isKindOfClass:NSString.class] && bid.length) [ids addObject:bid];
         }
-        return [ids copy];
+        NSSet<NSString *> *result = [ids copy];
+        if (isApp) gLSMainIDsCache = result; else gLSExtensionIDsCache = result;
+        return result;
     }
 }
 
