@@ -3833,11 +3833,9 @@ static NSArray<NSString *> *wq_panic_report_dirs(void)
               @"/private/var/logs/CrashReporter" ];
 }
 
-static NSString *wq_newest_panic_report(void)
+static NSArray<NSDictionary<id, id> *> *wq_recent_panic_reports(NSUInteger limit)
 {
-    NSString *bestPath = nil;
-    time_t bestTime = 0;
-    double bestAge = 0;
+    NSMutableArray<NSDictionary<id, id> *> *found = [NSMutableArray new];
     time_t now = time(NULL);
     for (NSString *dir in wq_panic_report_dirs()) {
         for (NSString *name in wq_list(dir, NULL) ?: @[]) {
@@ -3850,63 +3848,56 @@ static NSString *wq_newest_panic_report(void)
             if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) continue;
             // A report from months ago says nothing about this week's reboots.
             if (now > 0 && st.st_mtime > 0 && now - st.st_mtime > 14 * 24 * 3600) continue;
-            if (st.st_mtime > bestTime || (st.st_mtime == bestTime && bestPath == nil)) {
-                bestPath = path;
-                bestTime = st.st_mtime;
-                bestAge = now > 0 ? (double)(now - st.st_mtime) : 0;
-            }
+            [found addObject:@{ @"path": path, @"time": @(st.st_mtime) }];
         }
     }
-    (void)bestAge;
-    return bestPath;
+    [found sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"time"] compare:a[@"time"]];
+    }];
+    // One report per reboot is the normal case; this run's panic is usually the
+    // newest, but the exit-time panics can be older than a later scan panic, so
+    // report a few.
+    if (found.count > limit) return [found subarrayWithRange:NSMakeRange(0, limit)];
+    return found;
+}
+
+// The fault itself: .ips files carry "panicString", older .panic files start
+// with a readable header.
+static NSString *wq_panic_fault_line(NSString *path)
+{
+    NSData *data = wq_read(path, 512 * 1024, NULL);
+    if (!data.length) return @"(could not be read)";
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!text.length) text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    if (!text.length) return @"(not text)";
+    NSUInteger from = 0;
+    NSRange panicRange = [text rangeOfString:@"panicString"];
+    if (panicRange.location != NSNotFound) from = panicRange.location;
+    NSUInteger limit = MIN(text.length - from, (NSUInteger)600);
+    NSString *snippet = [text substringWithRange:NSMakeRange(from, limit)];
+    snippet = [snippet stringByReplacingOccurrencesOfString:@"\\n" withString:@" | "];
+    snippet = [snippet stringByReplacingOccurrencesOfString:@"\n" withString:@" | "];
+    snippet = [snippet stringByReplacingOccurrencesOfString:@"\\t" withString:@" "];
+    snippet = [snippet stringByReplacingOccurrencesOfString:@"\t" withString:@" "];
+    return [snippet stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
 }
 
 NSString *wq_recent_panic_summary(void)
 {
-    NSString *path = wq_newest_panic_report();
-    if (!path.length) return nil;
-    NSData *data = wq_read(path, 512 * 1024, NULL);
-    if (!data.length) return [NSString stringWithFormat:@"panic report %@ could not be read", path.lastPathComponent];
-    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (!text.length) text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-    if (!text.length) return [NSString stringWithFormat:@"panic report %@ is not text", path.lastPathComponent];
-
+    NSArray<NSDictionary<id, id> *> *reports = wq_recent_panic_reports(3);
+    if (!reports.count) return nil;
     NSMutableArray<NSString *> *parts = [NSMutableArray new];
-    [parts addObject:[NSString stringWithFormat:@"%@ (%lu bytes)", path.lastPathComponent, (unsigned long)data.length]];
-
-    // .ips files start with one JSON header line and then a JSON body; older
-    // .panic files are plain text. Both carry the fault in "panicString".
-    NSRange panicRange = [text rangeOfString:@"panicString"];
-    if (panicRange.location != NSNotFound) {
-        NSUInteger from = panicRange.location;
-        NSUInteger limit = MIN(text.length - from, (NSUInteger)2000);
-        NSString *snippet = [text substringWithRange:NSMakeRange(from, limit)];
-        snippet = [snippet stringByReplacingOccurrencesOfString:@"\\n" withString:@" | "];
-        snippet = [snippet stringByReplacingOccurrencesOfString:@"\n" withString:@" | "];
-        // Keep the first 6 fields of the panic string; the rest is a backtrace
-        // the app's log does not need.
-        NSArray<NSString *> *chunks = [snippet componentsSeparatedByString:@" | "];
-        NSMutableArray<NSString *> *kept = [NSMutableArray new];
-        for (NSString *chunk in chunks) {
-            NSString *trimmed = [chunk stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-            if (!trimmed.length) continue;
-            [kept addObject:trimmed];
-            if (kept.count >= 6) break;
-        }
-        NSString *joined = [kept componentsJoinedByString:@" | "];
-        if (joined.length > 1500) joined = [[joined substringToIndex:1500] stringByAppendingString:@"..."];
-        [parts addObject:joined];
-    } else {
-        NSMutableArray<NSString *> *lines = [NSMutableArray new];
-        for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
-            NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-            if (!trimmed.length) continue;
-            [lines addObject:trimmed];
-            if (lines.count >= 8) break;
-        }
-        [parts addObject:[lines componentsJoinedByString:@" | "]];
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateFormat = @"MM-dd HH:mm:ss";
+    for (NSDictionary *report in reports) {
+        NSString *path = report[@"path"];
+        NSDate *when = [NSDate dateWithTimeIntervalSince1970:[report[@"time"] doubleValue]];
+        [parts addObject:[NSString stringWithFormat:@"%@ (%@): %@",
+                          path.lastPathComponent,
+                          [formatter stringFromDate:when] ?: @"?",
+                          wq_panic_fault_line(path)]];
     }
-    return [parts componentsJoinedByString:@"\npanic log: "];
+    return [parts componentsJoinedByString:@"\n"];
 }
 
 NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode, WQScanCancellation *cancellation,
