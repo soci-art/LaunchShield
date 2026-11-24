@@ -84,7 +84,6 @@ BOOL wq_scan_wait(WQScanCancellation *cancellation)
 
 static NSMutableString *gLog;
 static NSLock *gLogLock;
-static NSUInteger gRecoveredLogLength;
 static const NSUInteger WQLogMaximumBytes = 1024 * 1024;
 
 static NSString *wq_log_persistence_path(void)
@@ -223,9 +222,11 @@ static void wq_log_persist_line(NSString *line)
     }
 }
 
-// Previous-session bytes remain on disk until the first log export. This is
-// deliberate: if the new process crashes before export, the old diagnostic
-// segment is still recoverable on the next launch.
+// Previous-session bytes stay on disk until the 1 MiB cap trims them, not
+// until the first log export. A kernel attempt can be killed before the user
+// gets a chance to export; if the export consumed the previous session, the
+// next launch would have nothing to show and every failure would be blind.
+// Exports are read-only snapshots of this process's in-memory copy.
 static void wq_log_initialize(void)
 {
     static dispatch_once_t once;
@@ -248,7 +249,6 @@ static void wq_log_initialize(void)
                     @"———— 以下为上次会话留下的日志 ————\n%@%@———— 上次会话日志到此为止，以下为本次会话 ————\n",
                     previous, [previous hasSuffix:@"\n"] ? @"" : @"\n"];
                 [gLog appendString:block];
-                gRecoveredLogLength = block.length;
             }
             if (bounded.length != stored.length)
                 wq_log_replace_persisted_data(bounded);
@@ -340,21 +340,10 @@ NSString *wq_log_text(void)
 {
     wq_log_initialize();
     [gLogLock lock];
-
+    // Read-only snapshot. Do not truncate the persisted file here: a later
+    // kernel attempt may die before it can be exported, and this session's
+    // previous-session block is the only record of it.
     NSString *text = [gLog copy] ?: @"";
-    if (gRecoveredLogLength > 0 && gRecoveredLogLength <= gLog.length) {
-        NSString *currentSession = [gLog substringFromIndex:gRecoveredLogLength];
-        NSData *currentData = [currentSession dataUsingEncoding:NSUTF8StringEncoding];
-        if (wq_log_replace_persisted_data(currentData)) {
-            // The returned snapshot contains the previous session exactly
-            // once. Subsequent exports contain only this process's own logs.
-            [gLog setString:currentSession];
-            gRecoveredLogLength = 0;
-        } else {
-            NSLog(@"[wqfiles] log persistence: previous-session handoff failed; retained for retry");
-        }
-    }
-
     [gLogLock unlock];
     return text;
 }
