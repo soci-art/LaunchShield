@@ -9,4 +9,5 @@
 #import "WQAccess.h"
 #import "WQChannel.h"
 #import "WQAppCatalog.h"
+#import "WQKernel.h"
 #import "WQLaunchServices.h"
