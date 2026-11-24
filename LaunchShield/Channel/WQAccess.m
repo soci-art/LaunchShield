@@ -3884,7 +3884,10 @@ static NSString *wq_panic_fault_line(NSString *path)
 
 NSString *wq_recent_panic_summary(void)
 {
-    NSArray<NSDictionary<id, id> *> *reports = wq_recent_panic_reports(3);
+    // Every reboot leaves one report. A run of failed attempts therefore leaves
+    // a run of reports, and the newest is not necessarily the one that matters,
+    // so report several.
+    NSArray<NSDictionary<id, id> *> *reports = wq_recent_panic_reports(6);
     if (!reports.count) return nil;
     NSMutableArray<NSString *> *parts = [NSMutableArray new];
     NSDateFormatter *formatter = [NSDateFormatter new];

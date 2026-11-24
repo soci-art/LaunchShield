@@ -559,6 +559,11 @@ final class AppState: ObservableObject {
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
+        // 上次启动可能是被内核 panic 打断的：把系统留下的崩溃报告写进日志
+        // （成功跑通第一段时也会读一次，但失败时更需要它）。读文件、别卡首页。
+        DispatchQueue.global(qos: .utility).async {
+            wq_kernel_log_recent_panics()
+        }
         firstLaunchChecks()
         recheckChannel()
     }
