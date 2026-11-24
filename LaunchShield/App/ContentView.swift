@@ -1154,6 +1154,14 @@ struct ContentView: View {
             Text(state.updateStatus.isEmpty ? "当前版本 \(state.appVersionText)" : state.updateStatus)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
+            if !GitHubUpdate.isPrereleaseChannel {
+                Toggle(isOn: $state.checkPrereleaseUpdates) {
+                    Text("检测预发行更新")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                }
+                .tint(Color.accentCyan)
+            }
             if let progress = state.downloadProgress {
                 VStack(alignment: .leading, spacing: 5) {
                     ProgressView(value: progress)
