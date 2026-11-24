@@ -8,6 +8,7 @@
 
 #import "WQAppCatalog.h"
 #import "WQAccess.h"
+#import "WQLaunchServices.h"
 
 static NSDictionary<NSString *, NSString *> *gNames;
 static NSDictionary<NSString *, NSString *> *gCategories;
@@ -43,13 +44,36 @@ NSDictionary<NSString *, NSString *> *wq_app_categories(void)
 NSSet<NSString *> *wq_main_app_bundle_ids(void)
 {
     (void)wq_app_display_names();
-    return gMainAppIDs ?: [NSSet set];
+    NSSet<NSString *> *ids = gMainAppIDs ?: [NSSet set];
+    if (!ids.count) {
+        // The workspace walk can return nothing even with the sandbox open
+        // (seen on iOS 18: 0 ids after the kernel escape, first run included).
+        // The parsed LaunchServices store classifies its containers itself;
+        // use its app set when the walk has none.
+        NSSet<NSString *> *storeIDs = wq_ls_main_app_bundle_ids();
+        if (storeIDs.count) {
+            wq_log(@"app catalog: workspace walk empty; using store app set (%lu ids)",
+                   (unsigned long)storeIDs.count);
+            return storeIDs;
+        }
+    }
+    return ids;
 }
 
 NSSet<NSString *> *wq_extension_bundle_ids(void)
 {
     (void)wq_app_display_names();
-    return gExtensionIDs ?: [NSSet set];
+    NSSet<NSString *> *ids = gExtensionIDs ?: [NSSet set];
+    if (!ids.count) {
+        // Same fallback as the app set: the store's plug-in containers.
+        NSSet<NSString *> *storeIDs = wq_ls_extension_bundle_ids();
+        if (storeIDs.count) {
+            wq_log(@"app catalog: workspace walk empty; using store extension set (%lu ids)",
+                   (unsigned long)storeIDs.count);
+            return storeIDs;
+        }
+    }
+    return ids;
 }
 
 NSDictionary<NSString *, NSString *> *wq_app_display_names(void)

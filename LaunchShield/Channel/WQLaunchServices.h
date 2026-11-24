@@ -16,6 +16,15 @@ NSString *_Nullable wq_display_name(NSString *_Nullable bundleID);
 // where the containers' identifier attribute can't be read. Nil if unknown.
 NSString *_Nullable wq_bundle_id_for_container(NSString *path);
 
+/// Bundle ids the parsed LaunchServices store lists as app containers
+/// (/Data/Application/). Empty when the store is not loaded yet or yielded
+/// none; callers must treat empty as "unknown".
+NSSet<NSString *> *wq_ls_main_app_bundle_ids(void);
+
+/// Bundle ids the parsed LaunchServices store lists as plug-in containers
+/// (/Data/PluginKitPlugin/). Same "empty means unknown" contract.
+NSSet<NSString *> *wq_ls_extension_bundle_ids(void);
+
 // Whether the name database is loaded; loading it (blocking, off the main
 // thread) the first time can take a while, so screens show a status for it.
 BOOL wq_display_names_loaded(void);
