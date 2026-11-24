@@ -8,6 +8,22 @@ enum CollectUploader {
     static func upload(kind: String, contentType: String, body: Data,
                        timeout: TimeInterval = 30,
                        completion: @escaping (Bool, String) -> Void) {
+        attempt(kind: kind, contentType: contentType, body: body,
+                timeout: max(timeout, 60), attemptsLeft: 4, delay: 2,
+                completion: completion)
+    }
+
+    /// One tap, several tries. The collector sits at the far end of an
+    /// unstable link and a 1 MB+ log body often dies mid-flight (field
+    /// logs show "network connection was lost" / "timed out" again and
+    /// again, then a manual second tap lands). Retry transient failures
+    /// with backoff instead of making the user tap again, and give each
+    /// try at least a minute. A 4xx answer from the server will not
+    /// change between tries, so fail at once.
+    private static func attempt(kind: String, contentType: String, body: Data,
+                                timeout: TimeInterval, attemptsLeft: Int,
+                                delay: TimeInterval,
+                                completion: @escaping (Bool, String) -> Void) {
         var request = URLRequest(url: base.appendingPathComponent("upload"))
         request.httpMethod = "POST"
         request.setValue(kind, forHTTPHeaderField: "X-Kind")
@@ -15,13 +31,26 @@ enum CollectUploader {
         request.httpBody = body
         request.timeoutInterval = timeout
         URLSession.shared.dataTask(with: request) { _, response, error in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if error == nil, (200..<300).contains(code) {
+                DispatchQueue.main.async { completion(true, "") }
+                return
+            }
+            let retryable = error != nil || code == 408 || code == 429 || code >= 500
+            if retryable, attemptsLeft > 1 {
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                    attempt(kind: kind, contentType: contentType, body: body,
+                            timeout: timeout, attemptsLeft: attemptsLeft - 1,
+                            delay: min(delay * 2.5, 15), completion: completion)
+                }
+                return
+            }
             DispatchQueue.main.async {
                 if let error {
                     completion(false, error.localizedDescription)
-                    return
+                } else {
+                    completion(false, code == 0 ? "没有连上服务器" : "服务器返回 \(code)")
                 }
-                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                completion((200..<300).contains(code), code == 0 ? "没有连上服务器" : "服务器返回 \(code)")
             }
         }.resume()
     }
