@@ -145,7 +145,19 @@ BOOL wq_kernel_start(void)
     // sandbox_escape() already writes, reads back and deletes probe files; it
     // returns 0 only when that probe passed, so trust it here.
     int escape = sandbox_escape(selfProc);
+    // Log the per-root probe result even on failure: "escape returned -1" alone
+    // does not tell whether app containers or only system data were reachable.
+    char probeReport[512] = {0};
+    int probesPassed = sandbox_probe_report(probeReport, sizeof(probeReport));
+    NSString *probeText = probeReport[0]
+        ? [NSString stringWithUTF8String:probeReport] : @"";
+    wq_log(@"kernel: sandbox probes: %@ (passed=%d)",
+           probeText.length ? probeText : @"none", probesPassed);
     BOOL active = escape == 0;
+    if (active && probeText.length &&
+        ![probeText containsString:@"Data/Application=ok"]) {
+        wq_log(@"kernel: sandbox active, but the app-container root probe failed; container listing may be limited");
+    }
 
     [lock lock];
     gKernelRunning = NO;
