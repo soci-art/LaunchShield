@@ -1661,6 +1661,8 @@ final class AppState: ObservableObject {
     static func isMainApp(_ container: ContainerInfo) -> Bool {
         if container.isGroup { return false }
         guard wq_kernel_active() else { return true }
+        let extensionIDs = wq_extension_bundle_ids()
+        if extensionIDs.contains(container.bundleID) { return false }
         let ids = wq_main_app_bundle_ids()
         if ids.isEmpty { return true }
         if ids.contains(container.bundleID) { return true }
