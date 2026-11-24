@@ -32,6 +32,11 @@ BOOL wq_kernel_failed(void);
 /// the app, so the UI only calls this after the user taps.
 BOOL wq_kernel_start(void);
 
+/// Logs the newest kernel panic reports (usually the previous attempt's
+/// crash), or a line saying there are none. Best effort, needs no kernel
+/// access; call it off the main thread at launch and before an attempt.
+void wq_kernel_log_recent_panics(void);
+
 /// 第 92 条：把控制 socket 的 icmp6filt 指针恢复成合法缓冲区 / 重新指回 rw 的
 /// PCB。进程退出时内核会把这个字段当 32 字节对象释放，指针还指着 PCB 就会
 /// panic（panic 报告："not in the expected zone data.kalloc.32"）。所以进后台

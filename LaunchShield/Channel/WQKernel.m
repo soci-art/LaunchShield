@@ -118,6 +118,30 @@ BOOL wq_kernel_failed(void)
     return failed;
 }
 
+// A panic leaves nothing in this app's log: the previous session just stops
+// mid-line. The report is on disk from the next boot on, so log it before the
+// next attempt - and at launch, so a failure is diagnosable without a
+// successful stage 1. Reading is best effort and needs no kernel access.
+void wq_kernel_log_recent_panics(void)
+{
+    NSString *summary = wq_recent_panic_summary();
+    if (!summary.length) {
+        // Before the kernel route is up this folder is outside the sandbox, so
+        // "nothing here" and "cannot look" are the same answer. Say that once
+        // per process instead of once per attempt.
+        static BOOL noted;
+        @synchronized (NSNull.null) {
+            if (noted) return;
+            noted = YES;
+        }
+        wq_log(@"panic log: no report readable (none exists, or the folder needs the kernel route)");
+        return;
+    }
+    for (NSString *line in [summary componentsSeparatedByString:@"\n"]) {
+        if (line.length) wq_log(@"panic log: %@", line);
+    }
+}
+
 BOOL wq_kernel_start(void)
 {
     NSLock *lock = wq_kernel_lock();
@@ -150,6 +174,10 @@ BOOL wq_kernel_start(void)
     // checkpoint; they resume when the stage finishes, succeeds or fails.
     wq_scan_set_paused(YES);
 
+    // The previous attempt may have panicked the device; its report is the only
+    // record of why, so log it before doing anything that might panic again.
+    wq_kernel_log_recent_panics();
+
     // Stage 1: kernel read/write. FAILURE() inside the exploit phase returns
     // an error code instead of terminating the process.
     wq_log(@"kernel: stage 1/2, kernel read/write (kexploit_opa334); this takes 1-3 min on iOS 17/18 - keep the app in the foreground");
@@ -172,6 +200,9 @@ BOOL wq_kernel_start(void)
         } else {
             wq_log(@"kernel: stage 1 failed [category=other]; code=%d; inspect the preceding kexploit point log", exploit);
         }
+        // A stage-1 failure can leave the kernel in a state the next launch
+        // reports as a panic; read the reports now as well as at the next start.
+        wq_kernel_log_recent_panics();
         return NO;
     }
     wq_log(@"kernel: kernel read/write is up");
