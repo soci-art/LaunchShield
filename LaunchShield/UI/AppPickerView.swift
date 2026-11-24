@@ -9,7 +9,9 @@ struct AppPickerView: View {
     private var filtered: [ContainerInfo] {
         // 第 61 条：切换目标应用时不显示系统应用。过滤走应用层
         // 名单（isSystemApp），iOS 26 和 iOS 27 都一样生效。
-        let visible = state.containers.filter { !AppState.isSystemApp($0) }
+        let visible = state.containers.filter {
+            !AppState.isSystemApp($0) && AppState.isMainApp($0)
+        }
         guard !query.isEmpty else { return visible }
         return visible.filter {
             $0.name.localizedCaseInsensitiveContains(query) ||

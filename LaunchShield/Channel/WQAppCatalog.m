@@ -11,6 +11,7 @@
 
 static NSDictionary<NSString *, NSString *> *gNames;
 static NSDictionary<NSString *, NSString *> *gCategories;
+static NSSet<NSString *> *gMainAppIDs;
 
 NSDictionary<NSString *, NSString *> *wq_app_categories(void)
 {
@@ -19,12 +20,19 @@ NSDictionary<NSString *, NSString *> *wq_app_categories(void)
     return gCategories ?: @{};
 }
 
+NSSet<NSString *> *wq_main_app_bundle_ids(void)
+{
+    (void)wq_app_display_names();
+    return gMainAppIDs ?: [NSSet set];
+}
+
 NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
 {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSMutableDictionary<NSString *, NSString *> *names = [NSMutableDictionary dictionary];
         NSMutableDictionary<NSString *, NSString *> *categories = [NSMutableDictionary dictionary];
+        NSMutableSet<NSString *> *mainIDs = [NSMutableSet set];
         @try {
             Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
             if (workspaceClass) {
@@ -51,6 +59,9 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
                         if (![category isKindOfClass:NSString.class] || ![category length]) {
                             @try { category = [app valueForKey:@"category"]; } @catch (NSException *e) { }
                         }
+                        if ([bundleID isKindOfClass:NSString.class] && bundleID.length) {
+                            [mainIDs addObject:bundleID];
+                        }
                         if ([bundleID isKindOfClass:NSString.class] && bundleID.length &&
                             [category isKindOfClass:NSString.class] && [category length]) {
                             categories[bundleID] = category;
@@ -69,6 +80,7 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
         }
         gNames = [names copy];
         gCategories = [categories copy];
+        gMainAppIDs = [mainIDs copy];
     });
     return gNames;
 }

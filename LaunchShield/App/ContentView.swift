@@ -1232,7 +1232,8 @@ private struct AppWhitelistView: View {
     private var filteredApps: [ContainerInfo] {
         // 第 79 条：和选目标应用一个口径，系统自带应用不显示。
         let apps = state.containers.filter {
-            !$0.isGroup && $0.bundleID != AppState.ownBundleID && !AppState.isSystemApp($0)
+            !$0.isGroup && $0.bundleID != AppState.ownBundleID &&
+            !AppState.isSystemApp($0) && AppState.isMainApp($0)
         }
         guard !query.isEmpty else { return apps }
         return apps.filter {
