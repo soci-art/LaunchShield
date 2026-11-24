@@ -117,6 +117,10 @@ BOOL wq_kernel_start(void)
     // an error code instead of terminating the process.
     wq_log(@"kernel: stage 1/2, kernel read/write (kexploit_opa334); this takes 1-3 min on iOS 17/18 - keep the app in the foreground");
     int exploit = kexploit_opa334();
+    // First line after the kernel stage returns. If this is missing from the
+    // export, the process died inside kexploit_opa334 (or in its final sleep),
+    // not in stage 2.
+    wq_log(@"kernel: kexploit returned %d", exploit);
     wq_scan_set_paused(NO);
     if (exploit != 0) {
         [lock lock];
