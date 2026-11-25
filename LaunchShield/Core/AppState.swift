@@ -4912,7 +4912,7 @@ final class AppState: ObservableObject {
     /// 已经是最新都安安静静，不弹窗、不报错。要是应用更新弹窗正占着，
     /// 规则提醒先候着，等那个弹窗关了再补弹，不互相顶掉。
     private func checkRulesOnLaunch() {
-        RulesStore.checkLatestVersion { [weak self] latest in
+        RulesStore.checkLatestVersion { [weak self] latest, latestDisplay in
             guard let self, let latest else { return }
             let current = RulesStore.currentVersion
             guard latest > current else { return }
@@ -4921,9 +4921,10 @@ final class AppState: ObservableObject {
             let stamp = "\(latest)@\(day.string(from: Date()))"
             guard UserDefaults.standard.string(forKey: "rules.updateReminded") != stamp else { return }
             UserDefaults.standard.set(stamp, forKey: "rules.updateReminded")
-            self.rulesStatus = "有新规则（第 \(latest) 版）"
+            let serverText = latestDisplay ?? "\(latest)"
+            self.rulesStatus = "有新规则（第 \(serverText) 版）"
             self.presentUpdateAlert(.rules)
-            self.log("检测规则：服务器第 \(latest) 版，本地\(current == 0 ? "内置规则" : "第 \(current) 版")", .info)
+            self.log("检测规则：服务器第 \(serverText) 版，本地\(current == 0 ? "内置规则" : "第 \(RulesStore.currentDisplayVersion) 版")", .info)
         }
     }
 
