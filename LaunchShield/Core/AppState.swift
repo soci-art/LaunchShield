@@ -713,7 +713,7 @@ final class AppState: ObservableObject {
     /// down, so the button enables itself the moment the device is ready
     /// instead of waiting for some other state change.
     func refreshKernelBootWait() {
-        let wait = channel.kernelSupported ? wq_kernel_boot_wait_seconds() : 0
+        let wait = channel.kernelSupported ? Int(wq_kernel_boot_wait_seconds()) : 0
         if wait != kernelBootWait { kernelBootWait = wait }
         guard wait > 0 else {
             kernelBootTimer?.invalidate()
