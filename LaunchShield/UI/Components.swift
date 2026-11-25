@@ -48,7 +48,7 @@ func logTint(_ level: LogLevel) -> Color {
 }
 
 struct PanelModifier: ViewModifier {
-    var radius: CGFloat = 18
+    var radius: CGFloat = 16
 
     func body(content: Content) -> some View {
         content
@@ -61,7 +61,7 @@ struct PanelModifier: ViewModifier {
 }
 
 extension View {
-    func panel(radius: CGFloat = 18) -> some View {
+    func panel(radius: CGFloat = 16) -> some View {
         modifier(PanelModifier(radius: radius))
     }
 }
@@ -111,19 +111,19 @@ struct SummaryTile: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(tint)
             Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.primaryText)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.primaryText.opacity(0.88))
                 Text(detail)
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundStyle(Color.secondaryText)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(13)
+        .padding(12)
         .panel(radius: 16)
     }
 }
@@ -175,7 +175,7 @@ struct BusyOverlay: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .padding(22)
+        .padding(20)
         .frame(maxWidth: 240)
         .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
@@ -215,7 +215,7 @@ struct WorkProgressOverlay: View {
                     .truncationMode(.tail)
             }
         }
-        .padding(22)
+        .padding(20)
         .frame(maxWidth: 280)
         .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
@@ -226,7 +226,7 @@ struct InfoLine: View {
     let value: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Color.secondaryText)
@@ -250,11 +250,11 @@ struct LogPreview: View {
                     .foregroundStyle(Color.secondaryText)
             } else {
                 ForEach(Array(logs.lines.suffix(4))) { line in
-                    HStack(alignment: .top, spacing: 9) {
+                    HStack(alignment: .top, spacing: 8) {
                         Circle()
                             .fill(logTint(line.level))
                             .frame(width: 6, height: 6)
-                            .padding(.top, 5)
+                            .padding(.top, 4)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(line.message)
                                 .font(.system(size: 12))
@@ -284,7 +284,7 @@ struct ThumbnailView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primaryText.opacity(0.06))
             if let image {
                 Image(uiImage: image)
@@ -297,7 +297,7 @@ struct ThumbnailView: View {
             }
         }
         .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .task(id: path) {
             guard kind != .other else { return }
             image = await ThumbnailLoader.load(path: path, kind: kind)
