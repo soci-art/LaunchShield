@@ -14,8 +14,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Log shared with the UI.
 void wq_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
-// printf-compatible bridge used by the kernel channel's C/Objective-C sources.
-int wq_kernel_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 NSString *wq_log_text(void);
 
 // Detects signing mode from the app's embedded provisioning profile.
@@ -246,13 +244,6 @@ void wq_enumerate_invalidate(void);
 // NO on iOS 26: there worse_query can't reach System Data, the system groups
 // or the App Groups parent folder (only the individual containers).
 BOOL wq_system_areas_reachable(void);
-
-/// A short summary of the newest kernel panic report on this device, for the
-/// log (nil when there is none or it cannot be read). The reports live outside
-/// this app's sandbox, so this needs the kernel route. A panic leaves no line
-/// in this app's own log; without this, the only evidence after a reboot is
-/// "the previous session has no ending", and the next change is a guess.
-NSString *_Nullable wq_recent_panic_summary(void);
 
 NSArray<NSString *> *_Nullable wq_enumerate(NSString *dir, int64_t maxInode,
                                             WQScanCancellation *_Nullable cancellation,

@@ -12,9 +12,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 NSDictionary<NSString *, NSString *> *wq_app_display_names(void);
 
-/// Drop the cached LaunchServices catalog. Call after the kernel chain makes
-/// LaunchServices readable again; before that the first lookup can cache an
-/// empty result for the whole process.
+/// Drop the cached LaunchServices catalog so the next lookup re-reads it;
+/// before the channel is up the first lookup can cache an empty result
+/// for the whole process.
 void wq_app_catalog_invalidate(void);
 
 /// Bundle ids of installed apps (not app extensions/plug-ins). Empty when

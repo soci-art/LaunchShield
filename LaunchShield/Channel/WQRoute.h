@@ -7,8 +7,8 @@
 //  it came from a paid certificate or a Personal Team / SideStore signature.
 //  On iOS 26.0-26.6.1 only, bad_query remains the fallback when no usable
 //  App Group is available. Actual target-container access is verified later.
-//  iOS 17.0-18.7.1 has its own route: the kernel chain, which takes
-//  any signature, needs no App Group, and must be started from the home screen.
+//  This edition only carries the two query backends (iOS 26/27); iOS 17/18
+//  is served by the separate kernel edition and reports Unsupported here.
 //
 
 #import <Foundation/Foundation.h>
@@ -27,9 +27,6 @@ typedef NS_ENUM(NSInteger, WQRouteState) {
     WQRouteStateMissingAppGroup,
     /// The system version is outside the available backend ranges.
     WQRouteStateUnsupported,
-    /// kernel: iOS 17.0-18.7.1, the kernel chain. No App Group and
-    /// no container query; it has to be started from the home screen once.
-    WQRouteStateKernel,
 };
 
 /// Automatically detected signing mode: @"free" or @"cert".

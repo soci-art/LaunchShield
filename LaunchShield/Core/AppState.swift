@@ -194,11 +194,12 @@ final class AppState: ObservableObject {
     @Published private(set) var channelChecking = true
     /// 自动识别的签名方式："cert" / "free" / "livecontainer"。
     @Published private(set) var signMethod: String? = nil
-    /// iOS 17/18 的内核链路：没启动、正在启动、已就绪、启动失败。
-    enum KernelState { case idle, running, active, failed }
-    @Published private(set) var kernelState: KernelState = .idle
-    /// 这台设备是不是走内核链路（iOS 17.0–18.7.1）。
-    var kernelSupported: Bool { channel.kernelSupported }
+    /// 版本与系统不对应：正式版装在 iOS 17/18 上——那是内核专用版的
+    /// 地盘。界面除「应用更新」外全部置灰，另有弹窗指路。
+    var editionMismatch: Bool {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        return major == 17 || major == 18
+    }
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
     /// App 排除白名单：以 Bundle ID 为唯一标识，保存在本机。
@@ -262,10 +263,10 @@ final class AppState: ObservableObject {
     /// 最近一次扫描跳过的已冻结 0 字节文件数（去重：不重复清零、不重复备份）。
     @Published var lastScanSkippedFrozen = 0
     @Published var updateStatus = ""
-    /// 「检测预发行更新」开关（正式版构建才有这一行）：打开后检测更新时
-    /// 正式版与预发行一起看，哪个新报哪个；默认关，关了只看正式版。
-    @Published var checkPrereleaseUpdates = UserDefaults.standard.bool(forKey: "app.checkPrereleaseUpdates") {
-        didSet { UserDefaults.standard.set(checkPrereleaseUpdates, forKey: "app.checkPrereleaseUpdates") }
+    /// 「内核专用更新」开关（只在 iOS 17/18 的正式版上显示）：打开后
+    /// 检测更新改查内核线的最新版；默认关，关了只看正式版。
+    @Published var checkKernelUpdates = UserDefaults.standard.bool(forKey: "app.checkKernelUpdates") {
+        didSet { UserDefaults.standard.set(checkKernelUpdates, forKey: "app.checkKernelUpdates") }
     }
     @Published var rulesStatus = ""
     @Published var availableVersion: String?
@@ -564,9 +565,6 @@ final class AppState: ObservableObject {
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
-        // 上次启动可能是被内核 panic 打断的，但崩溃报告只有在沙盒逃逸之后才
-        // 可读（内核链路启动前它一直在沙盒外），所以这里不读——读到它们的
-        // 地方是「启动内核链路」成功之后的路径。
         firstLaunchChecks()
         recheckChannel()
     }
@@ -674,14 +672,8 @@ final class AppState: ObservableObject {
                 self.log("访问路线：\(route)", .info)
                 if ok {
                     self.log("文件通道就绪（\(self.channel.routeName)），\(group)", .success)
-                } else if self.channel.kernelSupported {
-                    // iOS 17/18 还没启动内核链路是正常状态，不当成故障提醒。
-                    self.log(self.channel.unavailableReason, .info)
                 } else {
                     self.log(self.channel.unavailableReason, .warning)
-                }
-                if self.channel.kernelActive {
-                    self.kernelState = .active
                 }
                 guard ok else { return }
                 self.refreshTargetPath()
@@ -689,30 +681,6 @@ final class AppState: ObservableObject {
                     self.work.async { self.sweepAdDirectories(reason: "启动补扫") }
                 }
                 self.checkRecipes(silent: true)
-            }
-        }
-    }
-
-    /// iOS 17/18：启动内核链路。通常要跑 1–3 分钟，失败时应用可能重启，
-    /// 所以只在用户点按时跑，不在启动时自动跑。
-    func startKernel() {
-        guard channel.kernelSupported else { return }
-        guard kernelState != .running, kernelState != .active else { return }
-        kernelState = .running
-        log("内核链路：开始启动，通常要 1–3 分钟，期间请保持应用在前台", .notice)
-        work.async {
-            let ok = self.channel.startKernel()
-            DispatchQueue.main.async {
-                self.kernelState = ok ? .active : .failed
-                guard ok else {
-                    self.channelChecking = false
-                    self.channelReady = false
-                    self.log("内核链路没启动成功：重启应用后再试一次", .warning)
-                    return
-                }
-                self.log("内核链路已就绪：沙箱已放开，所有功能可用", .success)
-                // 走一遍正常的通道就绪流程：列应用、复查配方。
-                self.recheckChannel()
             }
         }
     }
@@ -1652,34 +1620,11 @@ final class AppState: ObservableObject {
         return seen
     }
 
-    /// Installed app, not an app extension/plug-in.
-    ///
-    /// On iOS 17/18 the kernel route lists MCM class 2, which includes every
-    /// extension container, and the App Store lookup can never find an icon
-    /// for one. Those are the blank rows in the target picker. On iOS 26/27
-    /// the container query already returns app data containers only, and the
-    /// per-container LS walk on those systems can miss apps that the catalog
-    /// does list, so filtering there risks hiding real apps.
-    ///
-    /// The filter therefore only runs on the kernel route. The rule is keyed
-    /// on the bundle id rather than the container: an extension is a parent
-    /// app id plus at least one more component, and the parent id itself is
-    /// in the catalog. When the catalog is empty (LaunchServices unavailable)
-    /// nothing is filtered.
+    /// Installed app, not an app extension/plug-in. On iOS 26/27 the
+    /// container query already returns app data containers only, so the
+    /// only exclusion here is shared-group containers.
     static func isMainApp(_ container: ContainerInfo) -> Bool {
-        if container.isGroup { return false }
-        guard wq_kernel_active() else { return true }
-        let extensionIDs = wq_extension_bundle_ids()
-        if extensionIDs.contains(container.bundleID) { return false }
-        let ids = wq_main_app_bundle_ids()
-        if ids.isEmpty { return true }
-        if ids.contains(container.bundleID) { return true }
-        var parent = container.bundleID
-        while let dot = parent.lastIndex(of: ".") {
-            parent = String(parent[..<dot])
-            if ids.contains(parent) { return false }
-        }
-        return true
+        !container.isGroup
     }
 
     /// 系统应用的第二道判断（清单第 21 条）：底层只按 com.apple. 前缀
@@ -4907,7 +4852,7 @@ final class AppState: ObservableObject {
     }
 
     private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {
-        GitHubUpdate.fetchLatestForUpdate(includePrerelease: checkPrereleaseUpdates) { [weak self] info, _ in
+        GitHubUpdate.fetchLatestForUpdate(includeKernel: checkKernelUpdates) { [weak self] info, _ in
             guard let self else { completion(); return }
             defer { completion() }
             guard let info else { return }
@@ -4924,7 +4869,7 @@ final class AppState: ObservableObject {
             self.updateStatus = "有新版本 \(Self.remoteVersionText(info, currentVersion: current))"
             self.presentUpdateAlert(.app)
             let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
-            self.log("检测更新：\(info.isPrerelease ? "预发行" : "正式版") \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
+            self.log("检测更新：\(Self.editionLabel(info)) \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
@@ -4933,7 +4878,7 @@ final class AppState: ObservableObject {
         availableVersion = nil
         availableDownloadURL = nil
         downloadedIPA = nil
-        GitHubUpdate.fetchLatestForUpdate(includePrerelease: checkPrereleaseUpdates) { [weak self] info, message in
+        GitHubUpdate.fetchLatestForUpdate(includeKernel: checkKernelUpdates) { [weak self] info, message in
             guard let self = self else { return }
             guard let info else {
                 self.updateStatus = "检查失败"
@@ -4947,13 +4892,13 @@ final class AppState: ObservableObject {
                 self.updateStatus = "有新版本 \(remoteText)"
                 self.availableVersion = info.version
                 self.availableDownloadURL = info.downloadURL
-                self.alertText = "\(info.isPrerelease ? "预发行" : "正式版")有新版本：\(remoteText)。点「下载新版」就能下载，下载完分享出去签名。"
+                self.alertText = "\(Self.editionLabel(info))有新版本：\(remoteText)。点「下载新版」就能下载，下载完分享出去签名。"
             } else {
                 self.updateStatus = "已是最新"
                 self.alertText = "已经是最新版本（\(self.appVersionText)）。"
             }
             let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
-            self.log("检测更新：\(info.isPrerelease ? "预发行" : "正式版") \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
+            self.log("检测更新：\(Self.editionLabel(info)) \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
@@ -4987,6 +4932,13 @@ final class AppState: ObservableObject {
         if isVersion(info.version, newerThan: currentVersion) { return true }
         guard info.version == currentVersion, let remoteBuild = info.build else { return false }
         return remoteBuild > currentBuild
+    }
+
+    /// 发行版属于哪条线的称呼：内核线的包也是预发行标记，
+    /// 得靠目标分支区分，不然会把内核专用版说成预发行。
+    static func editionLabel(_ info: GitHubUpdate.VersionInfo) -> String {
+        if info.targetBranch == "kernel" { return "内核专用版" }
+        return info.isPrerelease ? "预发行" : "正式版"
     }
 
     /// 展示用的远端版本字样：同版本新构建写成「0.1.6（构建 2）」，

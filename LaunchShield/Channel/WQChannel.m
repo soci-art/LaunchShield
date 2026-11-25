@@ -11,7 +11,6 @@
 #import "WQLaunchServices.h"
 #import "WQAccess.h"
 #import "WQRoute.h"
-#import "WQKernel.h"
 #import "bad_query.h"
 #import <CommonCrypto/CommonDigest.h>
 #import <sys/stat.h>
@@ -172,12 +171,6 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
                    ok ? @"available" : @"missing");
             return ok;
         }
-        case WQRouteStateKernel: {
-            BOOL ok = wq_kernel_active();
-            wq_log(@"channel availability: route=kernel result=%@",
-                   ok ? @"available" : @"not started");
-            return ok;
-        }
         case WQRouteStateUnset:
             wq_log(@"channel availability: route=unset");
             return NO;
@@ -204,11 +197,6 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     _groupContainersLoaded = NO;
 }
 
-- (BOOL)kernelSupported { return wq_kernel_supported(); }
-- (BOOL)kernelActive { return wq_kernel_active(); }
-- (BOOL)kernelRunning { return wq_kernel_running(); }
-- (BOOL)startKernel { return wq_kernel_start(); }
-
 - (NSString *)groupID
 {
     return wq_app_group();
@@ -223,12 +211,9 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
             return wq_app_group() ?: @"没有拿到";
         case WQRouteStateMissingAppGroup:
             return @"缺少 App Group";
-        case WQRouteStateKernel:
-            return @"不需要（内核链路不用共享组）";
         case WQRouteStateUnset:
             return @"尚未识别访问通道";
         case WQRouteStateUnsupported:
-            if (wq_kernel_unsupported_a10_ios17()) return @"A10 + iOS 17 组合未纳入已验证范围，已阻止启动内核链路";
             return @"当前 iOS 版本、构建号或机型组合不在已验证范围内";
     }
     return @"没有拿到";
@@ -261,15 +246,13 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
             return @"无法自动识别当前访问通道，请重新打开应用后再试。";
         case WQRouteStateMissingAppGroup:
             return _worseProbeError ?: (wq_app_group_error() ?: @"当前进程没有可用的 App Group；请检查签名实际授予的 application-groups 权限。");
-        case WQRouteStateKernel:
-            if (wq_kernel_running()) return @"内核链路正在启动：等它跑完，应用可能会重启一次。";
-            if (wq_kernel_failed()) return @"内核链路没启动成功：重启应用后再点一次「启动内核链路」。";
-            return @"内核链路还没启动：点主页的「启动内核链路」。启动通常要 1–3 分钟，期间请保持应用在前台；失败时应用可能会重启一次。";
         case WQRouteStateUnsupported: {
-            if (wq_kernel_unsupported_a10_ios17())
-                return @"当前设备为 A10 且运行 iOS 17；该组合未纳入已验证范围，已阻止启动内核链路。";
-            if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26) {
-                return @"系统不支持：内核链路只支持 iOS 17.0–18.7.1，你现在的系统用不了这条路线。";
+            NSOperatingSystemVersion osv = NSProcessInfo.processInfo.operatingSystemVersion;
+            if (osv.majorVersion == 17 || osv.majorVersion == 18) {
+                return @"正式版不支持 iOS 17/18：请用内核专用版（在下方「应用更新」里打开「内核专用更新」获取）。";
+            }
+            if (osv.majorVersion < 26) {
+                return @"系统不支持：正式版支持 iOS 26/27，你现在的系统用不了。";
             }
             NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
             size_t size = 0;
@@ -631,10 +614,9 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
     wq_load_display_names();
     NSArray<NSString *> *roots = @[@"/private/var/mobile/Containers/Data/Application",
                                    @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
-    if (wq_route_is_bad_query() || wq_kernel_active()) {
-        // bad_query grants a folder in one query, and the kernel chain has no
-        // sandbox left, so both roots can be listed directly instead of
-        // waiting for a full inode scan.
+    if (wq_route_is_bad_query()) {
+        // bad_query grants a folder in one query, so both roots can be
+        // listed directly instead of waiting for a full inode scan.
         for (NSString *root in roots) {
             for (NSString *name in wq_list(root, NULL) ?: @[]) {
                 if (!name.length || [name hasPrefix:@"."]) continue;

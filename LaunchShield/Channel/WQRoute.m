@@ -5,8 +5,7 @@
 //  GPL-3.0-or-later. Route selection is capability-based:
 //    supported OS/build + a usable process App Group -> worse_query
 //    supported OS/build + no usable group + iOS 26.0-26.6.1 -> bad_query
-//    iOS 17.0-18.7.1 -> the kernel chain (any signature, no group)
-//    otherwise -> unavailable
+//    otherwise -> unavailable (iOS 17/18 belongs to the kernel edition)
 //
 //  The signing-method label is diagnostic only. The effective process
 //  application-groups entitlement (with a signed-Mach-O fallback) decides
@@ -15,7 +14,6 @@
 
 #import "WQRoute.h"
 #import "WQAccess.h"
-#import "WQKernel.h"
 #import "bad_query.h"
 #import <sys/sysctl.h>
 #import <stdlib.h>
@@ -63,7 +61,6 @@ static NSString *wq_route_hardware_model_text(void)
 
 // Upstream WQFiles support window: iOS 26.0-26.7.2 and iOS 27.0 through
 // 27.3 beta 1. Apple fixed worse_query in 27.3 beta 2 (24C5049d).
-// iOS 17/18 use the separately gated kernel chain, not either query backend.
 // Unknown/newer builds fail closed instead of assuming compatibility.
 static BOOL wq_route_version_supports_worse_query(void)
 {
@@ -95,9 +92,6 @@ NSString *wq_route_sign_method(void)
 
 static WQRouteState wq_route_compute(void)
 {
-    // iOS 17/18: the kernel chain replaces both container-query backends. It
-    // is signature-independent and needs no App Group, so it comes first.
-    if (wq_kernel_supported()) return WQRouteStateKernel;
     if (!wq_route_version_supports_worse_query())
         return WQRouteStateUnsupported;
 
@@ -118,7 +112,6 @@ static NSString *wq_route_state_label(WQRouteState state)
         case WQRouteStateWorse: return @"worse_query";
         case WQRouteStateBad: return @"bad_query";
         case WQRouteStateMissingAppGroup: return @"缺少 App Group";
-        case WQRouteStateKernel: return @"kernel";
         case WQRouteStateUnsupported: return @"系统不支持";
         case WQRouteStateUnset: return @"无法识别";
     }
@@ -178,13 +171,13 @@ NSString *wq_route_detail(void)
             return [NSString stringWithFormat:@"worse_query（iOS %@，已检测到进程可用的共享组）", version];
         case WQRouteStateMissingAppGroup:
             return wq_app_group_error() ?: @"当前进程没有可用的 App Group；请检查实际签名 entitlements。";
-        case WQRouteStateKernel:
-            return [NSString stringWithFormat:@"内核链路（iOS %@，不需要共享组，要手动启动）", version];
         case WQRouteStateUnsupported:
-            if (wq_kernel_unsupported_a10_ios17())
-                return @"系统不支持（A10 + iOS 17 组合未纳入已验证范围，已阻止启动内核链路）";
+            if (wq_route_version().majorVersion == 17 || wq_route_version().majorVersion == 18) {
+                return [NSString stringWithFormat:@"系统不支持（iOS %@%@，正式版只支持 iOS 26/27，iOS 17/18 请用内核专用版）", version,
+                        build.length ? [NSString stringWithFormat:@"，构建 %@", build] : @""];
+            }
             if (wq_route_version().majorVersion < 26) {
-                return [NSString stringWithFormat:@"系统不支持（iOS %@%@，内核链路只支持 iOS 17.0–18.7.1）", version,
+                return [NSString stringWithFormat:@"系统不支持（iOS %@%@）", version,
                         build.length ? [NSString stringWithFormat:@"，构建 %@", build] : @""];
             }
             return [NSString stringWithFormat:@"系统版本或构建号不在已验证范围内（iOS %@%@）。当前仅支持 iOS 26.0–26.7.2、iOS 27.0–27.3 beta 1（24C5037i）；Apple 已在 27.3 beta 2 修复 worse_query。", version,

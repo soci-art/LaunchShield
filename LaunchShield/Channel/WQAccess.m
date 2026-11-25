@@ -18,7 +18,6 @@
 #import "WQAccessSafety.h"
 #import "WQLocalization.h"
 #import "WQRoute.h"
-#import "WQKernel.h"
 #import <dlfcn.h>
 #import <CoreFoundation/CFByteOrder.h>
 #import <mach-o/loader.h>
@@ -108,7 +107,7 @@ static NSString *wq_log_persistence_path(void)
                   error.localizedDescription ?: @"unknown error");
             return;
         }
-        path = [[logsURL URLByAppendingPathComponent:@"LaunchShield-kernel.log"] path];
+        path = [[logsURL URLByAppendingPathComponent:@"LaunchShield.log"] path];
     });
     return path;
 }
@@ -223,7 +222,7 @@ static void wq_log_persist_line(NSString *line)
 }
 
 // Previous-session bytes stay on disk until the 1 MiB cap trims them, not
-// until the first log export. A kernel attempt can be killed before the user
+// until the first log export. A session can be killed before the user
 // gets a chance to export; if the export consumed the previous session, the
 // next launch would have nothing to show and every failure would be blind.
 // Exports are read-only snapshots of this process's in-memory copy.
@@ -292,56 +291,12 @@ void wq_log(NSString *format, ...)
     [gLogLock unlock];
 }
 
-// Preserve printf's console output while mirroring the exact formatted text
-// into the application's exportable log. The shared wq_log path timestamps
-// every emitted line, including multi-line printf calls.
-int wq_kernel_printf(const char *format, ...)
-{
-    if (!format) return -1;
-
-    va_list args;
-    va_start(args, format);
-
-    va_list consoleArgs;
-    va_copy(consoleArgs, args);
-    int consoleResult = vfprintf(stdout, format, consoleArgs);
-    va_end(consoleArgs);
-    fflush(stdout);
-
-    va_list lengthArgs;
-    va_copy(lengthArgs, args);
-    int length = vsnprintf(NULL, 0, format, lengthArgs);
-    va_end(lengthArgs);
-
-    if (length >= 0) {
-        char *buffer = malloc((size_t)length + 1);
-        if (buffer) {
-            va_list renderArgs;
-            va_copy(renderArgs, args);
-            vsnprintf(buffer, (size_t)length + 1, format, renderArgs);
-            va_end(renderArgs);
-
-            NSString *message = [[NSString alloc] initWithBytes:buffer
-                                                          length:(NSUInteger)length
-                                                        encoding:NSUTF8StringEncoding];
-            if (message) wq_log(@"%@", message);
-            else wq_log(@"<kernel log contained non-UTF-8 output; %d bytes>", length);
-            free(buffer);
-        } else {
-            wq_log(@"<kernel log formatting allocation failed; %d bytes>", length);
-        }
-    }
-
-    va_end(args);
-    return consoleResult;
-}
-
 NSString *wq_log_text(void)
 {
     wq_log_initialize();
     [gLogLock lock];
     // Read-only snapshot. Do not truncate the persisted file here: a later
-    // kernel attempt may die before it can be exported, and this session's
+    // session may die before it can be exported, and this session's
     // previous-session block is the only record of it.
     NSString *text = [gLog copy] ?: @"";
     [gLogLock unlock];
@@ -726,9 +681,6 @@ static int64_t wq_query_token(NSString *group, BOOL altFlags)
 
 BOOL wq_system_areas_reachable(void)
 {
-    // The kernel chain drops the sandbox entirely on iOS 17/18, so the system
-    // areas are reachable there.
-    if (wq_kernel_active()) return YES;
     // worse_query reaches System Data, the system groups and the App Groups
     // parent only on iOS 27; on iOS 26 it reaches the individual app,
     // extension, daemon and app group containers.
@@ -879,7 +831,7 @@ BOOL wq_reset_access_cache(NSString **errorText)
 
 static NSMutableDictionary<NSString *, NSNumber *> *gGrants;
 static NSMutableArray<NSString *> *gGrantOrder;   // oldest first
-// The kernel limits how many sandbox extensions a process may hold. Keep a
+// The system limits how many sandbox extensions a process may hold. Keep a
 // bounded working set and release the oldest; released paths are simply
 // granted again when they are next used.
 static const NSUInteger kMaxGrants = 192;
@@ -919,9 +871,6 @@ BOOL wq_grant(NSString *path)
         gGrantLock = [NSRecursiveLock new];
     });
     NSString *key = wq_norm(path);
-    // The iOS 17/18 kernel chain removes the sandbox process-wide, so there is
-    // no per-path token to ask for: every path is already open.
-    if (wq_kernel_active()) return YES;
     [gGrantLock lock];
     NSNumber *known = gGrants[key];
     if (known) {
@@ -1904,7 +1853,7 @@ BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString **errorText)
 }
 
 // Owner, then group (primary or supplementary), then others: the first class
-// that matches decides, as in the kernel's check.
+// that matches decides, as in the system's own check.
 static BOOL wq_stat_allows(const struct stat *st, mode_t need)
 {
     uid_t me = getuid();
@@ -3368,9 +3317,8 @@ static void wq_full_scan_release(void)
 static WQScanCancellation *wq_full_scan_begin(NSString *what, int64_t ids, double seconds, WQScanCancellation *caller, BOOL resuming)
 {
     // Without an App Group no container can be opened or named, so a long
-    // scan would only produce a list of unusable folders. The kernel chain
-    // needs no group: the sandbox is gone.
-    if (!wq_app_group() && !wq_kernel_active()) {
+    // scan would only produce a list of unusable folders.
+    if (!wq_app_group()) {
         atomic_store(&gFullScanDeclined, YES);
         wq_log(@"scan: no App Group; full scan of %@ skipped", what);
         return nil;
@@ -3821,87 +3769,6 @@ static NSArray<NSString *> *wq_shared_children(NSString *base, fsid_t fsid, WQSc
     return result;
 }
 
-// Panic reports name the faulting kernel object ("zone_require failed",
-// "element modified after free", a data abort with a register dump). They live
-// outside this app's sandbox, so only the kernel route can read them, and only
-// the next launch can: the panic itself kills the process mid-syscall.
-static NSArray<NSString *> *wq_panic_report_dirs(void)
-{
-    return @[ @"/private/var/mobile/Library/Logs/CrashReporter",
-              @"/private/var/mobile/Library/Logs/CrashReporter/DiagnosticLogs",
-              @"/private/var/mobile/Library/Logs/CrashReporter/Retired",
-              @"/private/var/logs/CrashReporter" ];
-}
-
-static NSArray<NSDictionary<id, id> *> *wq_recent_panic_reports(NSUInteger limit)
-{
-    NSMutableArray<NSDictionary<id, id> *> *found = [NSMutableArray new];
-    time_t now = time(NULL);
-    for (NSString *dir in wq_panic_report_dirs()) {
-        for (NSString *name in wq_list(dir, NULL) ?: @[]) {
-            NSString *lower = name.lowercaseString;
-            if (![lower containsString:@"panic"]) continue;
-            if (!([lower hasSuffix:@".ips"] || [lower hasSuffix:@".panic"] ||
-                  [lower containsString:@"panic-full"] || [lower containsString:@"panic-base"])) continue;
-            NSString *path = [dir stringByAppendingPathComponent:name];
-            struct stat st;
-            if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-            // A report from months ago says nothing about this week's reboots.
-            if (now > 0 && st.st_mtime > 0 && now - st.st_mtime > 14 * 24 * 3600) continue;
-            [found addObject:@{ @"path": path, @"time": @(st.st_mtime) }];
-        }
-    }
-    [found sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        return [b[@"time"] compare:a[@"time"]];
-    }];
-    // One report per reboot is the normal case; this run's panic is usually the
-    // newest, but the exit-time panics can be older than a later scan panic, so
-    // report a few.
-    if (found.count > limit) return [found subarrayWithRange:NSMakeRange(0, limit)];
-    return found;
-}
-
-// The fault itself: .ips files carry "panicString", older .panic files start
-// with a readable header.
-static NSString *wq_panic_fault_line(NSString *path)
-{
-    NSData *data = wq_read(path, 512 * 1024, NULL);
-    if (!data.length) return @"(could not be read)";
-    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (!text.length) text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-    if (!text.length) return @"(not text)";
-    NSUInteger from = 0;
-    NSRange panicRange = [text rangeOfString:@"panicString"];
-    if (panicRange.location != NSNotFound) from = panicRange.location;
-    NSUInteger limit = MIN(text.length - from, (NSUInteger)600);
-    NSString *snippet = [text substringWithRange:NSMakeRange(from, limit)];
-    snippet = [snippet stringByReplacingOccurrencesOfString:@"\\n" withString:@" | "];
-    snippet = [snippet stringByReplacingOccurrencesOfString:@"\n" withString:@" | "];
-    snippet = [snippet stringByReplacingOccurrencesOfString:@"\\t" withString:@" "];
-    snippet = [snippet stringByReplacingOccurrencesOfString:@"\t" withString:@" "];
-    return [snippet stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-}
-
-NSString *wq_recent_panic_summary(void)
-{
-    // Every reboot leaves one report. A run of failed attempts therefore leaves
-    // a run of reports, and the newest is not necessarily the one that matters,
-    // so report several.
-    NSArray<NSDictionary<id, id> *> *reports = wq_recent_panic_reports(6);
-    if (!reports.count) return nil;
-    NSMutableArray<NSString *> *parts = [NSMutableArray new];
-    NSDateFormatter *formatter = [NSDateFormatter new];
-    formatter.dateFormat = @"MM-dd HH:mm:ss";
-    for (NSDictionary *report in reports) {
-        NSString *path = report[@"path"];
-        NSDate *when = [NSDate dateWithTimeIntervalSince1970:[report[@"time"] doubleValue]];
-        [parts addObject:[NSString stringWithFormat:@"%@ (%@): %@",
-                          path.lastPathComponent,
-                          [formatter stringFromDate:when] ?: @"?",
-                          wq_panic_fault_line(path)]];
-    }
-    return [parts componentsJoinedByString:@"\n"];
-}
 
 NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode, WQScanCancellation *cancellation,
                                   void (^progress)(int64_t, int64_t, NSUInteger))
@@ -3917,27 +3784,6 @@ NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode, WQScanCancell
     if (baseError != 0 && errno != EACCES && errno != EPERM) {
         wq_log(@"enumerate %@: base is missing (%@)", dir, wq_errno(errno));
         return nil;
-    }
-    // iOS 17/18 kernel chain: the sandbox is gone, so every directory can be
-    // listed directly. Scanning tens of millions of inode ids to rediscover
-    // the children of a readable folder is pure waste; the app folder refresh
-    // used to spend 7-8 minutes here. Fall through only if listing fails.
-    if (wq_kernel_active()) {
-        NSArray<NSString *> *names = wq_list(base, NULL);
-        if (names) {
-            NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:names.count];
-            for (NSString *name in names) {
-                if (!name.length || [name isEqualToString:@"."] || [name isEqualToString:@".."]) continue;
-                [paths addObject:[base stringByAppendingPathComponent:name]];
-            }
-            [paths sortUsingSelector:@selector(compare:)];
-            if ([wq_shared_scan_roots() containsObject:base] ||
-                [base isEqualToString:@"/private/var/mobile/Containers/Shared/AppGroup"]) {
-                wq_log(@"scan: kernel direct listing of %@: %lu entries", base, (unsigned long)paths.count);
-            }
-            if (progress) progress(1, 1, paths.count);
-            return paths;
-        }
     }
     struct statfs sfs;
     if (statfs(base.fileSystemRepresentation, &sfs) != 0) {

@@ -23,65 +23,6 @@ static NSArray<NSString *> *wq_name_probe_ids(void) {
              @"com.autonavi.amap"];
 }
 
-// Read installed apps' names from the bundles themselves: every .app's
-// Info.plist carries its bundle id and name, and the Simplified Chinese
-// strings file carries the localized display name. The bundle roots only
-// list once the sandbox is open (the kernel route on iOS 17/18, where the
-// workspace walk below returns nothing); before that this finds nothing
-// and the catalog simply stays empty until the post-escape reload.
-static void wq_scan_bundle_plists(NSMutableDictionary<NSString *, NSString *> *names,
-                                  NSMutableSet<NSString *> *mainIDs)
-{
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSMutableArray<NSString *> *appDirs = [NSMutableArray new];
-    NSString *userRoot = @"/private/var/containers/Bundle/Application";
-    for (NSString *uuid in [fm contentsOfDirectoryAtPath:userRoot error:nil]) {
-        NSString *dir = [userRoot stringByAppendingPathComponent:uuid];
-        for (NSString *entry in [fm contentsOfDirectoryAtPath:dir error:nil])
-            if ([entry hasSuffix:@".app"]) [appDirs addObject:[dir stringByAppendingPathComponent:entry]];
-    }
-    for (NSString *root in @[@"/System/Applications", @"/Applications"])
-        for (NSString *entry in [fm contentsOfDirectoryAtPath:root error:nil])
-            if ([entry hasSuffix:@".app"]) [appDirs addObject:[root stringByAppendingPathComponent:entry]];
-    NSUInteger named = 0;
-    for (NSString *appDir in appDirs) {
-        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
-            [appDir stringByAppendingPathComponent:@"Info.plist"]];
-        NSString *bid = info[@"CFBundleIdentifier"];
-        if (![bid isKindOfClass:NSString.class] || !bid.length) continue;
-        [mainIDs addObject:bid];
-        if (names[bid]) continue;
-        NSString *name = nil;
-        for (NSString *lproj in @[@"zh-Hans.lproj", @"zh-CN.lproj"]) {
-            NSData *data = [NSData dataWithContentsOfFile:
-                [[appDir stringByAppendingPathComponent:lproj]
-                    stringByAppendingPathComponent:@"InfoPlist.strings"]];
-            if (!data) continue;
-            id parsed = [NSPropertyListSerialization propertyListWithData:data
-                options:0 format:nil error:nil];
-            if ([parsed isKindOfClass:NSDictionary.class]) {
-                NSString *localized = parsed[@"CFBundleDisplayName"] ?: parsed[@"CFBundleName"];
-                if ([localized isKindOfClass:NSString.class] && localized.length) {
-                    name = localized;
-                    break;
-                }
-            }
-        }
-        if (!name) {
-            NSString *display = info[@"CFBundleDisplayName"];
-            NSString *plain = info[@"CFBundleName"];
-            name = ([display isKindOfClass:NSString.class] && display.length) ? display
-                 : ([plain isKindOfClass:NSString.class] && plain.length) ? plain : nil;
-        }
-        if (name) {
-            names[bid] = name;
-            named++;
-        }
-    }
-    wq_log(@"app catalog: bundle plists scanned %lu bundles, %lu names",
-           (unsigned long)appDirs.count, (unsigned long)named);
-}
-
 static NSLock *wq_catalog_lock(void) {
     static NSLock *lock;
     static dispatch_once_t once;
@@ -112,8 +53,7 @@ NSSet<NSString *> *wq_main_app_bundle_ids(void)
     (void)wq_app_display_names();
     NSSet<NSString *> *ids = gMainAppIDs ?: [NSSet set];
     if (!ids.count) {
-        // The workspace walk can return nothing even with the sandbox open
-        // (seen on iOS 18: 0 ids after the kernel escape, first run included).
+        // The workspace walk can return nothing even with the sandbox open.
         // The parsed LaunchServices store classifies its containers itself;
         // use its app set when the walk has none.
         NSSet<NSString *> *storeIDs = wq_ls_main_app_bundle_ids();
@@ -223,12 +163,6 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
         } @catch (NSException *exception) {
             wq_log(@"app names: LaunchServices unavailable (%@)", exception.reason);
         }
-        if (!names.count) {
-            // The workspace walk returned nothing (iOS 17/18 kernel route:
-            // 0 ids even after the escape). Fall back to the bundles' own
-            // Info.plists, which the open sandbox lets us read directly.
-            wq_scan_bundle_plists(names, mainIDs);
-        }
         gNames = [names copy];
         gCategories = [categories copy];
         gMainAppIDs = [mainIDs copy];
@@ -240,8 +174,8 @@ NSDictionary<NSString *, NSString *> *wq_app_display_names(void)
                 [parts addObject:[NSString stringWithFormat:@"%@=%@", bid, names[bid] ?: @"-"]];
             wq_log(@"app catalog: name probes: %@", [parts componentsJoinedByString:@", "]);
         }
-        // Probe: the workspace enumeration returns empty on the kernel
-        // route, but a per-id proxy lookup goes through a different path
+        // Probe: the workspace enumeration can return empty, but a per-id
+        // proxy lookup goes through a different path
         // and may still answer. Log what it gives for well-known ids.
         @try {
             Class proxyClass = NSClassFromString(@"LSApplicationProxy");

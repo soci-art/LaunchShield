@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var showSingleAppEntryAlert = false
     @State private var showClearCacheConfirm = false
     @State private var showRestoreConfirm = false
+    @State private var showMismatchAlert = false
     @State private var ipaShareItem: ShareItem?
 
     var body: some View {
@@ -29,25 +30,49 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         announcementEntry
-                        if state.kernelSupported {
-                            kernelCard
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
+                        if state.editionMismatch {
+                            mismatchCard
                         } else {
                             signCard
                         }
                         tutorialEntry
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         targetCard
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         fullScanCards
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         summarySection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         actionsSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         sourceSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         if !state.templateTargets.isEmpty {
                             templateSection
+                                .disabled(state.editionMismatch)
+                                .opacity(state.editionMismatch ? 0.45 : 1)
                         }
                         recipesSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         logSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         updateSection
                         footer
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 14)
@@ -77,36 +102,27 @@ struct ContentView: View {
             // 回到前台时补查一次更新提醒（节流在 AppState 里）：
             // 发版时应用正开着的情况，靠这次补查才不会漏弹。
             if phase == .active {
-                // 第 92 条：回前台把内核读写重新武装（离开前台时已恢复成
-                // 合法缓冲区）。放后台线程，别卡住界面。
-                if wq_kernel_active() {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        _ = wq_kernel_set_quiesced(false)
-                    }
-                }
                 state.recheckRemindersIfStale()
                 // 第 76 条：前台期间实时检测复发。
                 state.startForegroundRecurrenceMonitor()
-            } else {
-                // 第 92 条：用户随时可能划掉应用。控制 socket 的 icmp6filt 还
-                // 指着 rw 的 PCB 时退出，内核会把这个字段当 32 字节对象释放，
-                // 整机 panic（panic 报告："not in the expected zone
-                // data.kalloc.32"）。一旦离开前台就恢复成合法缓冲区；.inactive
-                // 比 .background 早，留的余量更大。
-                if wq_kernel_active() {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        _ = wq_kernel_set_quiesced(true)
-                    }
-                }
-                if phase == .background {
-                    state.stopForegroundRecurrenceMonitor()
-                }
+            } else if phase == .background {
+                state.stopForegroundRecurrenceMonitor()
             }
         }
         .onAppear {
             // 第 76 条：刚打开 App 时 scenePhase 不一定触发
             // onChange，这里直接启动前台实时检测。
             state.startForegroundRecurrenceMonitor()
+            // 版本与系统不对应：每次打开都弹一次窗指路，
+            // 界面本身已经置灰，只剩「应用更新」能用。
+            if state.editionMismatch {
+                showMismatchAlert = true
+            }
+        }
+        .alert("这个版本不支持你的系统", isPresented: $showMismatchAlert) {
+            Button("知道了", role: .cancel) { }
+        } message: {
+            Text("你装的是正式版，它只支持 iOS 26/27。你的系统是 iOS 17/18，要用内核专用版：到下面「应用更新」里打开「内核专用更新」，再点「检测更新」，就能下载内核专用版。其他功能暂时用不了。")
         }
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
@@ -215,12 +231,12 @@ struct ContentView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                         .layoutPriority(1)
-                    // 「预发行」标签只许出现在真预发行包里：按更新通道
-                    // 判断（预发行工作流会在 Info.plist 盖
-                    // LSUpdateChannel=prerelease，正式版没有）。正式版
-                    // 界面永远不带这几个字（第 85 条）。
-                    if GitHubUpdate.isPrereleaseChannel {
-                        Text("预发行")
+                    // 通道标签按更新通道显示：预发行包写「预发行」，
+                    // 内核包写「内核专用」（各线工作流会在 Info.plist
+                    // 盖 LSUpdateChannel）。正式版没有标记，永远不显示
+                    // （第 85 条）。
+                    if let badge = channelBadgeText {
+                        Text(badge)
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(Color.orange)
                             .padding(.horizontal, 7)
@@ -250,70 +266,43 @@ struct ContentView: View {
         }
     }
 
+    /// 主界面顶部的通道标签：预发行 / 内核专用，正式版为 nil。
+    private var channelBadgeText: String? {
+        switch GitHubUpdate.channel {
+        case .prerelease: return "预发行"
+        case .kernel: return "内核专用"
+        case .formal: return nil
+        }
+    }
+
     private var pillText: String {
+        if state.editionMismatch { return "版本不对应" }
         if state.channelChecking { return "正在检测通道" }
         if state.channelReady { return "通道就绪" }
-        if state.kernelSupported && state.kernelState != .failed { return "内核链路待启动" }
         return "通道不可用"
     }
 
-    // MARK: - Kernel chain (iOS 17/18)
+    // MARK: - Edition mismatch (iOS 17/18 on the formal edition)
 
-    /// iOS 17/18 走内核链路：不用共享组、不用识别签名方式，
-    /// 但内核链路得手动启动（失败可能重启应用）。
-    private var kernelCard: some View {
+    /// 正式版装在 iOS 17/18 上：整页已置灰，只剩这张说明卡和
+    /// 下面的「应用更新」能用，指用户去拿内核专用版。
+    private var mismatchCard: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("内核链路")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(Color.primaryText)
-                Spacer()
-                Text(kernelStatusText)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(state.kernelState == .active ? Color.green
-                                     : state.kernelState == .failed ? Color.orange : Color.secondaryText)
-            }
-            Text("这台设备是 iOS 17/18，走内核链路：不用共享组，也不用识别签名方式。启动后应用能访问所有应用的数据，全部功能都能用。")
+            Text("版本与系统不对应")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(Color.primaryText)
+            Text("你装的是正式版，它只支持 iOS 26/27。你的系统是 iOS 17/18，要用内核专用版。")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("到下面「应用更新」里打开「内核专用更新」，再点「检测更新」，就能下载内核专用版。装好内核专用版之后，这个正式版可以删掉。")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("启动通常要 1–3 分钟，期间请保持应用在前台；内核链路失败时，应用（有时是整台手机）可能会重启一次，重启后再点一次就行。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            Button {
-                state.startKernel()
-            } label: {
-                HStack(spacing: 8) {
-                    if state.kernelState == .running {
-                        ProgressView().tint(.white)
-                    }
-                    Text(state.kernelState == .active ? "内核链路已就绪"
-                         : state.kernelState == .running ? "正在启动…" : "启动内核链路")
-                        .font(.system(size: 15, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-                .background(Color.accentCyan.opacity(state.kernelState == .active ? 0.25 : 0.9),
-                            in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .foregroundStyle(state.kernelState == .active ? Color.accentCyan : .white)
-            }
-            .buttonStyle(.plain)
-            .disabled(state.kernelState == .running || state.kernelState == .active)
-            .padding(.top, 7)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .panel(radius: 24)
-    }
-
-    private var kernelStatusText: String {
-        switch state.kernelState {
-        case .active: return "已就绪"
-        case .running: return "正在启动…"
-        case .failed: return "启动失败"
-        case .idle: return "还没启动"
-        }
     }
 
     // MARK: - Signature method
@@ -337,8 +326,7 @@ struct ContentView: View {
 
     /// 仅在底层无法识别签名方式时拦截文件功能；教程、日志、设置和维护类入口不走这里。
     private func requireSign() -> Bool {
-        // iOS 17/18 的内核链路与签名方式无关：识别不出签名也不该拦。
-        guard state.signMethod == nil, !state.kernelSupported else { return true }
+        guard state.signMethod == nil else { return true }
         state.noteSignGateBlocked()
         state.alertText = "暂时无法自动识别签名方式，文件通道功能已暂停。请重新安装应用；如果仍无法识别，请导出运行日志排查。"
         return false
@@ -1154,9 +1142,11 @@ struct ContentView: View {
             Text(state.updateStatus.isEmpty ? "当前版本 \(state.appVersionText)" : state.updateStatus)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
-            if !GitHubUpdate.isPrereleaseChannel {
-                Toggle(isOn: $state.checkPrereleaseUpdates) {
-                    Text("检测预发行更新")
+            // 「内核专用更新」只在版本不对应时出现：正式版装在
+            // iOS 17/18 上才有这一行，26/27 和其他通道都不显示。
+            if GitHubUpdate.channel == .formal, state.editionMismatch {
+                Toggle(isOn: $state.checkKernelUpdates) {
+                    Text("内核专用更新")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                 }
