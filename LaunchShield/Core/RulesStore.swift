@@ -375,22 +375,24 @@ enum RulesStore {
     }
 
     /// 只查服务器上的规则版本号，不下载、不改本地规则。
-    /// 查不到（没网、服务器没放规则、格式不对）一律回 nil，调用方安静收场。
-    static func checkLatestVersion(completion: @escaping (Int?) -> Void) {
+    /// 回调带两个数：整数版号（判新旧用）和显示版号（给人看，如 9.3；
+    /// 规则没带显示版号时用整数版号凑）。查不到（没网、服务器没放
+    /// 规则、格式不对）一律回 nil，调用方安静收场。
+    static func checkLatestVersion(completion: @escaping (Int?, String?) -> Void) {
         var request = URLRequest(url: CollectUploader.base.appendingPathComponent("rules"))
         request.timeoutInterval = 20
         URLSession.shared.dataTask(with: request) { data, response, _ in
-            func done(_ version: Int?) {
-                DispatchQueue.main.async { completion(version) }
+            func done(_ version: Int?, _ display: String?) {
+                DispatchQueue.main.async { completion(version, display) }
             }
             guard let data, data.count <= 1_048_576,
                   (response as? HTTPURLResponse)?.statusCode == 200,
                   let parsed = try? JSONDecoder().decode(RulesFile.self, from: data),
                   isValid(parsed) else {
-                done(nil)
+                done(nil, nil)
                 return
             }
-            done(parsed.version)
+            done(parsed.version, parsed.displayVersion ?? "\(parsed.version)")
         }.resume()
     }
 }
