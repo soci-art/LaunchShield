@@ -570,6 +570,7 @@ final class AppState: ObservableObject {
         log("LaunchShield \(appVersionText) 已启动", .info)
         log("已请求系统下次启动不使用界面快照（界面重影对策）", .info)
         log("系统 \(systemText)，设备 \(UIDevice.current.model)", .info)
+        refreshKernelBootWait()
         // 上次启动可能是被内核 panic 打断的，但崩溃报告只有在沙盒逃逸之后才
         // 可读（内核链路启动前它一直在沙盒外），所以这里不读——读到它们的
         // 地方是「启动内核链路」成功之后的路径。
@@ -699,11 +700,46 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 刚重启完还剩多少秒才能启动内核链路（0 = 现在就能启动）。
+    /// 内核链路要接 512 MB 常驻窗口和两万多个套接字，上一轮留下的页和
+    /// 套接字还没回收完就再起一轮，基本会立刻把整机打崩（实测日志里
+    /// 重启后 60 秒内点的 7 次有 6 次在 3 秒内死）。所以先等一会儿。
+    @Published private(set) var kernelBootWait: Int = 0
+    private var kernelBootTimer: Timer?
+
+    var kernelBootWaitSeconds: Int { kernelBootWait }
+
+    /// Recomputes the boot wait and keeps a 1 s timer alive while it counts
+    /// down, so the button enables itself the moment the device is ready
+    /// instead of waiting for some other state change.
+    func refreshKernelBootWait() {
+        let wait = channel.kernelSupported ? wq_kernel_boot_wait_seconds() : 0
+        if wait != kernelBootWait { kernelBootWait = wait }
+        guard wait > 0 else {
+            kernelBootTimer?.invalidate()
+            kernelBootTimer = nil
+            return
+        }
+        guard kernelBootTimer == nil else { return }
+        kernelBootTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refreshKernelBootWait()
+        }
+    }
+
     /// iOS 17/18：启动内核链路。通常要跑 1–3 分钟，失败时应用可能重启，
     /// 所以只在用户点按时跑，不在启动时自动跑。
     func startKernel() {
         guard channel.kernelSupported else { return }
         guard kernelState != .running, kernelState != .active else { return }
+        // 刚重启完就点：不是故障，是设备还没缓过来，等一会儿再点。
+        refreshKernelBootWait()
+        let wait = kernelBootWait
+        if wait > 0 {
+            log("内核链路：刚重启 \(wait) 秒后才能启动，这次没有执行", .warning)
+            alertText = "手机刚重启完，内核链路要等 \(wait) 秒再启动。"
+                + "上一轮留下的内存和套接字还没回收完，这时候点大概率会立刻重启一次——这不是故障，等一会儿就好。"
+            return
+        }
         kernelState = .running
         log("内核链路：开始启动，通常要 1–3 分钟，期间请保持应用在前台", .notice)
         work.async {
@@ -713,7 +749,19 @@ final class AppState: ObservableObject {
                 guard ok else {
                     self.channelChecking = false
                     self.channelReady = false
-                    self.log("内核链路没启动成功：重启应用后再试一次", .warning)
+                    // 内核链路是「竞争型」内核漏洞利用，本身就有概率失败，
+                    // 失败的样子是手机重启一次。把它说清楚，避免被当成 bug。
+                    let wait = wq_kernel_boot_wait_seconds()
+                    self.log("内核链路没启动成功：不是故障，重启应用/手机后再点一次", .warning)
+                    if wait > 0 {
+                        self.alertText = "这次内核链路没起来——不是 bug。"
+                            + "这类内核链路本身就是概率性的，大约一半能成功；失败时手机会重启一次。"
+                            + "现在手机刚重启完，请再等 \(wait) 秒，然后重新打开应用点一次「启动内核链路」。"
+                    } else {
+                        self.alertText = "这次内核链路没起来——不是 bug。"
+                            + "这类内核链路本身就是概率性的，大约一半能成功；失败时手机会重启一次。"
+                            + "重启后等两分钟，重新打开应用再点一次「启动内核链路」，通常第二次就能过。"
+                    }
                     return
                 }
                 self.log("内核链路已就绪：沙箱已放开，所有功能可用", .success)

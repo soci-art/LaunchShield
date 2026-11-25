@@ -17,6 +17,8 @@
 #import "kexploit/machine_info.h"
 #import "kexploit/sandbox_escape.h"
 #import <sys/sysctl.h>
+#import <time.h>
+#import <math.h>
 
 static NSLock *gKernelLock;
 static BOOL gKernelActive;
@@ -149,6 +151,41 @@ void wq_kernel_log_recent_panics(void)
     }
 }
 
+// A start this soon after boot is not a code problem: the device just came
+// back from a panic, has not reclaimed the previous run's wired pages and
+// sockets, and a fresh 512 MB window plus a 22528-socket spray on top of that
+// tends to end the same way. Field logs: 6 of 7 attempts started within 60 s
+// of the previous death died within three seconds, while attempts started
+// minutes later succeeded.
+#define WQ_KERNEL_MIN_UPTIME 90.0
+
+double wq_kernel_uptime(void)
+{
+    struct timeval boot = {0};
+    size_t size = sizeof(boot);
+    if (sysctlbyname("kern.boottime", &boot, &size, NULL, 0) != 0 ||
+        size != sizeof(boot) || boot.tv_sec == 0) {
+        return -1;   // unknown: never block on a missing value
+    }
+    return difftime(time(NULL), boot.tv_sec);
+}
+
+BOOL wq_kernel_boot_too_soon(void)
+{
+    double uptime = wq_kernel_uptime();
+    return uptime >= 0 && uptime < WQ_KERNEL_MIN_UPTIME;
+}
+
+/// Seconds still to wait before a start is allowed; 0 when it is allowed now
+/// (and when the uptime cannot be read, so a missing value never blocks).
+int wq_kernel_boot_wait_seconds(void)
+{
+    double uptime = wq_kernel_uptime();
+    if (uptime < 0 || uptime >= WQ_KERNEL_MIN_UPTIME) return 0;
+    int wait = (int)ceil(WQ_KERNEL_MIN_UPTIME - uptime);
+    return wait > 0 ? wait : 0;
+}
+
 BOOL wq_kernel_start(void)
 {
     NSLock *lock = wq_kernel_lock();
@@ -156,6 +193,23 @@ BOOL wq_kernel_start(void)
     if (gKernelAttempted) {
         [lock unlock];
         wq_log(@"kernel: 本进程已尝试过，需重启应用（this process has already attempted the kernel channel）");
+        return NO;
+    }
+    [lock unlock];
+
+    // Refuse a start too soon after boot, and do not consume the one-shot
+    // latch: the user can wait and tap again in the same process.
+    double uptime = wq_kernel_uptime();
+    if (uptime >= 0 && uptime < WQ_KERNEL_MIN_UPTIME) {
+        wq_log(@"kernel: refused, the device booted %.0f s ago (need %.0f s); "
+               @"the last run's pages and sockets are still being reclaimed",
+               uptime, WQ_KERNEL_MIN_UPTIME);
+        return NO;
+    }
+
+    [lock lock];
+    if (gKernelAttempted) {
+        [lock unlock];
         return NO;
     }
     // Consume the one-shot latch before any checks or work. Every result,

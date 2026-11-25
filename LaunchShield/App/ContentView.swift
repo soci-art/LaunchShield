@@ -347,10 +347,38 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("启动通常要 1–3 分钟，期间请保持应用在前台；内核链路失败时，应用（有时是整台手机）可能会重启一次，重启后再点一次就行。")
+            // 口径说明：内核链路是竞争型漏洞利用，成功率本就只有五成左右。
+            // 不写清楚，用户会把「启动失败 + 手机重启」当成应用有 bug。
+            VStack(alignment: .leading, spacing: 4) {
+                Text("关于成功率（重要）")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Text("内核链路本身的成功率大约五成，失败一次手机就会重启一次——这不是应用有 bug，是这类内核漏洞利用的固有概率。")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("重启后请等两分钟，再重新打开应用点「启动内核链路」，通常第二次就能过。设备跑起来之后可以一直用，不需要再启动。")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.orange.opacity(0.22), lineWidth: 1)
+            )
+            Text("启动通常要 1–3 分钟，期间请保持应用在前台。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(Color.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+            if state.kernelBootWaitSeconds > 0 {
+                Text("刚重启完：还要等 \(state.kernelBootWaitSeconds) 秒才能启动。")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button {
                 state.startKernel()
             } label: {
@@ -369,7 +397,8 @@ struct ContentView: View {
                 .foregroundStyle(state.kernelState == .active ? Color.accentCyan : .white)
             }
             .buttonStyle(.plain)
-            .disabled(state.kernelState == .running || state.kernelState == .active)
+            .disabled(state.kernelState == .running || state.kernelState == .active
+                      || state.kernelBootWaitSeconds > 0)
             .padding(.top, 7)
         }
         .padding(16)

@@ -27,6 +27,15 @@ BOOL wq_kernel_running(void);
 /// YES when the last start attempt failed. A relaunch is needed to retry.
 BOOL wq_kernel_failed(void);
 
+/// Seconds since boot, or -1 when it cannot be read.
+double wq_kernel_uptime(void);
+/// YES when the device booted less than WQ_KERNEL_MIN_UPTIME ago: a start now
+/// would run on top of the previous run's unreclaimed pages and sockets, and
+/// is refused without consuming the one-shot attempt.
+BOOL wq_kernel_boot_too_soon(void);
+/// Seconds still to wait before a start is allowed; 0 when it is allowed now.
+int wq_kernel_boot_wait_seconds(void);
+
 /// Runs kexploit_opa334() and sandbox_escape() for this process. Blocks for
 /// 1-3 minutes; call it off the main thread. A failed attempt can restart
 /// the app, so the UI only calls this after the user taps.
