@@ -867,36 +867,36 @@ struct ContentView: View {
         // 第 96 条：这一列的数字按配方汇总，现算现显示，跟配方增减实时同步。
         let tallies = state.recipeTallies
         return VStack(spacing: 0) {
-            sourceRow(name: "软件自营", symbol: "building.2.crop.circle", count: tallies["软件自营"] ?? 0)
+            sourceRow(name: "软件自营", symbol: "building.2.crop.circle", tint: .cyan, count: tallies["软件自营"] ?? 0)
             rowDivider
-            sourceRow(name: "优量汇", symbol: "rectangle.stack", count: tallies["优量汇"] ?? 0)
+            sourceRow(name: "优量汇", symbol: "rectangle.stack", tint: .blue, count: tallies["优量汇"] ?? 0)
             rowDivider
-            sourceRow(name: "穿山甲", symbol: "leaf", count: tallies["穿山甲"] ?? 0)
+            sourceRow(name: "穿山甲", symbol: "leaf", tint: .green, count: tallies["穿山甲"] ?? 0)
             rowDivider
-            sourceRow(name: "BeiZi", symbol: "square.grid.2x2", count: tallies["BeiZi"] ?? 0)
+            sourceRow(name: "BeiZi", symbol: "square.grid.2x2", tint: .orange, count: tallies["BeiZi"] ?? 0)
             rowDivider
-            sourceRow(name: "美数", symbol: "target", count: tallies["美数"] ?? 0)
+            sourceRow(name: "美数", symbol: "target", tint: .purple, count: tallies["美数"] ?? 0)
             rowDivider
-            sourceRow(name: "UBIX", symbol: "cube", count: tallies["UBIX"] ?? 0)
+            sourceRow(name: "UBIX", symbol: "cube", tint: .teal, count: tallies["UBIX"] ?? 0)
             rowDivider
-            sourceRow(name: "趣盟", symbol: "link", count: tallies["趣盟"] ?? 0)
+            sourceRow(name: "趣盟", symbol: "link", tint: .yellow, count: tallies["趣盟"] ?? 0)
             rowDivider
-            sourceRow(name: "AdMob", symbol: "globe", count: tallies["AdMob"] ?? 0)
+            sourceRow(name: "AdMob", symbol: "globe", tint: .pink, count: tallies["AdMob"] ?? 0)
             rowDivider
-            sourceRow(name: "其他广告", symbol: "ellipsis.circle", count: tallies["其他广告"] ?? 0)
+            sourceRow(name: "其他广告", symbol: "ellipsis.circle", tint: .gray, count: tallies["其他广告"] ?? 0)
             if (tallies[AppState.launchHackTargetGroup] ?? 0) > 0 {
-                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", count: tallies[AppState.launchHackTargetGroup] ?? 0)
+                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", tint: .cyan, count: tallies[AppState.launchHackTargetGroup] ?? 0)
             }
         }
         .padding(.horizontal, 16)
         .panel()
     }
 
-    private func sourceRow(name: String, symbol: String, count: Int) -> some View {
+    private func sourceRow(name: String, symbol: String, tint: Color, count: Int) -> some View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Color.secondaryText)
+                .foregroundStyle(tint)
                 .frame(width: 28, height: 34)
             Text(name)
                 .font(.system(size: 14, weight: .medium))
