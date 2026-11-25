@@ -1,16 +1,15 @@
 import SwiftUI
 
+/// 备份记录（界面重设计定稿，Grace 2026-11-26 亲定）：只到应用一级——
+/// 一个应用一行，行尾一个「还原」，把这个应用的备份整包写回；点不进去，
+/// 看不到具体备份文件。单个文件的恢复/删除入口随之撤下（底层函数不动），
+/// 应用级删除藏在长按菜单里，全部还原/全部删除保留在页首。
 struct BackupsView: View {
     @EnvironmentObject private var state: AppState
     @State private var showRestoreAll = false
     @State private var showDeleteAll = false
-    @State private var recordToDelete: BackupRecord?
     @State private var appToDelete: String?
-    @State private var expandedApps: Set<String> = []
-    @State private var selecting = false
-    @State private var selectedIDs: Set<UUID> = []
-    @State private var showBatchRestore = false
-    @State private var showBatchDelete = false
+    @State private var appToRestore: String?
 
     var body: some View {
         SheetPage("备份记录") {
@@ -24,62 +23,28 @@ struct BackupsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .panel()
                     } else {
-                        Text("共 \(state.backups.count) 份，备份里存的是原文件字节；还原后会核对 MD5。")
+                        summaryCard
+                        HStack(spacing: 10) {
+                            framedButton("全部删除", tint: Color.red) { showDeleteAll = true }
+                            framedButton("全部还原", tint: Color.accentCyan) { showRestoreAll = true }
+                        }
+                        VStack(spacing: 0) {
+                            ForEach(Array(appGroups.enumerated()), id: \.element.bundleID) { index, group in
+                                if index > 0 {
+                                    Divider().overlay(Color.primaryText.opacity(0.06)).padding(.leading, 60)
+                                }
+                                appRow(group)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .panel()
+                        Text("备份里具体是哪些文件看不到，也不用看——还原就是整包写回去。长按一个应用可以删掉它的全部备份。")
                             .font(.system(size: 11))
                             .foregroundStyle(Color.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
-                        // 第 56 条：三个操作单独一行、各自带框，
-                        // 不再挤在说明文字右边的小字（渲染图已确认）。
-                        HStack(spacing: 10) {
-                            Button {
-                                showDeleteAll = true
-                            } label: {
-                                Text("全部删除")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.red)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 11)
-                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            Button {
-                                showRestoreAll = true
-                            } label: {
-                                Text("全部还原")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.accentCyan)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 11)
-                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            Button {
-                                selecting.toggle()
-                                if !selecting { selectedIDs = [] }
-                            } label: {
-                                Text(selecting ? "完成" : "多选")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.accentCyan)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 11)
-                                    .background(Color.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        ForEach(appGroups, id: \.bundleID) { group in
-                            appGroupSection(group)
-                        }
                     }
                 }
                 .padding(20)
-            }
-            .safeAreaInset(edge: .bottom) {
-                if selecting {
-                    batchBar
-                }
             }
         }
         .appAlert(state)
@@ -108,6 +73,21 @@ struct BackupsView: View {
         } message: {
             Text("会先把备份恢复回文件，再删除备份；恢复失败的那几份会留着不删，并告诉你。数据库文件的备份还原不了、会直接删除；原来的位置已不存在的，也会直接删除。")
         }
+        .confirmationDialog("把这个应用的备份全部还原吗？", isPresented: Binding(
+            get: { appToRestore != nil },
+            set: { if !$0 { appToRestore = nil } }
+        ), titleVisibility: .visible) {
+            Button("逐个写回并核对 MD5", role: .destructive) {
+                if let bundleID = appToRestore,
+                   let group = appGroups.first(where: { $0.bundleID == bundleID }) {
+                    state.restoreBackups(group.records)
+                }
+                appToRestore = nil
+            }
+            Button("取消", role: .cancel) { appToRestore = nil }
+        } message: {
+            Text("只还原这个应用的备份，其他应用的不动。请先完全退出这个应用。同一文件有多份备份时，写回最早的那份。")
+        }
         .confirmationDialog("确定要删除这个应用的全部备份吗？", isPresented: Binding(
             get: { appToDelete != nil },
             set: { if !$0 { appToDelete = nil } }
@@ -120,41 +100,36 @@ struct BackupsView: View {
         } message: {
             Text("只动这个应用的备份，其他应用的不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删（原来的位置已不存在的直接删除）。")
         }
-        .confirmationDialog("把选中的备份批量还原吗？", isPresented: $showBatchRestore, titleVisibility: .visible) {
-            Button("还原选中的 \(selectedIDs.count) 份") {
-                state.restoreBackups(selectedRecords)
-                selecting = false
-                selectedIDs = []
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("请先完全退出对应的目标应用。同一文件有多份备份时，写回最早的那份。")
-        }
-        .confirmationDialog("确定要批量删除选中的备份吗？", isPresented: $showBatchDelete, titleVisibility: .visible) {
-            Button("删除选中的 \(selectedIDs.count) 份", role: .destructive) {
-                state.deleteBackups(selectedRecords)
-                selecting = false
-                selectedIDs = []
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("只删选中的这些，其他备份不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删（原来的位置已不存在的直接删除）。")
-        }
-        .confirmationDialog("确定要删除这份备份吗？", isPresented: Binding(
-            get: { recordToDelete != nil },
-            set: { if !$0 { recordToDelete = nil } }
-        ), titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
-                if let record = recordToDelete { state.deleteBackup(record) }
-                recordToDelete = nil
-            }
-            Button("取消", role: .cancel) { recordToDelete = nil }
-        } message: {
-            Text("会先把这份备份恢复回文件，再删除它；恢复失败就留着不删，并告诉你（原来的位置已不存在的直接删除）。")
-        }
     }
 
-    /// 按应用归并：一个应用一行（带份数），点开才看单个文件。
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(appGroups.count) 个应用有备份")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.primaryText)
+            Text("共 \(state.backups.count) 份 · 占用约 \(Format.bytes(state.backups.reduce(0) { $0 + $1.originalSize }))")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.secondaryText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel()
+    }
+
+    private func framedButton(_ title: String, tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background(Color.panel, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 按应用归并：一个应用一行（图标＋名字＋份数/最近时间＋还原）。
     private var appGroups: [(bundleID: String, name: String, records: [BackupRecord])] {
         Dictionary(grouping: state.backups, by: { $0.bundleID }).map { bundleID, records in
             (bundleID: bundleID,
@@ -163,192 +138,44 @@ struct BackupsView: View {
         }.sorted { $0.name < $1.name }
     }
 
-    private func appGroupSection(_ group: (bundleID: String, name: String, records: [BackupRecord])) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                if selecting {
-                    Button {
-                        toggleGroup(group)
-                    } label: {
-                        Image(systemName: group.records.allSatisfy { selectedIDs.contains($0.id) } ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 19))
-                            .foregroundStyle(Color.accentCyan)
-                    }
-                    .buttonStyle(.plain)
-                }
-                Button {
-                    if expandedApps.contains(group.bundleID) {
-                        expandedApps.remove(group.bundleID)
-                    } else {
-                        expandedApps.insert(group.bundleID)
-                    }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: expandedApps.contains(group.bundleID) ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.secondaryText)
-                        AppIconView(bundleID: group.bundleID, size: 32)
-                        Text(group.name)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color.primaryText)
-                        Spacer(minLength: 8)
-                        Text("\(group.records.count) 份")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.secondaryText)
-                        Text(Format.bytes(group.records.reduce(0) { $0 + $1.originalSize }))
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.secondaryText)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Button("删除") {
-                    appToDelete = group.bundleID
-                }
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.red)
-                .buttonStyle(.plain)
+    private func appRow(_ group: (bundleID: String, name: String, records: [BackupRecord])) -> some View {
+        HStack(spacing: 12) {
+            AppIconView(bundleID: group.bundleID, size: 44)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(group.name)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.primaryText)
+                    .lineLimit(1)
+                Text("\(group.records.count) 份 · 最近 \(Format.date(group.records.first?.createdAt ?? Date()))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .panel()
-            if expandedApps.contains(group.bundleID) {
-                ForEach(group.records) { record in
-                    card(record)
-                }
-            }
-        }
-    }
-
-    private func card(_ record: BackupRecord) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            if selecting {
-                Image(systemName: selectedIDs.contains(record.id) ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 19))
-                    .foregroundStyle(Color.accentCyan)
-                    .padding(.top, 2)
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Text(record.appName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
-                    StatusBadge(text: record.source, tint: .cyan)
-                    Spacer()
-                    Text(record.sizeText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.secondaryText)
-                }
-                Text(record.relativePath)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.primaryText.opacity(0.8))
-                    .lineLimit(3)
-                    .truncationMode(.middle)
-                HStack(spacing: 8) {
-                    Text("MD5 \(record.shortMD5)…")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(Color.secondaryText)
-                    Text("·")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Color.secondaryText.opacity(0.6))
-                    Text(Format.date(record.createdAt))
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.secondaryText)
-                    Spacer()
-                    if !selecting {
-                        Button("删除") {
-                            recordToDelete = record
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.red)
-                        .buttonStyle(.plain)
-                        Button("恢复这个") {
-                            state.restore(record)
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.accentCyan)
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .panel()
-        .onTapGesture {
-            if selecting {
-                if selectedIDs.contains(record.id) {
-                    selectedIDs.remove(record.id)
-                } else {
-                    selectedIDs.insert(record.id)
-                }
-            }
-        }
-    }
-
-    // MARK: - 多选
-
-    private var selectedRecords: [BackupRecord] {
-        state.backups.filter { selectedIDs.contains($0.id) }
-    }
-
-    private func toggleGroup(_ group: (bundleID: String, name: String, records: [BackupRecord])) {
-        let ids = group.records.map { $0.id }
-        if ids.allSatisfy({ selectedIDs.contains($0) }) {
-            ids.forEach { selectedIDs.remove($0) }
-        } else {
-            ids.forEach { selectedIDs.insert($0) }
-        }
-    }
-
-    private var allSelected: Bool {
-        !state.backups.isEmpty && selectedIDs.count == state.backups.count
-    }
-
-    private var batchBar: some View {
-        HStack(spacing: 10) {
+            Spacer(minLength: 8)
             Button {
-                if allSelected { selectedIDs.removeAll() }
-                else { selectedIDs = Set(state.backups.map(\.id)) }
+                appToRestore = group.bundleID
             } label: {
-                Text(allSelected ? "取消全选" : "全选")
+                Text("还原")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.accentCyan)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color.accentCyan.opacity(0.15),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .foregroundStyle(Color.appBackground)
+                    .padding(.horizontal, 17)
+                    .frame(height: 36)
+                    .background(Color.primaryText, in: Capsule())
             }
             .buttonStyle(.plain)
-            Button {
-                showBatchRestore = true
-            } label: {
-                Text("批量恢复（\(selectedIDs.count)）")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.accentCyan.opacity(selectedIDs.isEmpty ? 0.3 : 1),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(selectedIDs.isEmpty)
-            Button {
-                showBatchDelete = true
-            } label: {
-                Text("批量删除（\(selectedIDs.count)）")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.red.opacity(selectedIDs.isEmpty ? 0.3 : 1),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(selectedIDs.isEmpty)
         }
-        .padding(16)
-        .background(Color.appBackground)
+        .padding(.vertical, 13)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                appToRestore = group.bundleID
+            } label: {
+                Label("还原这个应用的备份", systemImage: "arrow.uturn.backward")
+            }
+            Button(role: .destructive) {
+                appToDelete = group.bundleID
+            } label: {
+                Label("删除这个应用的备份", systemImage: "trash")
+            }
+        }
     }
 }
