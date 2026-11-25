@@ -148,7 +148,7 @@ struct RecipesView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 7) {
+            HStack(spacing: 8) {
                 if recurred > 0 {
                     StatusBadge(text: "有复发", tint: .orange)
                 } else if missing > 0 && missing == group.items.count && !group.items.isEmpty {
@@ -156,11 +156,19 @@ struct RecipesView: View {
                 } else {
                     StatusBadge(text: "守护中", tint: .green)
                 }
-                Button("结束守护") {
+                // 「结束守护」和备份页的「还原」一个样：白色胶囊按钮，
+                // 整块都能点（Grace 2026-11-26）。
+                Button {
                     appToEndGuard = group.bundleID
+                } label: {
+                    Text("结束守护")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.appBackground)
+                        .padding(.horizontal, 17)
+                        .frame(height: 36)
+                        .background(Color.primaryText, in: Capsule())
+                        .contentShape(Capsule())
                 }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.red)
                 .buttonStyle(.plain)
             }
         }
