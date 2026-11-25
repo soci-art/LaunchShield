@@ -164,7 +164,7 @@ private struct DiagnosticUploadConfirm: View {
             VStack(spacing: 10) {
                 VStack(spacing: 22) {
                     Text("上传诊断文件？")
-                        .font(.system(size: 20, weight: .bold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                         .multilineTextAlignment(.center)
                     Button(action: onUpload) {

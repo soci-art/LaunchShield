@@ -28,7 +28,7 @@ struct ContentView: View {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 24) {
                         header
                             .disabled(state.editionMismatch)
                             .opacity(state.editionMismatch ? 0.45 : 1)
@@ -77,8 +77,8 @@ struct ContentView: View {
                             .opacity(state.editionMismatch ? 0.45 : 1)
                     }
                     .padding(.horizontal, 20)
-                    .padding(.top, 14)
-                    .padding(.bottom, 30)
+                    .padding(.top, 16)
+                    .padding(.bottom, 32)
                     .frame(maxWidth: 620)
                     .frame(maxWidth: .infinity)
                 }
@@ -230,21 +230,23 @@ struct ContentView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .top, spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(LinearGradient(colors: [Color.cyan.opacity(0.95), Color.blue.opacity(0.78)],
-                                         startPoint: .topLeading,
-                                         endPoint: .bottomTrailing))
-                    .frame(width: 54, height: 54)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primaryText.opacity(0.08), lineWidth: 1)
+                    )
+                    .frame(width: 52, height: 52)
                 Image(systemName: "shield.lefthalf.filled")
-                    .font(.system(size: 25, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text("LaunchShield")
-                        .font(.system(size: 25, weight: .bold, design: .rounded))
+                        .font(.system(size: 25, weight: .semibold, design: .rounded))
                         .foregroundStyle(Color.primaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -255,9 +257,9 @@ struct ContentView: View {
                     // （第 85 条）。
                     if let badge = channelBadgeText {
                         Text(badge)
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Color.orange)
-                            .padding(.horizontal, 7)
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(Color.orange.opacity(0.12), in: Capsule())
                             .fixedSize()
@@ -271,10 +273,10 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     Circle()
                         .fill(state.channelReady ? Color.green : Color.orange)
-                        .frame(width: 7, height: 7)
+                        .frame(width: 8, height: 8)
                     Text(pillText)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.secondaryText)
@@ -306,9 +308,9 @@ struct ContentView: View {
     /// 内核专用版装在 iOS 26/27 上：整页已置灰，只剩这张说明卡和
     /// 下面的「应用更新」能用，指用户去装正式版。
     private var mismatchCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("版本与系统不对应")
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
             Text("此版本为 iOS 17/18 系统内核专用版本，请使用正式版。")
                 .font(.system(size: 13))
@@ -321,7 +323,7 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .panel(radius: 24)
+        .panel(radius: 16)
     }
 
     // MARK: - Kernel chain (iOS 17/18)
@@ -415,9 +417,9 @@ struct ContentView: View {
     // MARK: - Signature method
 
     private var signCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("签名方式")
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
             Text(state.signMethod == "cert" ? "已识别：证书签名" : (state.signMethod == "livecontainer" ? "已识别：LiveContainer" : (state.signMethod == "free" ? "已识别：免费 ID 签名" : "正在识别签名方式…")))
                 .font(.system(size: 15, weight: .semibold))
@@ -428,7 +430,7 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .panel(radius: 24)
+        .panel(radius: 16)
     }
 
     /// 仅在底层无法识别签名方式时拦截文件功能；教程、日志、设置和维护类入口不走这里。
@@ -457,9 +459,10 @@ struct ContentView: View {
         Button {
             showAnnouncement = true
         } label: {
-            HStack(spacing: 10) {
-                Text("📣")
-                    .font(.system(size: 16))
+            HStack(spacing: 12) {
+                Image(systemName: "megaphone")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("更新公告")
                         .font(.system(size: 15, weight: .semibold))
@@ -482,7 +485,7 @@ struct ContentView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(Color.accentCyan.opacity(0.09),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -494,9 +497,10 @@ struct ContentView: View {
         Button {
             showTutorial = true
         } label: {
-            HStack(spacing: 10) {
-                Text("📖")
-                    .font(.system(size: 16))
+            HStack(spacing: 12) {
+                Image(systemName: "book")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.accentCyan)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("使用教程")
                         .font(.system(size: 15, weight: .semibold))
@@ -513,7 +517,7 @@ struct ContentView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(Color.accentCyan.opacity(0.09),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -527,41 +531,41 @@ struct ContentView: View {
     private var fullScanCards: some View {
         Group {
             if let prompt = state.fullScanPrompt {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     Text("需要先全盘扫描一次")
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                     Text("这台设备读不到应用列表（系统把直接查的路关了）。全盘扫描能把所有应用找出来，大约要 \(max(1, Int(ceil(prompt.seconds / 60)))) 分钟，只用完整扫这一次，之后会记住；中途停下，下次能接着扫。扫描时请让应用留在前台，最好插着电。")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 12))
                         .foregroundStyle(Color.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 10) {
+                    HStack(spacing: 12) {
                         Button { state.answerFullScan(false) } label: {
                             Text("先不扫")
-                                .font(.system(size: 13.5, weight: .semibold))
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(Color.primaryText)
-                                .padding(.horizontal, 16).padding(.vertical, 9)
+                                .padding(.horizontal, 16).padding(.vertical, 8)
                                 .background(Color.primaryText.opacity(0.08), in: Capsule())
                         }
                         .buttonStyle(.plain)
                         Button { if requireSign() { state.answerFullScan(true) } } label: {
                             Text("开始扫描")
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 16).padding(.vertical, 9)
-                                .background(Color.accentCyan, in: Capsule())
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.appBackground)
+                                .padding(.horizontal, 16).padding(.vertical, 8)
+                                .background(Color.primaryText, in: Capsule())
                         }
                         .buttonStyle(.plain)
                         Spacer()
                     }
                 }
-                .padding(15)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else if let progress = state.fullScanProgress {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     Text("正在全盘扫描，找齐所有应用…")
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                     if progress.total > 0 {
                         ProgressView(value: Double(progress.done), total: Double(progress.total))
@@ -575,36 +579,36 @@ struct ContentView: View {
                     }
                     Button { state.stopFullScan() } label: {
                         Text("停止")
-                            .font(.system(size: 13.5, weight: .semibold))
+                            .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
-                            .padding(.horizontal, 16).padding(.vertical, 9)
+                            .padding(.horizontal, 16).padding(.vertical, 8)
                             .background(Color.primaryText.opacity(0.08), in: Capsule())
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(15)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .panel(radius: 18)
+                .panel(radius: 16)
             } else if state.didLoadContainers && state.containers.isEmpty && state.channelReady {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     Text("还没读到应用列表")
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                     Text("这台设备需要全盘扫描一次，才能把应用找齐。")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 12))
                         .foregroundStyle(Color.secondaryText)
                     Button { if requireSign() { state.refreshContainers() } } label: {
                         Text("开始全盘扫描")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 16).padding(.vertical, 9)
-                            .background(Color.accentCyan, in: Capsule())
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.appBackground)
+                            .padding(.horizontal, 16).padding(.vertical, 8)
+                            .background(Color.primaryText, in: Capsule())
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(15)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         }
     }
@@ -625,16 +629,16 @@ struct ContentView: View {
                         .font(.system(size: state.checkedIDs.isEmpty ? 14 : 13, weight: .semibold))
                         .foregroundStyle(Color.accentCyan)
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
+                        .padding(.vertical, 8)
                         .background(Color.accentCyan.opacity(0.10), in: Capsule())
                 }
                 .buttonStyle(.plain)
             }
-            HStack(spacing: 13) {
+            HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.primaryText.opacity(0.08))
-                        .frame(width: 54, height: 54)
+                        .frame(width: 52, height: 52)
                     // 第 92 条：选了单个应用时这里显示它的图标；
                     // 没选、批量勾选时还是原来的云朵（Grace 定）。
                     if state.checkedIDs.isEmpty && state.targetChosen,
@@ -642,8 +646,8 @@ struct ContentView: View {
                         Image(uiImage: icon)
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 54, height: 54)
-                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     } else if state.checkedIDs.isEmpty && state.targetChosen {
                         Image(systemName: "app")
                             .font(.system(size: 22))
@@ -655,7 +659,7 @@ struct ContentView: View {
                     }
                 }
                 if state.checkedIDs.isEmpty && !state.targetChosen {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("未选择应用")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
@@ -666,7 +670,7 @@ struct ContentView: View {
                     Spacer()
                     StatusBadge(text: "未选择", tint: .orange)
                 } else if state.checkedIDs.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(state.target.name)
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
@@ -678,7 +682,7 @@ struct ContentView: View {
                     StatusBadge(text: state.isWhitelisted(state.target.bundleID) ? "已排除" : (state.targetPath == nil ? "没有容器" : "已找到"),
                                 tint: state.isWhitelisted(state.target.bundleID) || state.targetPath == nil ? .orange : .green)
                 } else {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("已勾选 \(state.checkedIDs.count) 个应用")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
@@ -707,7 +711,7 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 10) {
+                HStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "viewfinder")
                         .font(.system(size: 17, weight: .semibold))
@@ -715,22 +719,20 @@ struct ContentView: View {
                         .font(.system(size: 16, weight: .semibold))
                     Spacer()
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.appBackground)
                 .padding(.horizontal, 16)
                 .frame(height: 52)
-                .background(LinearGradient(colors: [Color.cyan.opacity(0.92), Color.blue.opacity(0.84)],
-                                           startPoint: .leading,
-                                           endPoint: .trailing),
-                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Color.primaryText,
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Image(systemName: "hand.raised.slash")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
                     .frame(width: 30, height: 30)
-                    .background(Color.accentCyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                    .background(Color.accentCyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("排除白名单")
                         .font(.system(size: 13, weight: .semibold))
@@ -744,22 +746,22 @@ struct ContentView: View {
                     HStack(spacing: 4) {
                         Text("管理")
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 9)
-            .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             Label("操作前请先完全退出目标应用", systemImage: "info.circle")
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
         }
-        .padding(17)
-        .panel(radius: 22)
+        .padding(16)
+        .panel(radius: 16)
     }
 
     private func smallButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
@@ -774,7 +776,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(height: 52)
             .background(Color.accentCyan.opacity(0.10),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -794,12 +796,12 @@ struct ContentView: View {
             }
             // 第 59 条：扫描改成横排带框按钮，跟备份页三个按钮
             // 一个待遇。第 93 条：深扫已删，只剩扫描一个按钮。
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 scanActionButton(title: "扫描", symbol: "arrow.clockwise") {
                     state.scanBaidu()
                 }
             }
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 SummaryTile(title: "素材文件",
                             value: "\(state.scanTargets.count)",
                             detail: state.scanTargets.isEmpty ? "等待扫描" : "个待处理",
@@ -830,7 +832,7 @@ struct ContentView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.accentCyan)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
+                .padding(.vertical, 12)
                 .background(Color.panel,
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -850,7 +852,7 @@ struct ContentView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
+                .padding(.vertical, 12)
                 .background(Color.panel,
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -865,36 +867,36 @@ struct ContentView: View {
         // 第 96 条：这一列的数字按配方汇总，现算现显示，跟配方增减实时同步。
         let tallies = state.recipeTallies
         return VStack(spacing: 0) {
-            sourceRow(name: "软件自营", symbol: "building.2.crop.circle", tint: .cyan, count: tallies["软件自营"] ?? 0)
+            sourceRow(name: "软件自营", symbol: "building.2.crop.circle", count: tallies["软件自营"] ?? 0)
             rowDivider
-            sourceRow(name: "优量汇", symbol: "rectangle.stack", tint: .blue, count: tallies["优量汇"] ?? 0)
+            sourceRow(name: "优量汇", symbol: "rectangle.stack", count: tallies["优量汇"] ?? 0)
             rowDivider
-            sourceRow(name: "穿山甲", symbol: "leaf", tint: .green, count: tallies["穿山甲"] ?? 0)
+            sourceRow(name: "穿山甲", symbol: "leaf", count: tallies["穿山甲"] ?? 0)
             rowDivider
-            sourceRow(name: "BeiZi", symbol: "square.grid.2x2", tint: .orange, count: tallies["BeiZi"] ?? 0)
+            sourceRow(name: "BeiZi", symbol: "square.grid.2x2", count: tallies["BeiZi"] ?? 0)
             rowDivider
-            sourceRow(name: "美数", symbol: "target", tint: .purple, count: tallies["美数"] ?? 0)
+            sourceRow(name: "美数", symbol: "target", count: tallies["美数"] ?? 0)
             rowDivider
-            sourceRow(name: "UBIX", symbol: "cube", tint: .teal, count: tallies["UBIX"] ?? 0)
+            sourceRow(name: "UBIX", symbol: "cube", count: tallies["UBIX"] ?? 0)
             rowDivider
-            sourceRow(name: "趣盟", symbol: "link", tint: .yellow, count: tallies["趣盟"] ?? 0)
+            sourceRow(name: "趣盟", symbol: "link", count: tallies["趣盟"] ?? 0)
             rowDivider
-            sourceRow(name: "AdMob", symbol: "globe", tint: .pink, count: tallies["AdMob"] ?? 0)
+            sourceRow(name: "AdMob", symbol: "globe", count: tallies["AdMob"] ?? 0)
             rowDivider
-            sourceRow(name: "其他广告", symbol: "ellipsis.circle", tint: .gray, count: tallies["其他广告"] ?? 0)
+            sourceRow(name: "其他广告", symbol: "ellipsis.circle", count: tallies["其他广告"] ?? 0)
             if (tallies[AppState.launchHackTargetGroup] ?? 0) > 0 {
-                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", tint: .cyan, count: tallies[AppState.launchHackTargetGroup] ?? 0)
+                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", count: tallies[AppState.launchHackTargetGroup] ?? 0)
             }
         }
-        .padding(.horizontal, 15)
+        .padding(.horizontal, 16)
         .panel()
     }
 
-    private func sourceRow(name: String, symbol: String, tint: Color, count: Int) -> some View {
-        HStack(spacing: 11) {
+    private func sourceRow(name: String, symbol: String, count: Int) -> some View {
+        HStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(tint)
+                .foregroundStyle(Color.secondaryText)
                 .frame(width: 28, height: 34)
             Text(name)
                 .font(.system(size: 14, weight: .medium))
@@ -906,11 +908,11 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(count > 0 ? Color.accentCyan : Color.secondaryText)
         }
-        .padding(.vertical, 11)
+        .padding(.vertical, 12)
     }
 
     private var rowDivider: some View {
-        Divider().overlay(Color.primaryText.opacity(0.06)).padding(.leading, 39)
+        Divider().overlay(Color.primaryText.opacity(0.06)).padding(.leading, 40)
     }
 
     /// 第 95 条：模板命中单独成卡。按长相认出来的目录，可能认错，
@@ -924,7 +926,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 ForEach(Array(state.templateHitGroups.enumerated()), id: \.element.id) { index, hit in
                     if index > 0 { rowDivider }
-                    HStack(spacing: 11) {
+                    HStack(spacing: 12) {
                         AppIconView(bundleID: hit.bundleID, size: 32)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(hit.appName) · \(hit.group)")
@@ -953,10 +955,10 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 12)
                 }
             }
-            .padding(.horizontal, 15)
+            .padding(.horizontal, 16)
             .panel()
         }
     }
@@ -970,7 +972,7 @@ struct ContentView: View {
             // 并排按钮，排在全部清零上面（原来在素材清单区里）。
             // 第 73 条：更新规则带上当前规则版本；还没下载过规则
             // （版本 0）时只显示「更新规则」。
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 opsPairButton(title: "清除扫描", symbol: "trash",
                               disabled: state.scanTargets.isEmpty && state.launchHackMarks.isEmpty && state.launchHackFindings.isEmpty) {
                     showClearScanConfirm = true
@@ -996,24 +998,24 @@ struct ContentView: View {
                     HStack(spacing: 12) {
                         Image(systemName: "snowflake")
                             .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.orange)
                         VStack(alignment: .leading, spacing: 3) {
                             Text("一键冻结已复发（\(state.recurredRecipeCount)）")
                                 .font(.system(size: 16, weight: .semibold))
                             Text("把又变大的文件重新去除并冻结")
                                 .font(.system(size: 11))
-                                .foregroundStyle(.white.opacity(0.76))
+                                .foregroundStyle(Color.secondaryText)
                         }
                         Spacer()
                         Image(systemName: "arrow.right")
                             .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.orange)
                     }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 17)
+                    .foregroundStyle(Color.primaryText)
+                    .padding(.horizontal, 16)
                     .frame(height: 68)
-                    .background(LinearGradient(colors: [Color.orange.opacity(0.92), Color.red.opacity(0.78)],
-                                               startPoint: .leading,
-                                               endPoint: .trailing),
-                                in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                    .background(Color.orange.opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -1034,19 +1036,17 @@ struct ContentView: View {
                             .font(.system(size: 16, weight: .semibold))
                         Text("先备份，再把素材文件截断为 0 字节")
                             .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.76))
+                            .foregroundStyle(Color.appBackground.opacity(0.7))
                     }
                     Spacer()
                     Image(systemName: "arrow.right")
                         .font(.system(size: 13, weight: .semibold))
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 17)
+                .foregroundStyle(Color.appBackground)
+                .padding(.horizontal, 16)
                 .frame(height: 68)
-                .background(LinearGradient(colors: [Color.cyan.opacity(0.88), Color.blue.opacity(0.82)],
-                                           startPoint: .leading,
-                                           endPoint: .trailing),
-                            in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                .background(Color.primaryText,
+                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             .buttonStyle(.plain)
 
@@ -1069,39 +1069,37 @@ struct ContentView: View {
                         .foregroundStyle(Color.secondaryText)
                 }
                 .foregroundStyle(Color.primaryText)
-                .padding(.horizontal, 17)
+                .padding(.horizontal, 16)
                 .frame(height: 68)
-                .panel(radius: 17)
+                .panel(radius: 16)
             }
             .buttonStyle(.plain)
 
             // 第 60 条：备份记录也做成整条框卡片，跟全部清零、
-            // 全部还原并排成一组；颜色用紫色调，跟全部还原的
-            // 深灰面板区分开。
+            // 全部还原并排成一组；图标用紫色，跟全部还原区分开。
             Button {
                 if requireSign() { showBackups = true }
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "externaldrive.fill")
                         .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(Color.purple)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("备份记录")
                             .font(.system(size: 16, weight: .semibold))
                         Text("共 \(state.backups.count) 份备份，可逐个或全部还原")
                             .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.72))
+                            .foregroundStyle(Color.secondaryText)
                     }
                     Spacer()
                     Image(systemName: "arrow.right")
                         .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.secondaryText)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 17)
+                .foregroundStyle(Color.primaryText)
+                .padding(.horizontal, 16)
                 .frame(height: 68)
-                .background(LinearGradient(colors: [Color.purple.opacity(0.75), Color.indigo.opacity(0.85)],
-                                           startPoint: .leading,
-                                           endPoint: .trailing),
-                            in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                .panel(radius: 16)
             }
             .buttonStyle(.plain)
         }
@@ -1140,7 +1138,7 @@ struct ContentView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 15)
+                .padding(.horizontal, 16)
                 .panel()
             }
         }
@@ -1161,7 +1159,7 @@ struct ContentView: View {
         Button {
             if requireSign() { showRecipes = true }
         } label: {
-            HStack(spacing: 11) {
+            HStack(spacing: 12) {
                 AppIconView(bundleID: summary.bundleID, size: 34)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(summary.name)
@@ -1185,12 +1183,12 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 7)
+        .padding(.vertical, 8)
     }
 
     private func recipeRow(_ recipe: Recipe) -> some View {
         let stateValue = RecipeState(rawValue: recipe.lastState) ?? .unknown
-        return HStack(spacing: 11) {
+        return HStack(spacing: 12) {
             Image(systemName: recipe.frozen ? "snowflake" : (recipe.placeholder ? "folder" : "shield.lefthalf.filled"))
                 .font(.system(size: 15))
                 .foregroundStyle(recipeTint(stateValue))
@@ -1200,7 +1198,7 @@ struct ContentView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.primaryText)
                 Text(recipe.relativePath)
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(Color.secondaryText)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -1208,7 +1206,7 @@ struct ContentView: View {
             Spacer()
             StatusBadge(text: stateValue.label, tint: recipeTint(stateValue))
         }
-        .padding(.vertical, 11)
+        .padding(.vertical, 12)
     }
 
     // MARK: - Logs and footer
@@ -1232,7 +1230,7 @@ struct ContentView: View {
     }
 
     private var updateSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("应用更新", systemImage: "arrow.down.circle")
                     .font(.system(size: 16, weight: .semibold))
@@ -1261,7 +1259,7 @@ struct ContentView: View {
                 .tint(Color.accentCyan)
             }
             if let progress = state.downloadProgress {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 4) {
                     ProgressView(value: progress)
                         .tint(Color.accentCyan)
                     Text("正在下载新版… \(Int(progress * 100))%")
@@ -1330,7 +1328,7 @@ struct AppIconView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primaryText.opacity(0.06))
             if let icon = state.appIcons[bundleID] {
                 Image(uiImage: icon)
@@ -1343,7 +1341,7 @@ struct AppIconView: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -1371,13 +1369,13 @@ private struct AppWhitelistView: View {
         SheetPage("排除白名单") {
             // 整页可滚：已排除名单再长也不会把下面的添加区挤没。
             ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text("加入白名单的应用不会被扫描、清理或守护。规则只按 Bundle ID 匹配。")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 9) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("已排除应用")
                             .font(.system(size: 13, weight: .semibold))
@@ -1391,20 +1389,20 @@ private struct AppWhitelistView: View {
                         Text("还没有添加应用")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.secondaryText)
-                            .padding(.vertical, 5)
+                            .padding(.vertical, 4)
                     } else {
                         // 名单封顶高、卡内自己滚，不再无限长下去挤占整页。
                         ScrollView {
-                            VStack(alignment: .leading, spacing: 9) {
+                            VStack(alignment: .leading, spacing: 8) {
                                 ForEach(state.appWhitelist.keys.sorted(), id: \.self) { bundleID in
-                                    HStack(spacing: 9) {
+                                    HStack(spacing: 8) {
                                         AppIconView(bundleID: bundleID, size: 32)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(state.whitelistName(for: bundleID))
                                                 .font(.system(size: 13, weight: .medium))
                                                 .foregroundStyle(Color.primaryText)
                                             Text(bundleID)
-                                                .font(.system(size: 9, design: .monospaced))
+                                                .font(.system(size: 10, design: .monospaced))
                                                 .foregroundStyle(Color.secondaryText)
                                                 .lineLimit(1)
                                         }
@@ -1414,14 +1412,14 @@ private struct AppWhitelistView: View {
                                             .foregroundStyle(Color.orange)
                                             .buttonStyle(.plain)
                                     }
-                                    .padding(.vertical, 5)
+                                    .padding(.vertical, 4)
                                 }
                             }
                         }
                         .frame(maxHeight: 240)
                     }
                 }
-                .padding(13)
+                .padding(12)
                 .panel(radius: 16)
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -1436,19 +1434,19 @@ private struct AppWhitelistView: View {
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                     }
-                    .padding(11)
-                    .background(Color.primaryText.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
+                    .padding(12)
+                    .background(Color.primaryText.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(filteredApps) { app in
-                                HStack(spacing: 9) {
+                                HStack(spacing: 8) {
                                     AppIconView(bundleID: app.bundleID, size: 32)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(app.name)
                                             .font(.system(size: 12, weight: .medium))
                                             .foregroundStyle(Color.primaryText)
                                         Text(app.bundleID)
-                                            .font(.system(size: 9, design: .monospaced))
+                                            .font(.system(size: 10, design: .monospaced))
                                             .foregroundStyle(Color.secondaryText)
                                             .lineLimit(1)
                                     }
@@ -1464,7 +1462,7 @@ private struct AppWhitelistView: View {
                                             .buttonStyle(.plain)
                                     }
                                 }
-                                .padding(.vertical, 9)
+                                .padding(.vertical, 8)
                                 if app.id != filteredApps.last?.id {
                                     Divider().overlay(Color.primaryText.opacity(0.06))
                                 }
@@ -1473,7 +1471,7 @@ private struct AppWhitelistView: View {
                     }
                     .frame(maxHeight: 220)
                 }
-                .padding(13)
+                .padding(12)
                 .panel(radius: 16)
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -1485,8 +1483,8 @@ private struct AppWhitelistView: View {
                             .font(.system(size: 12, design: .monospaced))
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
-                            .padding(11)
-                            .background(Color.primaryText.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
+                            .padding(12)
+                            .background(Color.primaryText.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
                         Button("添加") {
                             if state.addWhitelistBundleID(manualBundleID) { manualBundleID = "" }
                         }
@@ -1495,11 +1493,11 @@ private struct AppWhitelistView: View {
                         .disabled(manualBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-                .padding(13)
+                .padding(12)
                 .panel(radius: 16)
                 Spacer(minLength: 0)
             }
-            .padding(18)
+            .padding(16)
             }
         }
         .appAlert(state)
@@ -1517,11 +1515,11 @@ struct AnnouncementView: View {
 
     var body: some View {
         SheetPage("更新公告") {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 if let announcement = state.announcement {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text(announcement.title)
-                            .font(.system(size: 17, weight: .bold))
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(Color.primaryText)
                         Text(announcement.date.isEmpty
                              ? "版本 \(announcement.version)"
@@ -1537,29 +1535,29 @@ struct AnnouncementView: View {
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .panel(radius: 18)
+                    .panel(radius: 16)
                 } else {
                     Text("暂无新公告")
                         .font(.system(size: 14))
                         .foregroundStyle(Color.secondaryText)
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .panel(radius: 18)
+                        .panel(radius: 16)
                 }
                 Button {
                     dismiss()
                 } label: {
                     Text("知道了")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.appBackground)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .padding(.vertical, 12)
+                        .background(Color.primaryText, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 Spacer(minLength: 0)
             }
-            .padding(18)
+            .padding(16)
         }
     }
 }

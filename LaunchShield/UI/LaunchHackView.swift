@@ -1304,7 +1304,7 @@ struct LaunchHackView: View {
                     .frame(width: 48, height: 48)
                     .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("LaunchHack").font(.system(size: 21, weight: .bold)).foregroundStyle(Color.primaryText)
+                    Text("LaunchHack").font(.system(size: 21, weight: .semibold)).foregroundStyle(Color.primaryText)
                     Text("列图片和动态素材 · 手动标记").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
                 }
             }
@@ -1320,7 +1320,7 @@ struct LaunchHackView: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("已标记").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.primaryText)
                 Spacer()
-                Text("\(markedCount)").font(.system(size: 26, weight: .bold, design: .rounded)).foregroundStyle(Color.primaryText)
+                Text("\(markedCount)").font(.system(size: 26, weight: .semibold, design: .rounded)).foregroundStyle(Color.primaryText)
                 Text("项").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
             }
             Button {
