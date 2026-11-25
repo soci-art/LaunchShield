@@ -50,7 +50,7 @@ struct TutorialView: View {
                 .frame(width: 30)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 15.5, weight: .bold))
+                    .font(.system(size: 15.5, weight: .semibold))
                     .foregroundStyle(Color.primaryText)
                 Text(subtitle)
                     .font(.system(size: 12))
@@ -75,12 +75,12 @@ private func tutorialStep<Mock: View>(_ number: Int, _ title: String, _ text: St
     VStack(alignment: .leading, spacing: 8) {
         HStack(spacing: 9) {
             Text("\(number)")
-                .font(.system(size: 13, weight: .bold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 23, height: 23)
                 .background(Color.accentCyan, in: Circle())
             Text(title)
-                .font(.system(size: 15.5, weight: .bold))
+                .font(.system(size: 15.5, weight: .semibold))
                 .foregroundStyle(Color.primaryText)
         }
         Text(text)
@@ -115,7 +115,7 @@ private func tutorialChip(_ text: String) -> some View {
 
 private func tutorialMockButton(_ text: String) -> some View {
     Text(text)
-        .font(.system(size: 12.5, weight: .semibold))
+        .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(Color.accentCyan)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -124,7 +124,7 @@ private func tutorialMockButton(_ text: String) -> some View {
 
 private func tutorialSolidButton(_ text: String) -> some View {
     Text(text)
-        .font(.system(size: 12.5, weight: .semibold))
+        .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(.white)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -180,9 +180,9 @@ struct HowToUseView: View {
                 }
                 HStack(alignment: .top, spacing: 8) {
                     Text("⚠️")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 12))
                     Text("提醒：只有证书签名装的才能用，免费 ID 签的不行。处理应用前，先把那个应用完全退出再操作。")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 12))
                         .foregroundStyle(Color(red: 0.54, green: 0.35, blue: 0.0))
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -281,7 +281,7 @@ struct GuardedGuideView: View {
                      "点应用卡展开：上面是它守护的文件夹，下面是单个文件。文件夹守护的意思是，这个文件夹被冻住了；以后新广告落进这个文件夹，你打开 LaunchShield 时会被一并清掉。") {
                     VStack(alignment: .leading, spacing: 7) {
                         tutorialMockRow {
-                            Text("📁 文件夹守护（12 个）").font(.system(size: 12)).foregroundStyle(Color.primaryText)
+                            Text("文件夹守护（12 个）").font(.system(size: 12)).foregroundStyle(Color.primaryText)
                             Spacer()
                         }
                         tutorialMockRow {
@@ -309,7 +309,7 @@ struct GuardedGuideView: View {
                         Text("百度网盘").font(.system(size: 13)).foregroundStyle(Color.primaryText)
                         Spacer()
                         Text("结束守护")
-                            .font(.system(size: 12.5, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.red)
                     }
                 }
