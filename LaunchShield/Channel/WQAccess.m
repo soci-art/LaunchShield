@@ -2,14 +2,9 @@
 //  WQAccess.m
 //  WQ Files
 //
-//  Sandbox extension technique: worse_query by Taj C (forcequit),
-//  https://github.com/forcequitOS/worse_query, GPL-3.0-or-later.
-//
-//  Notes from testing on 27.0.1:
-//  - An extension covers the folder it was issued for. A container root
-//    extension was not enough to open a file two levels down for writing, so
-//    writes always ask for the file's own folder first.
-//  - /var/containers/Shared/SystemGroup itself gets no token; its children do.
+//  File access layer for the kernel edition (iOS 17.0-18.7.1). The sandbox is
+//  removed process-wide by the kernel chain, so every path is reachable and
+//  wq_grant() is a no-op that reports the kernel route.
 //
 
 #import "WQAccess.h"
@@ -611,12 +606,7 @@ NSString *wq_app_group(void)
             group = candidate;
             break;
         }
-        if (group) {
-            NSURL *root = [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:group];
-            if (root && !WQRecoverCacheSwapAtPath([root.path stringByAppendingPathComponent:@"Library"]))
-                wq_log(@"App-group cache recovery requires attention; preserved contents retained: %@ (%@)",
-                       root.path, wq_errno(errno));
-        } else {
+        if (!group) {
             wq_group_failure = @"当前进程没有可用的 App Group：系统实际授予的 application-groups 为空，或列出的组容器无法打开。请检查签名的有效 entitlements 和安装环境。";
         }
         wq_log(@"App group: %@ (profile: %@; entitled: %@)", group ?: @"NONE",
@@ -664,7 +654,6 @@ NSString *wq_borrowed_group(void)
     return group;
 }
 
-#pragma mark - worse_query
 
 typedef void *(*cq_create_fn)(void);
 typedef void (*cq_set_u64_fn)(void *, uint64_t);
@@ -678,220 +667,23 @@ typedef void (*cq_iterate_fn)(void *, bool (^)(void *));
 typedef const char *(*co_get_path_fn)(void *);
 typedef const char *(*co_get_id_fn)(void *);
 
-static void wq_release_handle(int64_t handle);
 
-static int64_t wq_query_token(NSString *group, BOOL altFlags)
-{
-    static void *mgr;
-    static cq_create_fn create;
-    static cq_set_u64_fn setClass, setFlags, setPart;
-    static cq_set_ids_fn setGroups;
-    static cq_result_fn single;
-    static cq_free_fn freeQuery;
-    static cq_token_fn copyToken;
-    static ext_consume_fn consume;
-    if (!mgr) {
-        mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib", RTLD_NOW | RTLD_LOCAL);
-        if (!mgr) return -2;
-        create = (cq_create_fn)dlsym(mgr, "container_query_create");
-        setClass = (cq_set_u64_fn)dlsym(mgr, "container_query_set_class");
-        setGroups = (cq_set_ids_fn)dlsym(mgr, "container_query_set_group_identifiers");
-        setFlags = (cq_set_u64_fn)dlsym(mgr, "container_query_operation_set_flags");
-        setPart = (cq_set_u64_fn)dlsym(mgr, "container_query_operation_set_part");
-        single = (cq_result_fn)dlsym(mgr, "container_query_get_single_result");
-        freeQuery = (cq_free_fn)dlsym(mgr, "container_query_free");
-        copyToken = (cq_token_fn)dlsym(mgr, "container_copy_sandbox_token");
-        consume = (ext_consume_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
-    }
-    if (!create || !setClass || !setGroups || !setFlags || !setPart || !single || !freeQuery || !copyToken || !consume) return -2;
-
-    void *query = create();
-    if (!query) return -3;
-    char *token = NULL;
-    @try {
-        setClass(query, 7);  // app group container
-        xpc_object_t ident = xpc_string_create(group.UTF8String);
-        setGroups(query, ident);
-        setPart(query, 3);   // Library/Caches
-        setFlags(query, altFlags ? 0x0000000800000000ULL : 0x0000008000000000ULL);
-        void *result = single(query);
-        token = result ? copyToken(result) : NULL;
-        int64_t handle = token ? consume(token) : (result ? -6 : -5);
-        return token && handle < 0 ? -7 : handle;
-    } @finally {
-        if (token) free(token);
-        freeQuery(query);
-    }
-}
 
 BOOL wq_system_areas_reachable(void)
 {
     // The kernel chain drops the sandbox entirely on iOS 17/18, so the system
-    // areas are reachable there.
-    if (wq_kernel_active()) return YES;
-    // worse_query reaches System Data, the system groups and the App Groups
-    // parent only on iOS 27; on iOS 26 it reaches the individual app,
-    // extension, daemon and app group containers.
-    return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
+    // areas are reachable once it is active - and this edition has no other
+    // backend, so they are not reachable before that.
+    return wq_kernel_active();
 }
 
-// What Library looks like when the Caches swap can't be undone, for the Log:
-// the swap marker, the preserved folder and what Caches is now.
-static NSString *wq_cache_state(int library)
-{
-    struct stat st;
-    NSString *marker = fstatat(library, WQCacheMarker, &st, AT_SYMLINK_NOFOLLOW) == 0 ? @"present" : @"none";
-    NSString *saved = fstatat(library, WQCacheSaved, &st, AT_SYMLINK_NOFOLLOW) == 0
-        ? (S_ISDIR(st.st_mode) ? @"folder" : @"not a folder") : @"none";
-    NSString *caches;
-    if (fstatat(library, "Caches", &st, AT_SYMLINK_NOFOLLOW) != 0) {
-        caches = errno == ENOENT ? @"missing" : wq_errno(errno);
-    } else if (S_ISLNK(st.st_mode)) {
-        char link[1024];
-        ssize_t n = readlinkat(library, "Caches", link, sizeof(link) - 1);
-        link[n > 0 ? n : 0] = 0;
-        caches = [@"link to " stringByAppendingString:@(link) ?: @"?"];
-    } else {
-        caches = S_ISDIR(st.st_mode) ? @"folder" : @"not a folder";
-    }
-    return [NSString stringWithFormat:@"swap marker %@, preserved Caches %@, Caches %@", marker, saved, caches];
-}
 
-// Logged in full the first time and whenever the reason or state changes;
-// repeats (every token request fails the same way) are only counted.
-static void wq_log_recovery_failure(NSString *libraryPath, int error, NSString *state)
-{
-    static NSString *last;
-    static NSUInteger repeats;
-    NSString *line = [NSString stringWithFormat:@"%@ (%@; %@)", libraryPath, wq_errno(error), state];
-    @synchronized (NSFileManager.class) {
-        if ([line isEqualToString:last]) {
-            repeats++;
-            if (repeats % 25 == 0) wq_log(@"token cache recovery still failing (%lu more times)", (unsigned long)repeats);
-            return;
-        }
-        last = line;
-        repeats = 0;
-    }
-    wq_log(@"token cache recovery failed: %@; preserved contents retained. Every folder outside WQ Files is refused until this is repaired: Settings → Reset Access Cache.", line);
-}
 
-static _Atomic BOOL gCacheRecoveryBlocked = false;
 
-// Recover the worse_query Caches swap. If its journal is inconsistent, use
-// the existing non-destructive reset routine: it renames preserved contents
-// aside and never deletes them. A hard failure trips a process-local circuit
-// breaker so thousands of paths do not repeat the same doomed token request.
-static BOOL wq_recover_or_reset_cache(int library, NSString *libraryPath)
-{
-    if (WQCacheSwapRecover(library)) return YES;
-    int recoveryError = errno;
-    NSMutableArray<NSString *> *steps = [NSMutableArray new];
-    if (WQCacheSwapReset(library, steps)) {
-        wq_log(@"token cache recovery: automatically repaired %@; preserved data retained (%@)",
-               libraryPath, steps.count ? [steps componentsJoinedByString:@", "] : @"no changes needed");
-        return YES;
-    }
-    int repairError = errno;
-    if (repairError == 0) repairError = recoveryError;
-    wq_log_recovery_failure(libraryPath, repairError, wq_cache_state(library));
-    errno = repairError;
-    return NO;
-}
 
-static int64_t wq_query(NSString *target, BOOL altFlags)
-{
-    if (atomic_load_explicit(&gCacheRecoveryBlocked, memory_order_relaxed)) return -8;
-    NSString *group = wq_app_group();
-    if (!group) return -1;
-    NSFileManager *files = NSFileManager.defaultManager;
-    NSURL *root = [files containerURLForSecurityApplicationGroupIdentifier:group];
-    if (!root) return -1;
-    NSString *libraryPath = [root.path stringByAppendingPathComponent:@"Library"];
-    if (![files createDirectoryAtPath:libraryPath withIntermediateDirectories:YES attributes:nil error:nil]) return -4;
-    int library = WQOpenDirectoryNoLinks(libraryPath);
-    if (library < 0) return -4;
-    int lock = WQOpenRegularAt(library, ".wq-caches-lock", O_RDWR | O_CREAT, 0600);
-    if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) != 0) {
-        if (lock >= 0) close(lock);
-        close(library);
-        return -4;
-    }
-    int64_t handle = -4;
-    BOOL recoveryFailed = NO;
-    @try {
-        // Recover first. A broken journal gets one non-destructive repair
-        // attempt before the query; if repair still fails, stop retrying every
-        // container and leave the preserved cache data untouched.
-        if (!wq_recover_or_reset_cache(library, libraryPath)) {
-            recoveryFailed = YES;
-            atomic_store_explicit(&gCacheRecoveryBlocked, true, memory_order_relaxed);
-            handle = -8;
-        } else if (WQCacheSwapBegin(library, target)) {
-            handle = wq_query_token(group, altFlags);
-        }
-    } @catch (NSException *exception) {
-        wq_log(@"token query exception: %@", exception.reason);
-        handle = -9;
-    } @finally {
-        if (!recoveryFailed && !wq_recover_or_reset_cache(library, libraryPath)) {
-            atomic_store_explicit(&gCacheRecoveryBlocked, true, memory_order_relaxed);
-            if (handle >= 0) wq_release_handle(handle);
-            handle = -8;
-        }
-        close(lock);
-        close(library);
-    }
-    return handle;
-}
 
-BOOL wq_reset_access_cache(NSString **errorText)
-{
-    NSString *group = wq_app_group();
-    NSURL *root = group ? [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:group] : nil;
-    if (!root) { if (errorText) *errorText = WQLocalized(@"The App Group is missing."); return NO; }
-    NSString *libraryPath = [root.path stringByAppendingPathComponent:@"Library"];
-    [NSFileManager.defaultManager createDirectoryAtPath:libraryPath withIntermediateDirectories:YES attributes:nil error:nil];
-    int library = WQOpenDirectoryNoLinks(libraryPath);
-    if (library < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
-    NSMutableArray<NSString *> *done = [NSMutableArray new];
-    // Unlike token requests, repair moves a non-regular lock aside first.
-    int lock = WQCacheLockOpenForRepair(library, done);
-    if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) != 0) {
-        int err = errno;
-        if (lock >= 0) close(lock);
-        close(library);
-        wq_log(@"access cache reset in %@: lock unavailable (%@)%@", libraryPath, wq_errno(err),
-               done.count ? [@"; " stringByAppendingString:[done componentsJoinedByString:@", "]] : @"");
-        if (errorText) *errorText = wq_errno(err);
-        return NO;
-    }
-    BOOL ok = WQCacheSwapReset(library, done);
-    if (ok) atomic_store_explicit(&gCacheRecoveryBlocked, false, memory_order_relaxed);
-    int err = errno;
-    close(lock);
-    close(library);
-    wq_log(@"access cache reset in %@: %@%@", libraryPath, done.count ? [done componentsJoinedByString:@", "] : @"nothing to repair",
-           ok ? @"" : [@"; FAILED: " stringByAppendingString:wq_errno(err)]);
-    if (!ok && errorText) *errorText = wq_errno(err);
-    return ok;
-}
 
-static NSMutableDictionary<NSString *, NSNumber *> *gGrants;
-static NSMutableArray<NSString *> *gGrantOrder;   // oldest first
-// The kernel limits how many sandbox extensions a process may hold. Keep a
-// bounded working set and release the oldest; released paths are simply
-// granted again when they are next used.
-static const NSUInteger kMaxGrants = 192;
 
-static void wq_release_handle(int64_t handle)
-{
-    typedef int (*ext_release_fn)(int64_t);
-    static ext_release_fn release;
-    if (!release) release = (ext_release_fn)dlsym(RTLD_DEFAULT, "sandbox_extension_release");
-    if (release && handle >= 0) release(handle);
-}
-static NSRecursiveLock *gGrantLock;
 
 static NSString *wq_norm(NSString *path)
 {
@@ -900,100 +692,17 @@ static NSString *wq_norm(NSString *path)
     return p;
 }
 
-// Whether the target can now be opened. Only a sandbox denial (EPERM) counts
-// as "the token didn't help": EACCES is ordinary file permissions (root-owned
-// system containers), which a token never changes.
-static BOOL wq_grant_opens(NSString *path)
-{
-    int fd = open(path.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-    if (fd >= 0) { close(fd); return YES; }
-    return errno != EPERM;
-}
-
+// Asks for a sandbox extension covering path. With the kernel chain there is
+// no sandbox and nothing to grant; without it this edition has no other
+// backend, so the answer is always NO.
 BOOL wq_grant(NSString *path)
 {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        gGrants = [NSMutableDictionary new];
-        gGrantOrder = [NSMutableArray new];
-        gGrantLock = [NSRecursiveLock new];
-    });
-    NSString *key = wq_norm(path);
+    (void)path;
     // The iOS 17/18 kernel chain removes the sandbox process-wide, so there is
     // no per-path token to ask for: every path is already open.
     if (wq_kernel_active()) return YES;
-    [gGrantLock lock];
-    NSNumber *known = gGrants[key];
-    if (known) {
-        [gGrantOrder removeObject:key];   // most recently used goes last
-        [gGrantOrder addObject:key];
-        [gGrantLock unlock];
-        return YES;
-    }
-    while (gGrantOrder.count >= kMaxGrants) {
-        NSString *oldest = gGrantOrder.firstObject;
-        wq_release_handle(gGrants[oldest].longLongValue);
-        [gGrants removeObjectForKey:oldest];
-        [gGrantOrder removeObjectAtIndex:0];
-    }
-    struct stat st;
-    if (lstat(key.fileSystemRepresentation, &st) != 0) {
-        int error = errno;
-        wq_log(@"grant: target does not exist or cannot be inspected %@ (errno=%d)", key, error);
-        [gGrantLock unlock];
-        return NO;  // worse_query needs an existing target
-    }
-    int64_t handle = -1;
-    BOOL usedAlt = NO;
-    {
-        // iOS 26 needs the alternative query flags; try the likely ones first so
-        // a grant costs one query, and the other set only when that fails. A
-        // token can also be issued and consumed yet not open the target (seen on
-        // 27.0.1 with an AltStore app group): check, and then try the other flags.
-        // The set that works is remembered for the rest of the run.
-        static int preferAlt = -1;
-        BOOL altFirst = preferAlt >= 0 ? (BOOL)preferAlt : !wq_system_areas_reachable();
-        handle = wq_query(key, altFirst);
-        usedAlt = altFirst;
-        if (handle >= 0 && !wq_grant_opens(key)) {
-            static BOOL logged;
-            if (!logged) {
-                logged = YES;
-                wq_log(@"grant: the token for %@ doesn't open it (%@ query flags); trying the other flags", key,
-                       altFirst ? @"alternative" : @"standard");
-            }
-            wq_release_handle(handle);
-            handle = -8;
-        }
-        if (handle < 0 && handle != -1 && handle != -2) {
-            int64_t alt = wq_query(key, !altFirst);
-            if (alt >= 0 && !wq_grant_opens(key)) {
-                wq_release_handle(alt);
-                alt = -8;
-            }
-            if (alt >= 0) {
-                handle = alt;
-                usedAlt = !altFirst;
-            }
-        }
-        // Decided once, by the first grant that works: some targets refuse to
-        // open for their own reasons, and a per-target fallback already covers
-        // the rest, so flipping the preference back and forth only costs queries.
-        if (handle >= 0 && preferAlt < 0) {
-            preferAlt = usedAlt;
-            if (usedAlt != !wq_system_areas_reachable())
-                wq_log(@"grant: the %@ query flags work on this device", usedAlt ? @"alternative" : @"standard");
-        }
-    }
-    if (handle >= 0) {  // failures are retried next time
-        gGrants[key] = @(handle);
-        [gGrantOrder addObject:key];
-    }
-    if (handle < 0) wq_log(@"grant: failed for %@ (grant=%lld)", key, handle);
-    [gGrantLock unlock];
-    return handle >= 0;
+    return NO;
 }
-
 
 static BOOL wq_is_denied(int err) { return err == EPERM || err == EACCES; }
 

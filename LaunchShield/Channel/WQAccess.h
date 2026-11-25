@@ -2,9 +2,8 @@
 //  WQAccess.h
 //  WQ Files
 //
-//  File access outside the sandbox through the worse_query technique by
-//  Taj C (forcequit), https://github.com/forcequitOS/worse_query,
-//  GPL-3.0-or-later. This reimplementation is GPL-3.0-or-later as well.
+//  File access layer for the kernel edition (iOS 17.0-18.7.1). All access
+//  goes through the kernel chain, which removes the sandbox process-wide.
 //
 
 #import <Foundation/Foundation.h>
@@ -30,20 +29,14 @@ NSString *wq_detect_sign_method(void);
 NSString *_Nullable wq_app_group(void);
 // Chinese explanation for the user when wq_app_group() is nil; nil otherwise.
 NSString *_Nullable wq_app_group_error(void);
-// Legacy diagnostic helper for identifying a host-provided group. Route
-// selection does not depend on this distinction: any usable group exposed to
-// the current process can be used by worse_query, including Personal Team
-// signatures where SideStore supplies the group entitlement.
+// Legacy diagnostic helper for identifying a host-provided group. The kernel
+// edition needs no group at all; kept for diagnostics only.
 NSString *_Nullable wq_borrowed_group(void);
 
 // Asks for a sandbox extension covering path (once per path). Returns YES
-// when one is held for it.
+// when one is held for it. With the kernel chain the sandbox is gone, so
+// this returns YES while the chain is active and NO otherwise.
 BOOL wq_grant(NSString *path);
-// Real, read-only active-route probe against the app-data container root.
-// Repairs the token cache (App Group Library/Caches) when another app sharing
-// the App Group, or an interrupted run, left it in a state token requests
-// refuse. Renames, never deletes. Logs what it did.
-BOOL wq_reset_access_cache(NSString *_Nullable *_Nullable errorText);
 
 // Second-phase locking. chmod changes the mode; the immutable flag uses
 // chflags(UF_IMMUTABLE), which survives a rename and makes the file
@@ -227,7 +220,7 @@ BOOL wq_stat(NSString *path, struct stat *st);
 @end
 
 // Discovers direct children of dir by brute-forcing inode numbers with
-// fsgetpath (not sandbox-gated), the way KAMUI/bad_query_list do. Needs no
+// fsgetpath (not sandbox-gated), the way KAMUI does. Needs no
 // token on dir. maxInode bounds the scan (0 = up to the newest id on the
 // volume); progress is called off the main thread, from several threads.
 // Returns absolute child paths, sorted, or nil on failure/cancellation, including
@@ -241,8 +234,8 @@ BOOL wq_stat(NSString *path, struct stat *st);
 // so the next wq_enumerate of those scans the ids created since. Call on a
 // user's refresh.
 void wq_enumerate_invalidate(void);
-// NO on iOS 26: there worse_query can't reach System Data, the system groups
-// or the App Groups parent folder (only the individual containers).
+// YES once the kernel chain has removed the sandbox: every system area is
+// reachable then.
 BOOL wq_system_areas_reachable(void);
 
 /// A short summary of the newest kernel panic report on this device, for the
