@@ -123,11 +123,6 @@ struct ContentView: View {
                 showMismatchAlert = true
             }
         }
-        .alert("这个版本不支持你的系统", isPresented: $showMismatchAlert) {
-            Button("知道了", role: .cancel) { }
-        } message: {
-            Text("你装的是正式版，它只支持 iOS 26/27。你的系统是 iOS 17/18，要用内核专用版：到下面「应用更新」里打开「内核专用更新」，再点「检测更新」，就能下载内核专用版。其他功能暂时用不了。")
-        }
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
         }
@@ -161,55 +156,73 @@ struct ContentView: View {
         .sheet(item: $ipaShareItem) { item in
             ShareSheet(items: [item.url])
         }
-        .alert("请选择单个应用", isPresented: $showSingleAppEntryAlert) {
-            Button("好", role: .cancel) { }
-        } message: {
-            Text("LaunchHack 只对单个应用检测。主页现在选了多个应用，先改成只选一个再来。")
-        }
-        .alert("还没有扫描到素材", isPresented: $showNeedScanAlert) {
-            Button("确定", role: .cancel) { }
-        } message: {
-            Text("开始去除广告只处理已经扫描到的素材。你还没有扫描，先去扫描一遍，扫完再回来去除。")
-        }
-        .confirmationDialog("清除扫描结果？", isPresented: $showClearScanConfirm, titleVisibility: .visible) {
-            Button("清除", role: .destructive) {
-                state.clearScanResults()
+        // 弹窗重构（Grace 2026-11-26）：主页的确认框和提示框统一走
+        // 居中卡片对话框，不再用系统对话框；同一时间只出一张。
+        .overlay {
+            if showMismatchAlert {
+                AppDialog(icon: "exclamationmark.triangle", iconTint: .orange,
+                          title: "这个版本不支持你的系统",
+                          message: "你装的是正式版，它只支持 iOS 26/27。你的系统是 iOS 17/18，要用内核专用版：到下面「应用更新」里打开「内核专用更新」，再点「检测更新」，就能下载内核专用版。其他功能暂时用不了。",
+                          actions: [AppDialogAction(title: "知道了") { showMismatchAlert = false }],
+                          cancelTitle: nil)
+            } else if showSingleAppEntryAlert {
+                AppDialog(icon: "info.circle",
+                          title: "请选择单个应用",
+                          message: "LaunchHack 只对单个应用检测。主页现在选了多个应用，先改成只选一个再来。",
+                          actions: [AppDialogAction(title: "好") { showSingleAppEntryAlert = false }],
+                          cancelTitle: nil)
+            } else if showNeedScanAlert {
+                AppDialog(icon: "magnifyingglass",
+                          title: "还没有扫描到素材",
+                          message: "开始去除广告只处理已经扫描到的素材。你还没有扫描，先去扫描一遍，扫完再回来去除。",
+                          actions: [AppDialogAction(title: "确定") { showNeedScanAlert = false }],
+                          cancelTitle: nil)
+            } else if showClearScanConfirm {
+                AppDialog(icon: "trash", iconTint: .red,
+                          title: "清除扫描结果？",
+                          message: "会把扫描到的结果和 LaunchHack 标记全部清掉，清完要重新扫描、重新标记。不动任何文件、不去除、不解冻。",
+                          actions: [AppDialogAction(title: "清除", style: .destructive) {
+                              showClearScanConfirm = false
+                              state.clearScanResults()
+                          }],
+                          onCancel: { showClearScanConfirm = false })
+            } else if showRefreezeConfirm {
+                AppDialog(icon: "shield",
+                          title: "把已复发的文件重新去除并冻结？",
+                          message: "会先备份，再把这些又变大的文件去除并冻结。",
+                          actions: [AppDialogAction(title: "重新去除并冻结 \(state.recurredRecipeCount) 个", style: .destructive) {
+                              showRefreezeConfirm = false
+                              state.refreezeRelapsed()
+                          }],
+                          onCancel: { showRefreezeConfirm = false })
+            } else if showClearConfirm {
+                AppDialog(icon: "shield",
+                          title: "确定要去除这些素材吗？",
+                          message: "请先完全退出目标应用（上滑关闭）。每个文件都会先备份，任何一步失败就停下，并告诉你停在哪个文件。",
+                          actions: [AppDialogAction(title: "先备份，再开始去除广告", style: .destructive) {
+                              showClearConfirm = false
+                              state.clearAllAfterScan()
+                          }],
+                          onCancel: { showClearConfirm = false })
+            } else if showClearCacheConfirm {
+                AppDialog(icon: "trash", iconTint: .red,
+                          title: "确定要清除缓存吗？",
+                          message: "会清理更新 IPA、扫描索引、缩略图、识别缓存和临时文件；云端规则、备份、配方、守护名单、用户设置及运行日志均会保留。",
+                          actions: [AppDialogAction(title: "清除", style: .destructive) {
+                              showClearCacheConfirm = false
+                              state.clearCache()
+                          }],
+                          onCancel: { showClearCacheConfirm = false })
+            } else if showRestoreConfirm {
+                AppDialog(icon: "arrow.uturn.backward",
+                          title: "确定要全部还原吗？",
+                          message: "请先完全退出目标应用。还原会用备份覆盖现在的文件。",
+                          actions: [AppDialogAction(title: "逐个写回并核对 MD5", style: .destructive) {
+                              showRestoreConfirm = false
+                              state.restoreAll()
+                          }],
+                          onCancel: { showRestoreConfirm = false })
             }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("会把扫描到的结果和 LaunchHack 标记全部清掉，清完要重新扫描、重新标记。不动任何文件、不去除、不解冻。")
-        }
-        .confirmationDialog("把已复发的文件重新去除并冻结？", isPresented: $showRefreezeConfirm, titleVisibility: .visible) {
-            Button("重新去除并冻结 \(state.recurredRecipeCount) 个") {
-                state.refreezeRelapsed()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("会先备份，再把这些又变大的文件去除并冻结。")
-        }
-        .confirmationDialog("确定要去除这些素材吗？", isPresented: $showClearConfirm, titleVisibility: .visible) {
-            Button("先备份，再开始去除广告", role: .destructive) {
-                state.clearAllAfterScan()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("请先完全退出目标应用（上滑关闭）。每个文件都会先备份，任何一步失败就停下，并告诉你停在哪个文件。")
-        }
-        .confirmationDialog("确定要清除缓存吗？", isPresented: $showClearCacheConfirm, titleVisibility: .visible) {
-            Button("清除", role: .destructive) {
-                state.clearCache()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("会清理更新 IPA、扫描索引、缩略图、识别缓存和临时文件；云端规则、备份、配方、守护名单、用户设置及运行日志均会保留。")
-        }
-        .confirmationDialog("确定要全部还原吗？", isPresented: $showRestoreConfirm, titleVisibility: .visible) {
-            Button("逐个写回并核对 MD5", role: .destructive) {
-                state.restoreAll()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("请先完全退出目标应用。还原会用备份覆盖现在的文件。")
         }
     }
 
@@ -1354,15 +1367,13 @@ private struct AppWhitelistView: View {
                                             .lineLimit(1)
                                     }
                                     Spacer()
-                                    Toggle("", isOn: Binding(
+                                    SwitchToggle(isOn: Binding(
                                         get: { state.isWhitelisted(app.bundleID) },
                                         set: { on in
                                             if on { state.addToWhitelist(app) }
                                             else { state.removeFromWhitelist(app.bundleID) }
                                         }
                                     ))
-                                    .labelsHidden()
-                                    .tint(.green)
                                 }
                                 .padding(.vertical, 8)
                                 if app.id != filteredApps.last?.id {
@@ -1371,7 +1382,7 @@ private struct AppWhitelistView: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 300)
+                    .frame(maxHeight: 470)
                 }
                 .padding(12)
                 .panel(radius: 16)
