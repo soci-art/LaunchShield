@@ -277,30 +277,24 @@ struct GuardedGuideView: View {
                         tutorialChip("守护中")
                     }
                 }
-                tutorialStep(2, "点开看明细",
-                     "点应用卡展开：上面是它守护的文件夹，下面是单个文件。文件夹守护的意思是，这个文件夹被冻住了；以后新广告落进这个文件夹，你打开 LaunchShield 时会被一并清掉。") {
-                    VStack(alignment: .leading, spacing: 7) {
-                        tutorialMockRow {
-                            Text("文件夹守护（12 个）").font(.system(size: 12)).foregroundStyle(Color.primaryText)
-                            Spacer()
+                tutorialStep(2, "就到应用为止",
+                     "守护只到应用一级：卡上写的数量就是全部，不用点进去，也没有单个文件、单个文件夹的操作。几百条明细全展开会非常卡，这样最简单也最流畅。") {
+                    tutorialMockRow {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("123云盘").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.primaryText)
+                            Text("共 132 个 · 已冻结 132 个")
+                                .font(.system(size: 11)).foregroundStyle(Color.secondaryText)
                         }
-                        tutorialMockRow {
-                            Text("splash_ad_01.png").font(.system(size: 12)).foregroundStyle(Color.primaryText)
-                            Spacer()
-                            tutorialChip("已冻结 ❄")
-                        }
+                        Spacer()
+                        tutorialChip("守护中")
                     }
                 }
-                tutorialStep(3, "移除单个文件夹守护",
-                     "在展开区里点某个文件夹右边的「移除」，这个文件夹就解冻、今后不再巡查它。文件那边的守护不受影响。") {
+                tutorialStep(3, "全部解冻",
+                     "页首有「全部解冻」：一次把所有应用冻结的文件和文件夹都解开。只想停掉某一个应用的，用下一步的「结束守护」。") {
                     tutorialMockRow {
-                        Text("Library/Caches/com.csj.plist.v4")
-                            .font(.system(size: 11.5)).foregroundStyle(Color.secondaryText)
-                            .lineLimit(1)
+                        Text("全部解冻").font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.accentCyan)
                         Spacer()
-                        Text("移除")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.red)
+                        Text("清除不见的").font(.system(size: 12, weight: .semibold)).foregroundStyle(.red)
                     }
                 }
                 tutorialStep(4, "结束一个应用的守护",

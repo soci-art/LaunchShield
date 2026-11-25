@@ -1232,6 +1232,7 @@ struct LaunchHackView: View {
     @State private var selectedGalleryItem: LaunchHackGalleryItem?
     @State private var showUploadConfirm = false
     @State private var showSingleAppAlert = false
+    @State private var showClearMarkedConfirm = false
 
     /// 当前目标应用名下已标记的数量（顶部只显示这个数）。
     private var markedCount: Int {
@@ -1269,10 +1270,35 @@ struct LaunchHackView: View {
         .onChange(of: state.target.bundleID) { _, _ in
             model.handleTargetChange(state: state)
         }
-        .alert("请选择单个应用", isPresented: $showSingleAppAlert) {
-            Button("好", role: .cancel) { }
-        } message: {
-            Text("LaunchHack 只对单个应用检测。主页现在选了多个应用，先改成只选一个再来扫描。")
+        // 弹窗重构（Grace 2026-11-26）：统一走居中卡片对话框。
+        .overlay {
+            if showSingleAppAlert {
+                AppDialog(icon: "info.circle",
+                          title: "请选择单个应用",
+                          message: "LaunchHack 只对单个应用检测。主页现在选了多个应用，先改成只选一个再来扫描。",
+                          actions: [AppDialogAction(title: "好") { showSingleAppAlert = false }],
+                          cancelTitle: nil)
+            } else if showClearMarkedConfirm {
+                AppDialog(icon: "shield",
+                          title: "去除选中的广告？",
+                          message: "请先完全退出目标应用（上滑关闭）。标记好的 \(markedCount) 项素材会先备份，再去除并冻结；任何一步失败就停下，并告诉你停在哪个文件。",
+                          actions: [AppDialogAction(title: "开始去除", style: .destructive) {
+                              showClearMarkedConfirm = false
+                              state.clearLaunchHackMarked()
+                          }],
+                          onCancel: { showClearMarkedConfirm = false })
+            } else if showUploadConfirm {
+                AppDialog(icon: "arrow.up.circle",
+                          title: "上传本次识别数据？",
+                          message: state.launchHackUploadResultUncertain
+                              ? "上次上传结果未确认，服务器可能已经收到数据。请先核对服务器记录，再决定是否重试。"
+                              : "有哪份传哪份：你标记的、机器识别的和扫描识别数据都会传。仅上传文字信息（路径、文件指纹和脱敏证据），不上传图片、视频或其他原始文件。",
+                          actions: [AppDialogAction(title: "确认上传") {
+                              showUploadConfirm = false
+                              state.uploadAllRecognitionData()
+                          }],
+                          onCancel: { showUploadConfirm = false })
+            }
         }
         .onChange(of: model.candidates) { _, findings in
             state.syncLaunchHackFindings(findings)
@@ -1283,16 +1309,7 @@ struct LaunchHackView: View {
         .sheet(item: $selectedGalleryItem) { item in
             galleryDetail(item)
         }
-        .confirmationDialog("上传本次识别数据？", isPresented: $showUploadConfirm, titleVisibility: .visible) {
-            Button("确认上传") {
-                state.uploadAllRecognitionData()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text(state.launchHackUploadResultUncertain
-                 ? "上次上传结果未确认，服务器可能已经收到数据。请先核对服务器记录，再决定是否重试。"
-                 : "有哪份传哪份：你标记的、机器识别的和扫描识别数据都会传。仅上传文字信息（路径、文件指纹和脱敏证据），不上传图片、视频或其他原始文件。")
-        }
+
     }
 
     private var header: some View {
@@ -1393,6 +1410,25 @@ struct LaunchHackView: View {
                 .buttonStyle(.plain)
             }
             Text(model.status).font(.system(size: 12)).foregroundStyle(Color.secondaryText)
+            // 「去除选中的广告」（Grace 2026-11-26）：扫描完成后才出现，
+            // 就在「开始扫描」下面；整块都是按钮，点哪儿都算。只去除
+            // 标记好的那批，不用回主页再走一遍。
+            if !model.isRunning && !model.gallery.isEmpty {
+                Button {
+                    showClearMarkedConfirm = true
+                } label: {
+                    Text("去除选中的广告 · \(markedCount) 项")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.appBackground)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.primaryText, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(markedCount == 0 || state.isBusy)
+                .opacity(markedCount == 0 ? 0.45 : 1)
+            }
         }
         .padding(15).panel()
     }
@@ -1407,7 +1443,7 @@ struct LaunchHackView: View {
                         Text("\(model.gallery.count) 项")
                             .font(.system(size: 11, weight: .medium)).foregroundStyle(Color.secondaryText)
                     }
-                    Text("按证据排出的大图和动态素材，小图已略过。点开看：视频能播、动图会动，成套的看整个文件夹。认出是广告就标记它，再回主页素材清单里处理。")
+                    Text("按证据排出的大图和动态素材，小图已略过。点开看：视频能播、动图会动，成套的看整个文件夹。认出是广告就标记它，标好点上面「去除选中的广告」直接去除。")
                         .font(.system(size: 12)).foregroundStyle(Color.secondaryText)
                     // 第 62 条：固定三列、每格等大正方形；图片用
                     // overlay 塞进格子并裁切，绝不溢出压到邻格；

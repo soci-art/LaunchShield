@@ -136,27 +136,25 @@ extension View {
     /// 只有最上层那份能弹：主页在任一子页面打开时不活，子页面在它自己的
     /// 下级页面打开时不活。
     func appAlert(_ state: AppState, active: Bool = true) -> some View {
-        alert("提醒", isPresented: Binding(
-            get: { active && state.alertText != nil },
-            set: { if !$0 { state.alertText = nil } }
-        )) {
-            Button("好") { state.alertText = nil }
-        } message: {
-            Text(state.alertText ?? "")
+        overlay {
+            if active, let text = state.alertText {
+                AppDialog(icon: "info.circle", title: "提醒", message: text,
+                          actions: [AppDialogAction(title: "好") { state.alertText = nil }],
+                          cancelTitle: nil)
+            }
         }
     }
 
     /// 更新提醒弹窗（清单第 12 条）：只显示一句话，不带版本号和说明，
     /// 按钮只有「更新」和「取消」。
     func updateAlert(_ state: AppState, active: Bool = true) -> some View {
-        alert("提醒", isPresented: Binding(
-            get: { active && state.updateAlert != nil },
-            set: { if !$0 { state.cancelUpdateAlert() } }
-        )) {
-            Button("更新") { state.confirmUpdateAlert() }
-            Button("取消", role: .cancel) { state.cancelUpdateAlert() }
-        } message: {
-            Text(state.updateAlert == .rules ? "有新规则更新" : "有新版本更新")
+        overlay {
+            if active, let kind = state.updateAlert {
+                AppDialog(icon: "arrow.down.circle", title: "提醒",
+                          message: kind == .rules ? "有新规则更新" : "有新版本更新",
+                          actions: [AppDialogAction(title: "更新") { state.confirmUpdateAlert() }],
+                          onCancel: { state.cancelUpdateAlert() })
+            }
         }
     }
 }
@@ -342,6 +340,137 @@ enum ThumbnailLoader {
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: target))
         }
+    }
+}
+
+/// 对话框按钮（居中卡片对话框专用）：整块都是按钮，不只是文字能点。
+struct AppDialogAction {
+    enum Style { case normal, destructive, quiet }
+    let title: String
+    var style: Style = .normal
+    let handler: () -> Void
+}
+
+/// 居中卡片对话框（弹窗重构定稿，Grace 2026-11-26）：全 App 的确认框
+/// 和提示框统一用它，不再用系统对话框。图标＋居中标题＋居中说明＋
+/// 整块按钮；危险操作红按钮；取消单独一张卡放在下面。和第 27 条
+/// 「上传诊断文件」那张自家卡片同一套样子，这次全 App 统一。
+struct AppDialog: View {
+    var icon: String = "info.circle"
+    var iconTint: Color = .accentCyan
+    let title: String
+    var message: String? = nil
+    let actions: [AppDialogAction]
+    var cancelTitle: String? = "取消"
+    var onCancel: () -> Void = {}
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+            VStack(spacing: 10) {
+                VStack(spacing: 0) {
+                    ZStack {
+                        Circle().fill(iconTint.opacity(0.13))
+                        Image(systemName: icon)
+                            .font(.system(size: 21, weight: .semibold))
+                            .foregroundStyle(iconTint)
+                    }
+                    .frame(width: 52, height: 52)
+                    Text(title)
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color.primaryText)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 13)
+                    if let message {
+                        Text(message)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.secondaryText)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 9)
+                    }
+                    VStack(spacing: 10) {
+                        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                            Button {
+                                action.handler()
+                            } label: {
+                                Text(action.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(textColor(action.style))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 50)
+                                    .background(background(action.style), in: Capsule())
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.top, 18)
+                }
+                .padding(22)
+                .frame(maxWidth: .infinity)
+                .panel(radius: 28)
+                if let cancelTitle {
+                    Button {
+                        onCancel()
+                    } label: {
+                        Text(cancelTitle)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.primaryText)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .panel(radius: 26)
+                }
+            }
+            .frame(maxWidth: 340)
+            .padding(.horizontal, 36)
+        }
+    }
+
+    private func background(_ style: AppDialogAction.Style) -> Color {
+        switch style {
+        case .normal: return Color.primaryText
+        case .destructive: return Color.red.opacity(0.16)
+        case .quiet: return Color.primaryText.opacity(0.07)
+        }
+    }
+
+    private func textColor(_ style: AppDialogAction.Style) -> Color {
+        switch style {
+        case .normal: return Color.appBackground
+        case .destructive: return .red
+        case .quiet: return Color.primaryText
+        }
+    }
+}
+
+/// 固定尺寸的开关：系统 Toggle 在白名单列表里会被拉成长胶囊
+/// （0.3.1 真机实测），自己画一个 51×31 的，整块都能点，大小不变。
+struct SwitchToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) { isOn.toggle() }
+        } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn ? Color.green : Color.primaryText.opacity(0.18))
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 27, height: 27)
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                    .padding(2)
+            }
+            .frame(width: 51, height: 31)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
