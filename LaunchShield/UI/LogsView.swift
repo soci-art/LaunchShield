@@ -17,6 +17,7 @@ struct LogsView: View {
     var body: some View {
         SheetPage("运行日志") {
             VStack(spacing: 12) {
+                uploadCard
                 diagnostics
                 HStack(spacing: 10) {
                     actionButton("复制全部", symbol: "doc.on.doc") {
@@ -66,6 +67,44 @@ struct LogsView: View {
                 )
             }
         }
+    }
+
+    /// 上传卡（界面重设计定稿）：日志页第一眼先说清上传——
+    /// 只在点了才发，发上去 7 天自动删。
+    private var uploadCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color.accentCyan)
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.appBackground)
+            }
+            .frame(width: 40, height: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("上传日志")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Text("只在你点上传时才发，上传后 7 天自动删")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            Spacer(minLength: 8)
+            Button {
+                state.uploadLog()
+            } label: {
+                Text("上传")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.appBackground)
+                    .padding(.horizontal, 16)
+                    .frame(height: 36)
+                    .background(Color.primaryText, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel()
     }
 
     private var diagnostics: some View {

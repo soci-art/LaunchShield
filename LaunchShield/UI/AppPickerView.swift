@@ -110,9 +110,22 @@ struct AppPickerView: View {
             }
             Spacer()
             if state.isWhitelisted(container.bundleID) {
-                StatusBadge(text: "已排除", tint: .orange)
+                // 重设计定稿：白名单应用只挂一个灰色小标，不抢眼。
+                Text("白名单")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.secondaryText)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Color.primaryText.opacity(0.07), in: Capsule())
             } else if state.targetChosen, container.bundleID == state.target.bundleID {
-                StatusBadge(text: "当前", tint: .cyan)
+                // 重设计定稿：当前应用用青色对勾圆，不再用文字标。
+                ZStack {
+                    Circle().fill(Color.accentCyan)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.appBackground)
+                }
+                .frame(width: 26, height: 26)
             }
         }
         .padding(.vertical, 11)
