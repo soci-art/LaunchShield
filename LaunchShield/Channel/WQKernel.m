@@ -313,10 +313,28 @@ BOOL wq_kernel_start(void)
     }
 
     if (active) {
-        @synchronized (wq_kernel_lock()) {
-            gKernelQuiesced = kexploit_filter_armed() ? NO : YES;
-        }
         wq_log(@"kernel: sandbox escaped; full filesystem read/write is available");
+        // Put control's inp6_icmp6filt back RIGHT HERE, synchronously, before
+        // anything else can kill this process. Stage 2 was the last user of
+        // kernel read/write (files, containers and the ad work all go through
+        // ordinary POSIX calls once the sandbox is gone), so the chain is
+        // already done with it and there is no reason to keep the pointer
+        // corrupted for even one more second.
+        //
+        // Restoring on the way out of the foreground was not enough: leaving it
+        // armed meant every later exit depended on a background block getting
+        // to run before the process died, and the 18.7.1 reports show that
+        // window being missed (two "not in the expected zone
+        // data.kalloc.32" panics after successful runs).
+        int restored = kexploit_filter_armed() ? kexploit_filter_set(0) : 0;
+        @synchronized (wq_kernel_lock()) {
+            gKernelQuiesced = (restored == 0);
+        }
+        if (restored != 0) {
+            wq_log(@"kernel: could not restore the icmp6 filter (code %d); the process is not safe to kill yet", restored);
+        } else {
+            wq_log(@"kernel: icmp6 filter restored right after the escape; the process is safe to kill");
+        }
         // A panic leaves nothing in this app's log, so the previous session
         // ends mid-line and the only way to know what the kernel tripped on is
         // the system's own report - which only becomes readable once the

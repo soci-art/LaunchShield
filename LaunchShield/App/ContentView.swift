@@ -104,13 +104,10 @@ struct ContentView: View {
             // 回到前台时补查一次更新提醒（节流在 AppState 里）：
             // 发版时应用正开着的情况，靠这次补查才不会漏弹。
             if phase == .active {
-                // 第 92 条：回前台把内核读写重新武装（离开前台时已恢复成
-                // 合法缓冲区）。放后台线程，别卡住界面。
-                if wq_kernel_active() {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        _ = wq_kernel_set_quiesced(false)
-                    }
-                }
+                // 第 92 条：不再回前台重新武装。沙箱逃逸之后没有任何功能还需要
+                // 内核读写（文件、容器、广告都走普通系统调用），所以控制
+                // socket 的 icmp6filt 在逃逸成功那一刻就已经恢复并一直保持
+                // 恢复状态——这样无论进程在什么时候被杀，都不会把整机打崩。
                 state.recheckRemindersIfStale()
                 // 第 76 条：前台期间实时检测复发。
                 state.startForegroundRecurrenceMonitor()
@@ -120,10 +117,10 @@ struct ContentView: View {
                 // 整机 panic（panic 报告："not in the expected zone
                 // data.kalloc.32"）。一旦离开前台就恢复成合法缓冲区；.inactive
                 // 比 .background 早，留的余量更大。
-                if wq_kernel_active() {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        _ = wq_kernel_set_quiesced(true)
-                    }
+                // 兜底：万一逃逸后恢复没成功（kexploit_filter_set 报了错），
+                // 离开前台时再试一次。已经恢复时这一步是空操作。
+                if wq_kernel_active() && !wq_kernel_quiesced() {
+                    _ = wq_kernel_set_quiesced(true)
                 }
                 if phase == .background {
                     state.stopForegroundRecurrenceMonitor()
