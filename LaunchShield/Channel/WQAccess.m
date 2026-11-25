@@ -2534,7 +2534,9 @@ static NSArray<NSMutableDictionary<NSString *, NSNumber *> *> *wq_scan_children(
     if (firstId < 1) firstId = 1;
     int64_t total = lastId >= firstId ? lastId - firstId + 1 : 0;
     NSLock *lock = [NSLock new];
-    const int64_t chunk = 32768;
+    // Smaller chunks finish evenly: a 32768-id tail could keep one core busy
+    // while the rest sat idle.
+    const int64_t chunk = 16384;
     int64_t chunks = (total + chunk - 1) / chunk;
     __block int64_t nextChunk = 0, done = 0, frontier = 0;
     NSMutableIndexSet *completed = [NSMutableIndexSet new];
@@ -2577,9 +2579,11 @@ static NSArray<NSMutableDictionary<NSString *, NSNumber *> *> *wq_scan_children(
         [writeLock unlock];
     };
     NSUInteger cores = NSProcessInfo.processInfo.activeProcessorCount;
-    // A full scan the user agreed to wait for uses all but two cores; the
-    // short incremental scans stay at half the cores.
-    size_t workers = allCores ? (size_t)MAX((NSUInteger)2, MIN((NSUInteger)8, cores > 2 ? cores - 2 : 1))
+    // A full scan the user agreed to wait for is fsgetpath-bound and scales
+    // with workers: all but one core (a 6-core device goes from 4 workers to
+    // 5). Short incremental scans stay at half the cores so a background
+    // refresh does not make the app feel sluggish.
+    size_t workers = allCores ? (size_t)MAX((NSUInteger)2, MIN((NSUInteger)12, cores > 1 ? cores - 1 : 1))
                               : (size_t)MAX((NSUInteger)1, MIN((NSUInteger)4, cores / 2));
     __block _Atomic BOOL abandoned = NO;
     dispatch_apply(workers, dispatch_get_global_queue(qos, 0), ^(size_t __unused w) {
@@ -3099,7 +3103,10 @@ static BOOL wq_is_ls_store_name(const char *path)
 
 // The LaunchServices database is rewritten on every app install or update, so
 // its id is among the newest: scan down from the top and stop at the first.
-static const CFTimeInterval kWQStoreSearchLimit = 20;
+// The limit decides whether this search succeeds or the long full scan runs
+// after it: 20 s reached only the newest few percent of an 86M-id volume,
+// missed the database, and started the hour-long scan instead.
+static const CFTimeInterval kWQStoreSearchLimit = 60;
 
 static NSString *wq_scan_for_ls_store(fsid_t fsid, int64_t maxInode, qos_class_t qos, WQScanProgress progress, WQScanDemand *demand)
 {
@@ -3111,7 +3118,9 @@ static NSString *wq_scan_for_ls_store(fsid_t fsid, int64_t maxInode, qos_class_t
     NSLock *lock = [NSLock new];
     WQScanCancellation *stop = [WQScanCancellation new];
     NSUInteger cores = NSProcessInfo.processInfo.activeProcessorCount;
-    size_t workers = (size_t)MAX((NSUInteger)1, MIN((NSUInteger)4, cores / 2));
+    // Latency-critical (it decides whether the long scan runs at all), so it
+    // takes nearly every core instead of half.
+    size_t workers = (size_t)MAX((NSUInteger)1, MIN((NSUInteger)8, cores > 1 ? cores - 1 : 1));
     dispatch_apply(workers, dispatch_get_global_queue(qos, 0), ^(size_t __unused w) {
         fsid_t id = fsid;
         char buf[1200];
