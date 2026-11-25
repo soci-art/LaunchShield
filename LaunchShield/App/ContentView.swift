@@ -27,6 +27,13 @@ struct ContentView: View {
         NavigationStack {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [Color.accentCyan.opacity(0.10), Color.accentCyan.opacity(0)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 280)
+                    Spacer(minLength: 0)
+                }
+                .ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 24) {
                         header
@@ -40,7 +47,7 @@ struct ContentView: View {
                         } else if state.kernelSupported {
                             kernelCard
                         } else {
-                            signCard
+                            heroCard
                         }
                         tutorialEntry
                             .disabled(state.editionMismatch)
@@ -51,10 +58,7 @@ struct ContentView: View {
                         fullScanCards
                             .disabled(state.editionMismatch)
                             .opacity(state.editionMismatch ? 0.45 : 1)
-                        summarySection
-                            .disabled(state.editionMismatch)
-                            .opacity(state.editionMismatch ? 0.45 : 1)
-                        actionsSection
+                        flowSection
                             .disabled(state.editionMismatch)
                             .opacity(state.editionMismatch ? 0.45 : 1)
                         sourceSection
@@ -414,23 +418,93 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Signature method
+    // MARK: - Hero status card
 
-    private var signCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("签名方式")
-                .font(.system(size: 18, weight: .semibold))
+    /// 状态大卡（界面重设计定稿）：圆环＋守护状态＋三个数
+    /// （已登记素材/备份份数/规则版本）。签名方式并进状态行，
+    /// 不再单独一张卡。
+    private var heroCard: some View {
+        let total = state.recipes.count
+        let frozen = state.recipes.filter { $0.frozen }.count
+        let fraction = total > 0 ? Double(frozen) / Double(total) : (state.channelReady ? 1 : 0)
+        return VStack(spacing: 0) {
+            HStack(spacing: 18) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.primaryText.opacity(0.10), lineWidth: 9)
+                    Circle()
+                        .trim(from: 0, to: fraction)
+                        .stroke(Color.accentCyan, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(Color.accentCyan)
+                }
+                .frame(width: 92, height: 92)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(state.channelReady ? "守护中" : (state.channelChecking ? "正在检测通道" : "通道不可用"))
+                        .font(.system(size: 27, weight: .semibold))
+                        .foregroundStyle(Color.primaryText)
+                    Text(heroStateLine)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.secondaryText)
+                    if state.recurredRecipeCount > 0 {
+                        Text("有 \(state.recurredRecipeCount) 个文件复发，记得重新冻结")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                    } else {
+                        Text("打开任何应用前，先冻结广告素材")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.primaryText.opacity(0.85))
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            Divider()
+                .overlay(Color.primaryText.opacity(0.07))
+                .padding(.vertical, 16)
+            HStack(spacing: 0) {
+                heroStat(value: "\(total)", label: "已登记素材")
+                heroDivider
+                heroStat(value: "\(state.backups.count)", label: "备份份数")
+                heroDivider
+                heroStat(value: RulesStore.currentVersion > 0 ? RulesStore.currentDisplayVersion : "—", label: "广告规则版本")
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel(radius: 24)
+    }
+
+    private var heroStateLine: String {
+        let sign: String
+        switch state.signMethod {
+        case "cert": sign = "证书签名"
+        case "livecontainer": sign = "LiveContainer"
+        case "free": sign = "免费 ID 签名"
+        default: sign = "正在识别签名方式"
+        }
+        let channel = state.channelReady ? "通道就绪" : (state.channelChecking ? "正在检测通道" : "通道不可用")
+        return "\(sign) · \(channel)"
+    }
+
+    private func heroStat(value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.system(size: 21, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.primaryText)
-            Text(state.signMethod == "cert" ? "已识别：证书签名" : (state.signMethod == "livecontainer" ? "已识别：LiveContainer" : (state.signMethod == "free" ? "已识别：免费 ID 签名" : "正在识别签名方式…")))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(state.signMethod == nil ? Color.secondaryText : Color.accentCyan)
-            Text("应用会读取自身签名配置自动判断。")
-                .font(.system(size: 12))
+            Text(label)
+                .font(.system(size: 11))
                 .foregroundStyle(Color.secondaryText)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .panel(radius: 16)
+    }
+
+    private var heroDivider: some View {
+        Rectangle()
+            .fill(Color.primaryText.opacity(0.08))
+            .frame(width: 1, height: 34)
+            .padding(.trailing, 14)
     }
 
     /// 仅在底层无法识别签名方式时拦截文件功能；教程、日志、设置和维护类入口不走这里。
@@ -781,62 +855,157 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Summary
+    // MARK: - Flow (scan first, then clear)
 
-    private var summarySection: some View {
+    /// 两步流程卡（界面重设计定稿，顺序由 Grace 定）：先扫描 → 再去广告；
+    /// 卡底一排全部还原/备份记录。清除扫描与更新规则排在卡下面一行，
+    /// 复发重冻卡再下面。素材计数在状态大卡里，这里不再重复摆方块。
+    private var flowSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                SectionHeader(title: "素材清单", subtitle: "扫描到的文件会按来源分类显示")
-                if state.lastScanSkippedFrozen > 0 {
-                    Text("已冻结的跳过了 \(state.lastScanSkippedFrozen) 个，不会重复去除、不会重复备份。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.secondaryText)
-                }
-                Spacer()
-            }
-            // 第 59 条：扫描改成横排带框按钮，跟备份页三个按钮
-            // 一个待遇。第 93 条：深扫已删，只剩扫描一个按钮。
-            HStack(spacing: 12) {
-                scanActionButton(title: "扫描", symbol: "arrow.clockwise") {
+            VStack(spacing: 0) {
+                flowStep(number: 1,
+                         title: "先扫描",
+                         detail: state.scanTargets.isEmpty ? "找出目标应用里的广告素材，列出来给你看" : "已找到 \(state.scanTargets.count) 个素材，可以去除",
+                         buttonTitle: "开始扫描",
+                         symbol: "arrow.clockwise",
+                         filled: true) {
                     state.scanBaidu()
                 }
+                Divider().overlay(Color.primaryText.opacity(0.06)).padding(.leading, 56)
+                flowStep(number: 2,
+                         title: "再去广告",
+                         detail: "把扫到的素材冻起来，打开应用不再弹",
+                         buttonTitle: "开始去除",
+                         symbol: "eraser.fill",
+                         filled: false) {
+                    if state.scanTargets.isEmpty {
+                        showNeedScanAlert = true
+                    } else {
+                        showClearConfirm = true
+                    }
+                }
+                Divider().overlay(Color.primaryText.opacity(0.06))
+                HStack(spacing: 0) {
+                    flowMiniAction(title: "全部还原", symbol: "arrow.uturn.backward") {
+                        showRestoreConfirm = true
+                    }
+                    Rectangle().fill(Color.primaryText.opacity(0.06)).frame(width: 1, height: 44)
+                    flowMiniAction(title: "备份记录", symbol: "externaldrive") {
+                        showBackups = true
+                    }
+                }
             }
+            .panel(radius: 20)
             HStack(spacing: 12) {
-                SummaryTile(title: "素材文件",
-                            value: "\(state.scanTargets.count)",
-                            detail: state.scanTargets.isEmpty ? "等待扫描" : "个待处理",
-                            symbol: "doc.text.magnifyingglass",
-                            tint: .cyan)
-                SummaryTile(title: "配方",
-                            value: "\(state.recipes.count)",
-                            detail: "\(state.recurredRecipeCount) 个复发",
-                            symbol: "shield.lefthalf.filled",
-                            tint: .orange)
-                SummaryTile(title: "已备份",
-                            value: "\(state.backups.count)",
-                            detail: "份",
-                            symbol: "externaldrive",
-                            tint: .green)
+                opsPairButton(title: "清除扫描", symbol: "trash",
+                              disabled: state.scanTargets.isEmpty && state.launchHackMarks.isEmpty && state.launchHackFindings.isEmpty) {
+                    showClearScanConfirm = true
+                }
+                opsPairButton(title: RulesStore.currentVersion > 0 ? "更新规则 · 第 \(RulesStore.currentDisplayVersion) 版" : "更新规则",
+                              symbol: "arrow.triangle.2.circlepath",
+                              disabled: false) {
+                    state.updateRules()
+                }
+            }
+            if !state.rulesStatus.isEmpty {
+                Text(state.rulesStatus)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            if state.lastScanSkippedFrozen > 0 {
+                Text("已冻结的跳过了 \(state.lastScanSkippedFrozen) 个，不会重复去除、不会重复备份。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondaryText)
+            }
+            if state.recurredRecipeCount > 0 {
+                Button {
+                    showRefreezeConfirm = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "snowflake")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("一键冻结已复发（\(state.recurredRecipeCount)）")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("把又变大的文件重新去除并冻结")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.secondaryText)
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                    }
+                    .foregroundStyle(Color.primaryText)
+                    .padding(.horizontal, 16)
+                    .frame(height: 68)
+                    .background(Color.orange.opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
             }
         }
     }
 
-    /// 第 59 条的带框扫描按钮：面板底色＋细描边，跟第 56 条
-    /// 备份页按钮同款。
-    private func scanActionButton(title: String, symbol: String,
-                                  action: @escaping () -> Void) -> some View {
+    private func flowStep(number: Int, title: String, detail: String,
+                          buttonTitle: String, symbol: String, filled: Bool,
+                          action: @escaping () -> Void) -> some View {
+        HStack(spacing: 13) {
+            ZStack {
+                Circle()
+                    .fill(filled ? Color.accentCyan : Color.clear)
+                    .overlay(Circle().stroke(filled ? Color.clear : Color.secondaryText.opacity(0.5), lineWidth: 1.5))
+                    .frame(width: 27, height: 27)
+                Text("\(number)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(filled ? Color.appBackground : Color.secondaryText)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.primaryText)
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button {
+                if requireSign() { action() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(buttonTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(Color.appBackground)
+                .padding(.horizontal, 15)
+                .frame(height: 38)
+                .background(filled ? Color.accentCyan : Color.primaryText, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+    }
+
+    private func flowMiniAction(title: String, symbol: String,
+                                action: @escaping () -> Void) -> some View {
         Button {
             if requireSign() { action() }
         } label: {
-            Label(title, systemImage: symbol)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.accentCyan)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(Color.panel,
-                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.primaryText.opacity(0.08), lineWidth: 1))
+            VStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Color.accentCyan)
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.primaryText)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -894,10 +1063,14 @@ struct ContentView: View {
 
     private func sourceRow(name: String, symbol: String, tint: Color, count: Int) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 34)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tint)
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white)
+            }
+            .frame(width: 28, height: 28)
             Text(name)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(Color.primaryText)
@@ -960,148 +1133,6 @@ struct ContentView: View {
             }
             .padding(.horizontal, 16)
             .panel()
-        }
-    }
-
-    // MARK: - Actions
-
-    private var actionsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "操作", subtitle: "每个文件独立备份与处理")
-            // 第 71 条：清除扫描/更新规则归到操作板块，改成带框
-            // 并排按钮，排在全部清零上面（原来在素材清单区里）。
-            // 第 73 条：更新规则带上当前规则版本；还没下载过规则
-            // （版本 0）时只显示「更新规则」。
-            HStack(spacing: 12) {
-                opsPairButton(title: "清除扫描", symbol: "trash",
-                              disabled: state.scanTargets.isEmpty && state.launchHackMarks.isEmpty && state.launchHackFindings.isEmpty) {
-                    showClearScanConfirm = true
-                }
-                opsPairButton(title: RulesStore.currentVersion > 0 ? "更新规则 · 第 \(RulesStore.currentDisplayVersion) 版" : "更新规则",
-                              symbol: "arrow.triangle.2.circlepath",
-                              disabled: false) {
-                    state.updateRules()
-                }
-            }
-            if !state.rulesStatus.isEmpty {
-                Text(state.rulesStatus)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            // 第 75 条：「一键冻结已复发」从已守护应用页挪到这里，
-            // 排在全部清零上面；尺寸和全部清零一样（整条大卡片），
-            // 橙色填满。有复发才出现，确认与重冻行为和原来一样。
-            if state.recurredRecipeCount > 0 {
-                Button {
-                    showRefreezeConfirm = true
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "snowflake")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(Color.orange)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("一键冻结已复发（\(state.recurredRecipeCount)）")
-                                .font(.system(size: 16, weight: .semibold))
-                            Text("把又变大的文件重新去除并冻结")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Color.secondaryText)
-                        }
-                        Spacer()
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.orange)
-                    }
-                    .foregroundStyle(Color.primaryText)
-                    .padding(.horizontal, 16)
-                    .frame(height: 68)
-                    .background(Color.orange.opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-            Button {
-                if requireSign() {
-                    if state.scanTargets.isEmpty {
-                        showNeedScanAlert = true
-                    } else {
-                        showClearConfirm = true
-                    }
-                }
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "eraser.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("开始去除广告")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("先备份，再把素材文件截断为 0 字节")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.appBackground.opacity(0.7))
-                    }
-                    Spacer()
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .foregroundStyle(Color.appBackground)
-                .padding(.horizontal, 16)
-                .frame(height: 68)
-                .background(Color.primaryText,
-                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                if requireSign() { showRestoreConfirm = true }
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "arrow.uturn.backward.circle")
-                        .font(.system(size: 19, weight: .semibold))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("全部还原")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("将已备份的素材逐个写回，并核对 MD5")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.secondaryText)
-                    }
-                    Spacer()
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.secondaryText)
-                }
-                .foregroundStyle(Color.primaryText)
-                .padding(.horizontal, 16)
-                .frame(height: 68)
-                .panel(radius: 16)
-            }
-            .buttonStyle(.plain)
-
-            // 第 60 条：备份记录也做成整条框卡片，跟全部清零、
-            // 全部还原并排成一组；图标用紫色，跟全部还原区分开。
-            Button {
-                if requireSign() { showBackups = true }
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "externaldrive.fill")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(Color.purple)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("备份记录")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("共 \(state.backups.count) 份备份，可逐个或全部还原")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.secondaryText)
-                    }
-                    Spacer()
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.secondaryText)
-                }
-                .foregroundStyle(Color.primaryText)
-                .padding(.horizontal, 16)
-                .frame(height: 68)
-                .panel(radius: 16)
-            }
-            .buttonStyle(.plain)
         }
     }
 
@@ -1358,10 +1389,13 @@ private struct AppWhitelistView: View {
             !$0.isGroup && $0.bundleID != AppState.ownBundleID &&
             !AppState.isSystemApp($0) && AppState.isMainApp($0)
         }
-        guard !query.isEmpty else { return apps }
-        return apps.filter {
+        let matched = query.isEmpty ? apps : apps.filter {
             $0.name.localizedCaseInsensitiveContains(query) ||
             $0.bundleID.localizedCaseInsensitiveContains(query)
+        }
+        // 重设计定稿：在白名单里的排前面，跟白名单页图上一致。
+        return matched.sorted {
+            state.isWhitelisted($0.bundleID) && !state.isWhitelisted($1.bundleID)
         }
     }
 
@@ -1375,55 +1409,32 @@ private struct AppWhitelistView: View {
                     .foregroundStyle(Color.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("已排除应用")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.primaryText)
-                        Spacer()
-                        Text("\(state.appWhitelist.count) 个")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.accentCyan)
-                    }
-                    if state.appWhitelist.isEmpty {
-                        Text("还没有添加应用")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.secondaryText)
-                            .padding(.vertical, 4)
-                    } else {
-                        // 名单封顶高、卡内自己滚，不再无限长下去挤占整页。
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(state.appWhitelist.keys.sorted(), id: \.self) { bundleID in
-                                    HStack(spacing: 8) {
-                                        AppIconView(bundleID: bundleID, size: 32)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(state.whitelistName(for: bundleID))
-                                                .font(.system(size: 13, weight: .medium))
-                                                .foregroundStyle(Color.primaryText)
-                                            Text(bundleID)
-                                                .font(.system(size: 10, design: .monospaced))
-                                                .foregroundStyle(Color.secondaryText)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        Button("移除") { state.removeFromWhitelist(bundleID) }
-                                            .font(.system(size: 12, weight: .semibold))
-                                            .foregroundStyle(Color.orange)
-                                            .buttonStyle(.plain)
-                                    }
-                                    .padding(.vertical, 4)
-                                }
-                            }
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .fill(Color(red: 0.48, green: 0.53, blue: 0.60))
+                            Image(systemName: "nosign")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(Color.white)
                         }
-                        .frame(maxHeight: 240)
+                        .frame(width: 40, height: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("已排除 \(state.appWhitelist.count) 个应用")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.primaryText)
+                            Text("开关打开的应用会被完全跳过，不扫也不冻")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.secondaryText)
+                        }
+                        Spacer(minLength: 0)
                     }
                 }
                 .padding(12)
                 .panel(radius: 16)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("从已安装应用添加")
+                    Text("全部应用 · 开关就是加不加白名单")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                     HStack(spacing: 8) {
@@ -1445,22 +1456,21 @@ private struct AppWhitelistView: View {
                                         Text(app.name)
                                             .font(.system(size: 12, weight: .medium))
                                             .foregroundStyle(Color.primaryText)
-                                        Text(app.bundleID)
-                                            .font(.system(size: 10, design: .monospaced))
+                                        Text(state.isWhitelisted(app.bundleID) ? "在白名单里 · 完全跳过" : app.bundleID)
+                                            .font(.system(size: 10, design: state.isWhitelisted(app.bundleID) ? .default : .monospaced))
                                             .foregroundStyle(Color.secondaryText)
                                             .lineLimit(1)
                                     }
                                     Spacer()
-                                    if state.isWhitelisted(app.bundleID) {
-                                        Text("已排除")
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(Color.secondaryText)
-                                    } else {
-                                        Button("添加") { state.addToWhitelist(app) }
-                                            .font(.system(size: 12, weight: .semibold))
-                                            .foregroundStyle(Color.accentCyan)
-                                            .buttonStyle(.plain)
-                                    }
+                                    Toggle("", isOn: Binding(
+                                        get: { state.isWhitelisted(app.bundleID) },
+                                        set: { on in
+                                            if on { state.addToWhitelist(app) }
+                                            else { state.removeFromWhitelist(app.bundleID) }
+                                        }
+                                    ))
+                                    .labelsHidden()
+                                    .tint(.green)
                                 }
                                 .padding(.vertical, 8)
                                 if app.id != filteredApps.last?.id {
@@ -1469,7 +1479,7 @@ private struct AppWhitelistView: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 220)
+                    .frame(maxHeight: 300)
                 }
                 .padding(12)
                 .panel(radius: 16)

@@ -125,10 +125,10 @@ private func tutorialMockButton(_ text: String) -> some View {
 private func tutorialSolidButton(_ text: String) -> some View {
     Text(text)
         .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.appBackground)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(Color.primaryText, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 }
 
 /// 二级页：如何使用。
@@ -149,9 +149,9 @@ struct HowToUseView: View {
                     }
                 }
                 tutorialStep(3, "扫描，看广告藏在哪",
-                     "点素材清单下方的「扫描」，扫完会按广告商分好类，告诉你每个应用里有几家的广告素材。") {
+                     "在主页第一步「先扫描」点「开始扫描」，扫完会按广告商分好类，告诉你每个应用里有几家的广告素材。") {
                     tutorialMockRow {
-                        tutorialMockButton("↻ 扫描")
+                        tutorialMockButton("开始扫描")
                     }
                 }
                 tutorialStep(4, "开始去除广告",
@@ -163,7 +163,7 @@ struct HowToUseView: View {
                     }
                 }
                 tutorialStep(5, "想恢复，随时还原",
-                     "去除前都自动留了备份。在「备份记录」里点全部还原，素材会原样写回去，应用恢复原状。") {
+                     "去除前都自动留了备份。在「备份记录」里找到那个应用，点它后面的「还原」，或者点页首「全部还原」，素材会原样写回去，应用恢复原状。") {
                     tutorialMockRow {
                         Text("备份记录").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.primaryText)
                         Spacer()
