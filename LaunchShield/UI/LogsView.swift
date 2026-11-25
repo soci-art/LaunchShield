@@ -17,7 +17,6 @@ struct LogsView: View {
     var body: some View {
         SheetPage("运行日志") {
             VStack(spacing: 12) {
-                uploadCard
                 diagnostics
                 HStack(spacing: 10) {
                     actionButton("复制全部", symbol: "doc.on.doc") {
@@ -41,70 +40,42 @@ struct LogsView: View {
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.url])
         }
-        .confirmationDialog("导出日志", isPresented: $showExportOptions, titleVisibility: .visible) {
-            Button("分享或保存") {
-                export()
-            }
-            Button("上传") {
-                state.uploadLog()
-            }
-            Button("取消", role: .cancel) { }
-        }
-        .confirmationDialog("清空日志？", isPresented: $showClear, titleVisibility: .visible) {
-            Button("清空", role: .destructive) {
-                state.logs.clear()
-            }
-            Button("取消", role: .cancel) { }
-        }
+        // 弹窗重构（Grace 2026-11-26）：导出/清空/上传诊断统一走居中
+        // 卡片对话框（诊断上传原来那张自家卡片就此并入同一套组件）。
         .overlay {
-            if showStoreUpload {
-                DiagnosticUploadConfirm(
-                    onUpload: {
-                        showStoreUpload = false
-                        state.uploadDiagnosticStore()
-                    },
-                    onCancel: { showStoreUpload = false }
-                )
+            if showExportOptions {
+                AppDialog(icon: "square.and.arrow.up",
+                          title: "导出日志",
+                          message: "选一个方式把日志拿出来。",
+                          actions: [
+                              AppDialogAction(title: "分享或保存") {
+                                  showExportOptions = false
+                                  export()
+                              },
+                              AppDialogAction(title: "上传", style: .quiet) {
+                                  showExportOptions = false
+                                  state.uploadLog()
+                              }
+                          ],
+                          onCancel: { showExportOptions = false })
+            } else if showClear {
+                AppDialog(icon: "trash", iconTint: .red,
+                          title: "清空日志？",
+                          actions: [AppDialogAction(title: "清空", style: .destructive) {
+                              showClear = false
+                              state.logs.clear()
+                          }],
+                          onCancel: { showClear = false })
+            } else if showStoreUpload {
+                AppDialog(icon: "doc.badge.gearshape",
+                          title: "上传诊断文件？",
+                          actions: [AppDialogAction(title: "上传") {
+                              showStoreUpload = false
+                              state.uploadDiagnosticStore()
+                          }],
+                          onCancel: { showStoreUpload = false })
             }
         }
-    }
-
-    /// 上传卡（界面重设计定稿）：日志页第一眼先说清上传——
-    /// 只在点了才发，发上去 7 天自动删。
-    private var uploadCard: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color.accentCyan)
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.appBackground)
-            }
-            .frame(width: 40, height: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("上传日志")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.primaryText)
-                Text("只在你点上传时才发，上传后 7 天自动删")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.secondaryText)
-            }
-            Spacer(minLength: 8)
-            Button {
-                state.uploadLog()
-            } label: {
-                Text("上传")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.appBackground)
-                    .padding(.horizontal, 16)
-                    .frame(height: 36)
-                    .background(Color.primaryText, in: Capsule())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .panel()
     }
 
     private var diagnostics: some View {
@@ -184,51 +155,6 @@ struct LogTable: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .panel()
-        }
-    }
-}
-
-/// 上传诊断文件的确认（清单第 27 条）：不用系统 confirmationDialog——
-/// 它的说明段太啰嗦、标题还只能靠左。换成自家居中卡片：只问一句
-/// 「上传诊断文件？」，标题居中，下面上传、取消两个按钮。宽度按屏
-/// 幕自适应（左右留边、卡片封顶 340），大小屏手机都居中不变形。
-private struct DiagnosticUploadConfirm: View {
-    let onUpload: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.28)
-                .ignoresSafeArea()
-            VStack(spacing: 10) {
-                VStack(spacing: 22) {
-                    Text("上传诊断文件？")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(Color.primaryText)
-                        .multilineTextAlignment(.center)
-                    Button(action: onUpload) {
-                        Text("上传")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(Color.primaryText)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 52)
-                            .background(Color.secondaryText.opacity(0.14), in: Capsule())
-                    }
-                }
-                .padding(22)
-                .frame(maxWidth: .infinity)
-                .panel(radius: 28)
-                Button(action: onCancel) {
-                    Text("取消")
-                        .font(.system(size: 17))
-                        .foregroundStyle(Color.primaryText)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .panel(radius: 26)
-                }
-            }
-            .frame(maxWidth: 340)
-            .padding(.horizontal, 36)
         }
     }
 }

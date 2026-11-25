@@ -57,48 +57,47 @@ struct BackupsView: View {
                 }
             }
         }
-        .confirmationDialog("确定要全部还原吗？", isPresented: $showRestoreAll, titleVisibility: .visible) {
-            Button("逐个写回并核对 MD5", role: .destructive) {
-                state.restoreAll()
+        // 弹窗重构（Grace 2026-11-26）：确认框统一走居中卡片对话框。
+        .overlay {
+            if showRestoreAll {
+                AppDialog(icon: "arrow.uturn.backward",
+                          title: "确定要全部还原吗？",
+                          message: "请先完全退出目标应用。",
+                          actions: [AppDialogAction(title: "逐个写回并核对 MD5", style: .destructive) {
+                              showRestoreAll = false
+                              state.restoreAll()
+                          }],
+                          onCancel: { showRestoreAll = false })
+            } else if showDeleteAll {
+                AppDialog(icon: "trash", iconTint: .red,
+                          title: "确定要删除全部备份吗？",
+                          message: "会先把备份恢复回文件，再删除备份；恢复失败的那几份会留着不删，并告诉你。数据库文件的备份还原不了、会直接删除；原来的位置已不存在的，也会直接删除。",
+                          actions: [AppDialogAction(title: "全部删除", style: .destructive) {
+                              showDeleteAll = false
+                              state.deleteAllBackups()
+                          }],
+                          onCancel: { showDeleteAll = false })
+            } else if let bundleID = appToRestore {
+                AppDialog(icon: "arrow.uturn.backward",
+                          title: "把这个应用的备份全部还原吗？",
+                          message: "只还原这个应用的备份，其他应用的不动。请先完全退出这个应用。同一文件有多份备份时，写回最早的那份。",
+                          actions: [AppDialogAction(title: "逐个写回并核对 MD5", style: .destructive) {
+                              if let group = appGroups.first(where: { $0.bundleID == bundleID }) {
+                                  state.restoreBackups(group.records)
+                              }
+                              appToRestore = nil
+                          }],
+                          onCancel: { appToRestore = nil })
+            } else if let bundleID = appToDelete {
+                AppDialog(icon: "trash", iconTint: .red,
+                          title: "确定要删除这个应用的全部备份吗？",
+                          message: "只动这个应用的备份，其他应用的不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删（原来的位置已不存在的直接删除）。",
+                          actions: [AppDialogAction(title: "全部删除", style: .destructive) {
+                              state.deleteBackups(forApp: bundleID)
+                              appToDelete = nil
+                          }],
+                          onCancel: { appToDelete = nil })
             }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("请先完全退出目标应用。")
-        }
-        .confirmationDialog("确定要删除全部备份吗？", isPresented: $showDeleteAll, titleVisibility: .visible) {
-            Button("全部删除", role: .destructive) {
-                state.deleteAllBackups()
-            }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("会先把备份恢复回文件，再删除备份；恢复失败的那几份会留着不删，并告诉你。数据库文件的备份还原不了、会直接删除；原来的位置已不存在的，也会直接删除。")
-        }
-        .confirmationDialog("把这个应用的备份全部还原吗？", isPresented: Binding(
-            get: { appToRestore != nil },
-            set: { if !$0 { appToRestore = nil } }
-        ), titleVisibility: .visible) {
-            Button("逐个写回并核对 MD5", role: .destructive) {
-                if let bundleID = appToRestore,
-                   let group = appGroups.first(where: { $0.bundleID == bundleID }) {
-                    state.restoreBackups(group.records)
-                }
-                appToRestore = nil
-            }
-            Button("取消", role: .cancel) { appToRestore = nil }
-        } message: {
-            Text("只还原这个应用的备份，其他应用的不动。请先完全退出这个应用。同一文件有多份备份时，写回最早的那份。")
-        }
-        .confirmationDialog("确定要删除这个应用的全部备份吗？", isPresented: Binding(
-            get: { appToDelete != nil },
-            set: { if !$0 { appToDelete = nil } }
-        ), titleVisibility: .visible) {
-            Button("全部删除", role: .destructive) {
-                if let bundleID = appToDelete { state.deleteBackups(forApp: bundleID) }
-                appToDelete = nil
-            }
-            Button("取消", role: .cancel) { appToDelete = nil }
-        } message: {
-            Text("只动这个应用的备份，其他应用的不动。会先把备份恢复回文件，再删除；恢复失败的会留着不删（原来的位置已不存在的直接删除）。")
         }
     }
 

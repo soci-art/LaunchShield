@@ -2075,6 +2075,18 @@ final class AppState: ObservableObject {
         performClear()
     }
 
+    /// LaunchHack 页内的「去除选中的广告」（Grace 2026-11-26）：只去除
+    /// 用户在素材墙里标记好的那批，不用回主页再走一遍；主页扫描到的
+    /// 待处理素材这次不动。
+    func clearLaunchHackMarked() {
+        let marked = scanTargets.filter { $0.group == Self.launchHackTargetGroup }
+        guard !marked.isEmpty else {
+            alertText = "还没有标记好的广告。先在素材墙里点开素材，认出是广告就标记它，再回来去除。"
+            return
+        }
+        performClear(onlyGroup: Self.launchHackTargetGroup)
+    }
+
     /// 第 83 条：冻结分批限速。清零收尾一口气连冻上百个文件和
     /// 文件夹时，通道操作在一秒内密集打出，界面出过重影（构建
     /// 39 真机复现：那场清零截断 0 个、失败 0 个，唯一的大动作
@@ -2087,16 +2099,19 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func performClear() {
+    /// onlyGroup 不为空时只处理该组的待处理素材（LaunchHack 页内
+    /// 「去除选中的广告」只处理用户标记的那组），主页扫描到的不动。
+    private func performClear(onlyGroup: String? = nil) {
         guard !isBusy else { alertText = "当前有文件操作正在执行，请稍后再试。"; return }
         guard requireChannel() else { return }
-        guard !scanTargets.isEmpty else {
+        let source = onlyGroup == nil ? scanTargets : scanTargets.filter { $0.group == onlyGroup }
+        guard !source.isEmpty else {
             alertText = "没有可去除的素材，先扫描一次。"
             return
         }
-        let targets = scanTargets.filter { !isWhitelisted($0.bundleID) }
+        let targets = source.filter { !isWhitelisted($0.bundleID) }
         guard !targets.isEmpty else {
-            scanTargets = []
+            if onlyGroup == nil { scanTargets = [] }
             alertText = "待处理文件均属于白名单应用，已全部跳过。"
             return
         }
@@ -2353,7 +2368,11 @@ final class AppState: ObservableObject {
                     self.log("有 \(failures.count) 个文件清不动、已跳过：\(failures.joined(separator: "；"))", .warning)
                     completionText = "去除完成：\(done) 个文件已清掉。另有 \(failures.count) 个文件清不动、已经跳过（多半是正被应用占用着），详情看日志。" + dbNote
                 }
-                self.scanTargets = []
+                if let onlyGroup {
+                    self.scanTargets.removeAll { $0.group == onlyGroup }
+                } else {
+                    self.scanTargets = []
+                }
                 self.checkRecipes(silent: true)
                 self.presentCompletionAlert(completionText + (recipesSaved ? "" : " 注意：本机守护记录保存失败，请检查存储空间并复查。"))
             }
