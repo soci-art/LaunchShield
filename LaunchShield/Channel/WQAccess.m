@@ -937,8 +937,7 @@ BOOL wq_grant(NSString *path)
         [gGrantOrder removeObjectAtIndex:0];
     }
     struct stat st;
-    BOOL badQuery = wq_route_is_bad_query();
-    if (!badQuery && lstat(key.fileSystemRepresentation, &st) != 0) {
+    if (lstat(key.fileSystemRepresentation, &st) != 0) {
         int error = errno;
         wq_log(@"grant: target does not exist or cannot be inspected %@ (errno=%d)", key, error);
         [gGrantLock unlock];
@@ -946,20 +945,7 @@ BOOL wq_grant(NSString *path)
     }
     int64_t handle = -1;
     BOOL usedAlt = NO;
-    if (badQuery) {
-        // bad_query resolves the target inside containermanagerd from the
-        // SystemGroup query, so a deep path does not have to be statable first.
-        handle = wq_route_bad_grant(key.fileSystemRepresentation);
-        if (handle >= 0 && !wq_grant_opens(key)) {
-            static BOOL loggedBad;
-            if (!loggedBad) {
-                loggedBad = YES;
-                wq_log(@"grant: the bad_query token for %@ doesn't open it", key);
-            }
-            wq_release_handle(handle);
-            handle = -8;
-        }
-    } else {
+    {
         // iOS 26 needs the alternative query flags; try the likely ones first so
         // a grant costs one query, and the other set only when that fails. A
         // token can also be issued and consumed yet not open the target (seen on
@@ -1008,28 +994,6 @@ BOOL wq_grant(NSString *path)
     return handle >= 0;
 }
 
-BOOL wq_probe_channel(NSString **errorText)
-{
-    // This is the same directory the file browser must enumerate. A successful
-    // App Group lookup alone is insufficient: the active route must obtain a
-    // token and then list the real app-data root. No files are created or modified.
-    NSString *root = @"/private/var/mobile/Containers/Data/Application";
-    if (!wq_grant(root)) {
-        if (errorText) *errorText = @"系统未能签发访问令牌（worse_query grant 失败；详见诊断日志）";
-        return NO;
-    }
-    NSString *listError = nil;
-    NSArray<NSString *> *entries = wq_list(root, &listError);
-    if (!entries) {
-        if (errorText) *errorText = listError.length
-            ? [NSString stringWithFormat:@"已取得授权，但无法列出应用容器目录（%@）", listError]
-            : @"已取得授权，但无法列出应用容器目录";
-        return NO;
-    }
-    wq_log(@"route probe: worse_query granted and listed app-data root (%lu entries)",
-           (unsigned long)entries.count);
-    return YES;
-}
 
 static BOOL wq_is_denied(int err) { return err == EPERM || err == EACCES; }
 

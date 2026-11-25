@@ -199,6 +199,12 @@ final class AppState: ObservableObject {
     @Published private(set) var kernelState: KernelState = .idle
     /// 这台设备是不是走内核链路（iOS 17.0–18.7.1）。
     var kernelSupported: Bool { channel.kernelSupported }
+    /// 版本与系统不对应：内核专用版装在 iOS 17/18 以外的系统上。
+    /// 界面除「应用更新」外全部置灰，弹窗提示改用正式版。
+    var editionMismatch: Bool {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        return major != 17 && major != 18
+    }
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
     /// App 排除白名单：以 Bundle ID 为唯一标识，保存在本机。
@@ -262,10 +268,10 @@ final class AppState: ObservableObject {
     /// 最近一次扫描跳过的已冻结 0 字节文件数（去重：不重复清零、不重复备份）。
     @Published var lastScanSkippedFrozen = 0
     @Published var updateStatus = ""
-    /// 「检测预发行更新」开关（正式版构建才有这一行）：打开后检测更新时
-    /// 正式版与预发行一起看，哪个新报哪个；默认关，关了只看正式版。
-    @Published var checkPrereleaseUpdates = UserDefaults.standard.bool(forKey: "app.checkPrereleaseUpdates") {
-        didSet { UserDefaults.standard.set(checkPrereleaseUpdates, forKey: "app.checkPrereleaseUpdates") }
+    /// 「内核专用更新」开关的状态（开关只在正式版的 iOS 17/18 上
+    /// 显示；内核版自己只查本线，这个值在本线用不上）。
+    @Published var checkKernelUpdates = UserDefaults.standard.bool(forKey: "app.checkKernelUpdates") {
+        didSet { UserDefaults.standard.set(checkKernelUpdates, forKey: "app.checkKernelUpdates") }
     }
     @Published var rulesStatus = ""
     @Published var availableVersion: String?
@@ -4907,7 +4913,7 @@ final class AppState: ObservableObject {
     }
 
     private func checkUpdateOnLaunch(completion: @escaping () -> Void = {}) {
-        GitHubUpdate.fetchLatestForUpdate(includePrerelease: checkPrereleaseUpdates) { [weak self] info, _ in
+        GitHubUpdate.fetchLatestForUpdate(includeKernel: checkKernelUpdates) { [weak self] info, _ in
             guard let self else { completion(); return }
             defer { completion() }
             guard let info else { return }
@@ -4924,7 +4930,7 @@ final class AppState: ObservableObject {
             self.updateStatus = "有新版本 \(Self.remoteVersionText(info, currentVersion: current))"
             self.presentUpdateAlert(.app)
             let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
-            self.log("检测更新：\(info.isPrerelease ? "预发行" : "正式版") \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
+            self.log("检测更新：\(Self.editionLabel(info)) \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
@@ -4933,7 +4939,7 @@ final class AppState: ObservableObject {
         availableVersion = nil
         availableDownloadURL = nil
         downloadedIPA = nil
-        GitHubUpdate.fetchLatestForUpdate(includePrerelease: checkPrereleaseUpdates) { [weak self] info, message in
+        GitHubUpdate.fetchLatestForUpdate(includeKernel: checkKernelUpdates) { [weak self] info, message in
             guard let self = self else { return }
             guard let info else {
                 self.updateStatus = "检查失败"
@@ -4947,13 +4953,13 @@ final class AppState: ObservableObject {
                 self.updateStatus = "有新版本 \(remoteText)"
                 self.availableVersion = info.version
                 self.availableDownloadURL = info.downloadURL
-                self.alertText = "\(info.isPrerelease ? "预发行" : "正式版")有新版本：\(remoteText)。点「下载新版」就能下载，下载完分享出去签名。"
+                self.alertText = "\(Self.editionLabel(info))有新版本：\(remoteText)。点「下载新版」就能下载，下载完分享出去签名。"
             } else {
                 self.updateStatus = "已是最新"
                 self.alertText = "已经是最新版本（\(self.appVersionText)）。"
             }
             let remoteBuildText = info.build.map { "构建 \($0)" } ?? "构建未知"
-            self.log("检测更新：\(info.isPrerelease ? "预发行" : "正式版") \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
+            self.log("检测更新：\(Self.editionLabel(info)) \(info.version)（\(remoteBuildText)），当前 \(current)（构建 \(self.appBuildNumber)）", .info)
         }
     }
 
@@ -4987,6 +4993,13 @@ final class AppState: ObservableObject {
         if isVersion(info.version, newerThan: currentVersion) { return true }
         guard info.version == currentVersion, let remoteBuild = info.build else { return false }
         return remoteBuild > currentBuild
+    }
+
+    /// 发行版属于哪条线的称呼：内核线的包也是预发行标记，
+    /// 得靠目标分支区分，不然会把内核专用版说成预发行。
+    static func editionLabel(_ info: GitHubUpdate.VersionInfo) -> String {
+        if info.targetBranch == "kernel" { return "内核专用版" }
+        return info.isPrerelease ? "预发行" : "正式版"
     }
 
     /// 展示用的远端版本字样：同版本新构建写成「0.1.6（构建 2）」，

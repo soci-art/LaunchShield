@@ -40,8 +40,6 @@ NSString *_Nullable wq_borrowed_group(void);
 // when one is held for it.
 BOOL wq_grant(NSString *path);
 // Real, read-only active-route probe against the app-data container root.
-// It obtains a grant and verifies that the directory can actually be listed.
-BOOL wq_probe_channel(NSString *_Nullable *_Nullable errorText);
 // Repairs the token cache (App Group Library/Caches) when another app sharing
 // the App Group, or an interrupted run, left it in a state token requests
 // refuse. Renames, never deletes. Logs what it did.

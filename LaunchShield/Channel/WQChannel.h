@@ -66,14 +66,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSString *signMethod;
 @property (nonatomic, readonly, copy) NSString *unavailableReason;
 
-/// "bad_query", "worse_query" or "kernel"; a Chinese label when there is no
-/// route (the version cannot run any backend).
+/// "kernel"; a Chinese label when there is no route
+/// (the version cannot run any backend).
 @property (nonatomic, readonly, copy) NSString *routeName;
 /// Chinese one-liner with the detected system version.
 @property (nonatomic, readonly, copy) NSString *routeDetail;
 /// App Group description for the UI; says so when the route needs none.
 @property (nonatomic, readonly, copy) NSString *groupText;
-@property (nonatomic, readonly) BOOL usesBadQuery;
 
 /// Forgets the cached route so the next query re-reads the signed profile.
 - (void)resetRoute;

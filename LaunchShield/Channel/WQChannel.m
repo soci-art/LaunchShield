@@ -2,8 +2,8 @@
 //  WQChannel.m
 //  LaunchShield
 //
-//  GPL-3.0-or-later. Channel implementation: kolbicz/WQFiles (WQAccess),
-//  worse_query by Taj C / forcequit.
+//  GPL-3.0-or-later. Channel implementation over the ported
+//  kolbicz/WQFiles access layer (WQAccess).
 //
 
 #import "WQChannel.h"
@@ -12,7 +12,6 @@
 #import "WQAccess.h"
 #import "WQRoute.h"
 #import "WQKernel.h"
-#import "bad_query.h"
 #import <CommonCrypto/CommonDigest.h>
 #import <sys/stat.h>
 #import <errno.h>
@@ -110,7 +109,6 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     NSArray<WQAppContainer *> *_groupContainers;
     NSTimeInterval _groupContainersAt;
     BOOL _groupContainersLoaded;
-    NSString *_worseProbeError;
 }
 
 + (instancetype)shared
@@ -143,35 +141,10 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     wq_full_scan_stop();
 }
 
-- (BOOL)badQueryGrantWorks
-{
-    NSString *probeError = nil;
-    BOOL ok = wq_probe_channel(&probeError);
-    wq_log(@"route probe: bad_query result=%@ reason=%@",
-           ok ? @"available" : @"failed", probeError ?: @"none");
-    return ok;
-}
-
 - (BOOL)available
 {
     WQRouteState state = wq_route_state();
     switch (state) {
-        case WQRouteStateBad: {
-            BOOL ok = [self badQueryGrantWorks];
-            wq_log(@"channel availability: route=bad_query result=%@",
-                   ok ? @"available" : @"unavailable");
-            return ok;
-        }
-        case WQRouteStateWorse: {
-            // Do not require a sandbox-extension grant for the parent directory.
-            // worse_query grants concrete container targets; the parent probe can
-            // return -6 even when those individual container grants work.
-            BOOL ok = wq_app_group() != nil;
-            _worseProbeError = nil;
-            wq_log(@"channel availability: route=worse app_group=%@",
-                   ok ? @"available" : @"missing");
-            return ok;
-        }
         case WQRouteStateKernel: {
             BOOL ok = wq_kernel_active();
             wq_log(@"channel availability: route=kernel result=%@",
@@ -180,10 +153,6 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
         }
         case WQRouteStateUnset:
             wq_log(@"channel availability: route=unset");
-            return NO;
-        case WQRouteStateMissingAppGroup:
-            _worseProbeError = wq_app_group_error();
-            wq_log(@"channel availability: route=worse app_group=missing");
             return NO;
         case WQRouteStateUnsupported:
             wq_log(@"channel availability: route=unsupported");
@@ -195,7 +164,6 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 - (void)resetRoute
 {
     wq_route_reset();
-    _worseProbeError = nil;
     _containers = nil;
     _containersAt = 0;
     _containersLoaded = NO;
@@ -217,12 +185,6 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
 - (NSString *)groupText
 {
     switch (wq_route_state()) {
-        case WQRouteStateBad:
-            return @"不需要（bad_query 走系统组）";
-        case WQRouteStateWorse:
-            return wq_app_group() ?: @"没有拿到";
-        case WQRouteStateMissingAppGroup:
-            return @"缺少 App Group";
         case WQRouteStateKernel:
             return @"不需要（内核链路不用共享组）";
         case WQRouteStateUnset:
@@ -249,18 +211,11 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
     return wq_route_detail();
 }
 
-- (BOOL)usesBadQuery
-{
-    return wq_route_is_bad_query();
-}
-
 - (NSString *)unavailableReason
 {
     switch (wq_route_state()) {
         case WQRouteStateUnset:
             return @"无法自动识别当前访问通道，请重新打开应用后再试。";
-        case WQRouteStateMissingAppGroup:
-            return _worseProbeError ?: (wq_app_group_error() ?: @"当前进程没有可用的 App Group；请检查签名实际授予的 application-groups 权限。");
         case WQRouteStateKernel:
             if (wq_kernel_running()) return @"内核链路正在启动：等它跑完，应用可能会重启一次。";
             if (wq_kernel_failed()) return @"内核链路没启动成功：重启应用后再点一次「启动内核链路」。";
@@ -268,24 +223,11 @@ static void LSFullScanProgress(int64_t done, int64_t total, BOOL finished)
         case WQRouteStateUnsupported: {
             if (wq_kernel_unsupported_a10_ios17())
                 return @"当前设备为 A10 且运行 iOS 17；该组合未纳入已验证范围，已阻止启动内核链路。";
-            if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 26) {
-                return @"系统不支持：内核链路只支持 iOS 17.0–18.7.1，你现在的系统用不了这条路线。";
-            }
             NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
-            size_t size = 0;
-            char build[128] = {0};
-            if (sysctlbyname("kern.osversion", NULL, &size, NULL, 0) == 0 && size > 0 && size <= sizeof(build))
-                sysctlbyname("kern.osversion", build, &size, NULL, 0);
-            return [NSString stringWithFormat:@"当前系统不在 WQFiles 已验证范围内（iOS %ld.%ld.%ld，构建 %@）。支持范围：iOS 26.0–26.7.2、iOS 27.0–27.3 beta 1（24C5037i）。",
-                    (long)v.majorVersion, (long)v.minorVersion, (long)v.patchVersion,
-                    build[0] ? [NSString stringWithUTF8String:build] : @"未知"];
-        }
-        case WQRouteStateBad:
-            return @"bad_query 在这台设备上没有取得访问权限。请检查系统版本、目标容器路径和系统返回的错误日志。";
-        case WQRouteStateWorse: {
-            if (_worseProbeError.length) return _worseProbeError;
-            NSString *reason = wq_app_group_error();
-            return reason.length ? reason : @"worse_query 授权验证失败。";
+            if (v.majorVersion >= 26) {
+                return @"此版本为 iOS 17/18 系统内核专用版本，请使用正式版。";
+            }
+            return @"系统不支持：内核专用版只支持 iOS 17.0–18.7.1，你现在的系统用不了。";
         }
     }
     return @"文件通道不可用。";
@@ -631,10 +573,9 @@ int64_t MCMActivateContainer(uint64_t cls, NSString *identifier, BOOL group, NSS
     wq_load_display_names();
     NSArray<NSString *> *roots = @[@"/private/var/mobile/Containers/Data/Application",
                                    @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
-    if (wq_route_is_bad_query() || wq_kernel_active()) {
-        // bad_query grants a folder in one query, and the kernel chain has no
-        // sandbox left, so both roots can be listed directly instead of
-        // waiting for a full inode scan.
+    if (wq_kernel_active()) {
+        // The kernel chain has no sandbox left, so both roots can be
+        // listed directly instead of waiting for a full inode scan.
         for (NSString *root in roots) {
             for (NSString *name in wq_list(root, NULL) ?: @[]) {
                 if (!name.length || [name hasPrefix:@"."]) continue;

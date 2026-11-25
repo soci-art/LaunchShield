@@ -38,7 +38,7 @@ WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优
 - **FilzaSlop** — 作者 0xjohnnydev、CrazyMind90。内核链路的 `sandbox_escape.m` 基于该项目。
 - **Dopamine** — 作者 opa334。内核链路的漏洞研究基础来自该项目。
 - **分流口径参考项目** — 作者 QuinnTang74，GPL-3.0。
-  按系统版本选择内核链路／bad_query／worse_query 的分流口径参考该项目。
+  按系统版本选择内核链路的分流口径参考该项目。
 - **探针口径参考项目** — 作者 QuinnTang74，GPL-3.0。
   `sandbox_escape.m` 的“两个容器根任一根可写即视为逃逸成功”探针口径参考该项目；
   LaunchShield 保留了自己的 socket 凭证兜底（`ucred_self`），`proc_self()==0` 时仍会尝试逃逸。
@@ -62,20 +62,3 @@ WQAccess 的原有安全流程（原地写回保 inode/属主/属性、备份优
    socket 凭证兜底保留。
 4. `WQAccess.m`：底层内核日志的导出改为只读快照，不再在每次复制/导出时截断落盘文件；
    文件仍按 1 MiB 上限裁旧行。
-
-## bad_query 路线（iOS 26.0–26.6.1）
-
-- **bad_query** — 作者 Taj C（forcequit），<https://github.com/forcequitOS/bad_query>，
-  GPL-3.0-or-later。`bad_query.c` / `bad_query.h` 取自该项目（经 QuinnTang74 的合集收录的版本），
-  去掉了其中的 fsgetpath 暴力扫描，只保留 `bad_query` / `bad_query_release`。
-- **分流范围参考项目** — 作者 QuinnTang74，GPL-3.0。
-  按系统版本分流的范围参考该项目：26.0–26.6.1 用 bad_query，26.7+/27.x 用 worse_query。
-
-本工程的改动：
-
-1. 新增 `WQRoute` 分流层，按系统版本自动选路线；界面、日志和导出都会显示当前路线。
-2. bad_query 路线使用 class 13（SystemGroup）下发授权，不需要 App Group，因此普通签名即可；
-   worse_query 路线仍按共享组申请。
-3. bad_query 路线跳过“先 lstat 再授权”的前置检查（深路径在授权前无法 stat）。
-4. 目录列表改为一次授权 + 一次 `readdir` + `fstatat`（`wq_list_detailed`），不再逐文件申请授权；
-   bad_query 路线下应用容器根目录也直接列，不再等待全盘扫描。

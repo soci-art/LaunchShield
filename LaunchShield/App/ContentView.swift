@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var showSingleAppEntryAlert = false
     @State private var showClearCacheConfirm = false
     @State private var showRestoreConfirm = false
+    @State private var showMismatchAlert = false
     @State private var ipaShareItem: ShareItem?
 
     var body: some View {
@@ -29,25 +30,51 @@ struct ContentView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
                         header
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         announcementEntry
-                        if state.kernelSupported {
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
+                        if state.editionMismatch {
+                            mismatchCard
+                        } else if state.kernelSupported {
                             kernelCard
                         } else {
                             signCard
                         }
                         tutorialEntry
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         targetCard
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         fullScanCards
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         summarySection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         actionsSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         sourceSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         if !state.templateTargets.isEmpty {
                             templateSection
+                                .disabled(state.editionMismatch)
+                                .opacity(state.editionMismatch ? 0.45 : 1)
                         }
                         recipesSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         logSection
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                         updateSection
                         footer
+                            .disabled(state.editionMismatch)
+                            .opacity(state.editionMismatch ? 0.45 : 1)
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 14)
@@ -107,6 +134,16 @@ struct ContentView: View {
             // 第 76 条：刚打开 App 时 scenePhase 不一定触发
             // onChange，这里直接启动前台实时检测。
             state.startForegroundRecurrenceMonitor()
+            // 版本与系统不对应：每次打开都弹一次窗说明，
+            // 界面本身已经置灰、只剩「应用更新」能用。
+            if state.editionMismatch {
+                showMismatchAlert = true
+            }
+        }
+        .alert("这个版本不支持你的系统", isPresented: $showMismatchAlert) {
+            Button("知道了", role: .cancel) { }
+        } message: {
+            Text("此版本为 iOS 17/18 系统内核专用版本，请使用正式版。正式版在本仓库的最新正式发行版里，下载装好后，这个内核专用版可以删掉。")
         }
         .sheet(isPresented: $showAppPicker) {
             AppPickerView().environmentObject(state)
@@ -215,12 +252,12 @@ struct ContentView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                         .layoutPriority(1)
-                    // 「预发行」标签只许出现在真预发行包里：按更新通道
-                    // 判断（预发行工作流会在 Info.plist 盖
-                    // LSUpdateChannel=prerelease，正式版没有）。正式版
-                    // 界面永远不带这几个字（第 85 条）。
-                    if GitHubUpdate.isPrereleaseChannel {
-                        Text("预发行")
+                    // 通道标签按更新通道显示：预发行包写「预发行」，
+                    // 内核包写「内核专用」（各线工作流会在 Info.plist
+                    // 盖 LSUpdateChannel）。正式版没有标记，永远不显示
+                    // （第 85 条）。
+                    if let badge = channelBadgeText {
+                        Text(badge)
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(Color.orange)
                             .padding(.horizontal, 7)
@@ -250,11 +287,44 @@ struct ContentView: View {
         }
     }
 
+    /// 主界面顶部的通道标签：预发行 / 内核专用，正式版为 nil。
+    private var channelBadgeText: String? {
+        switch GitHubUpdate.channel {
+        case .prerelease: return "预发行"
+        case .kernel: return "内核专用"
+        case .formal: return nil
+        }
+    }
+
     private var pillText: String {
+        if state.editionMismatch { return "版本不对应" }
         if state.channelChecking { return "正在检测通道" }
         if state.channelReady { return "通道就绪" }
         if state.kernelSupported && state.kernelState != .failed { return "内核链路待启动" }
         return "通道不可用"
+    }
+
+    // MARK: - Edition mismatch (kernel edition on iOS 26/27)
+
+    /// 内核专用版装在 iOS 26/27 上：整页已置灰，只剩这张说明卡和
+    /// 下面的「应用更新」能用，指用户去装正式版。
+    private var mismatchCard: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("版本与系统不对应")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(Color.primaryText)
+            Text("此版本为 iOS 17/18 系统内核专用版本，请使用正式版。")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("正式版在本仓库的最新正式发行版里。下载装好正式版之后，这个内核专用版可以删掉。")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel(radius: 24)
     }
 
     // MARK: - Kernel chain (iOS 17/18)
@@ -1154,9 +1224,11 @@ struct ContentView: View {
             Text(state.updateStatus.isEmpty ? "当前版本 \(state.appVersionText)" : state.updateStatus)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.secondaryText)
-            if !GitHubUpdate.isPrereleaseChannel {
-                Toggle(isOn: $state.checkPrereleaseUpdates) {
-                    Text("检测预发行更新")
+            // 「内核专用更新」只在版本不对应时出现：正式版装在
+            // iOS 17/18 上才有这一行，26/27 和其他通道都不显示。
+            if GitHubUpdate.channel == .formal, state.editionMismatch {
+                Toggle(isOn: $state.checkKernelUpdates) {
+                    Text("内核专用更新")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                 }
