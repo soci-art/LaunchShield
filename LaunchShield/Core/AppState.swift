@@ -203,15 +203,23 @@ final class AppState: ObservableObject {
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
     /// App 排除白名单：以 Bundle ID 为唯一标识，保存在本机。
+    /// 下面这份小写索引只在这里重建一次。它原来是个计算属性，每次访问都
+    /// 现做 Set(appWhitelist.keys.map { ... })：白名单页排序比较器里每比较
+    /// 一次要调两次 isWhitelisted，一千多个应用就是上万次比较、每次重建一个
+    /// Set，页面因此卡顿。
     @Published var appWhitelist: [String: String] =
-        UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:]
-    var whitelistedBundleIDs: Set<String> { Set(appWhitelist.keys.map { $0.lowercased() }) }
+        UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:] {
+        didSet { whitelistIndex = Set(appWhitelist.keys.map { $0.lowercased() }) }
+    }
+    private(set) var whitelistIndex: Set<String> =
+        Set((UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:]).keys.map { $0.lowercased() })
+    var whitelistedBundleIDs: Set<String> { whitelistIndex }
     func isWhitelisted(_ bundleID: String) -> Bool {
         let normalized = bundleID.lowercased()
-        if whitelistedBundleIDs.contains(normalized) { return true }
+        if whitelistIndex.contains(normalized) { return true }
         guard normalized.hasPrefix("group.") else { return false }
         let groupOwner = String(normalized.dropFirst(6))
-        return whitelistedBundleIDs.contains {
+        return whitelistIndex.contains {
             groupOwner == $0 || groupOwner.hasPrefix($0 + ".")
         }
     }
@@ -1316,9 +1324,20 @@ final class AppState: ObservableObject {
             var missing: [String] = []
             var pending: [ContainerInfo] = []
             var shownFromCache = Set<String>()
+            // 图标一批一批交给主线程：原来每取到一个图标就 async 一次、改一次
+            // @Published 的 appIcons，几百个图标就是几百次整页重绘，主页会明显
+            // 卡顿。现在按批合并成一次改动。
+            var iconBatch: [String: UIImage] = [:]
+            func flushIcons() {
+                guard !iconBatch.isEmpty else { return }
+                let batch = iconBatch
+                iconBatch.removeAll(keepingCapacity: true)
+                DispatchQueue.main.async { self.appIcons.merge(batch) { _, new in new } }
+            }
             for info in targets {
                 if let image = self.iconProvider.iconFromCache(bundleID: info.bundleID) {
-                    DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                    iconBatch[info.bundleID] = image
+                    if iconBatch.count >= 32 { flushIcons() }
                     cached += 1
                     shownFromCache.insert(info.bundleID)
                 }
@@ -1326,17 +1345,20 @@ final class AppState: ObservableObject {
                     pending.append(info)
                 }
             }
+            flushIcons()
             if !pending.isEmpty {
                 // 第 90 条：打包批量查商店目录（每批 30 个），不再一个个慢慢搜。
                 let got = self.iconProvider.fetchIcons(bundleIDs: pending.map { $0.bundleID })
                 for info in pending {
                     if let image = got[info.bundleID] {
-                        DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                        iconBatch[info.bundleID] = image
+                        if iconBatch.count >= 32 { flushIcons() }
                         if shownFromCache.contains(info.bundleID) { refreshed += 1 } else { newFetched += 1 }
                     } else if !shownFromCache.contains(info.bundleID) {
                         missing.append(info.bundleID)
                     }
                 }
+                flushIcons()
             }
             if !targets.isEmpty {
                 // 第 91 条：只留一行汇总；没找到的名单不再整串写进
