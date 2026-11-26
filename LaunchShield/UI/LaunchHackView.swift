@@ -1360,7 +1360,7 @@ struct LaunchHackView: View {
             if !state.mergedUploadMessage.isEmpty {
                 Text(state.mergedUploadMessage)
                     .font(.system(size: 11))
-                    .foregroundStyle(state.mergedUploadMessage.hasPrefix("已上传") ? Color.primaryText : Color.secondaryText)
+                    .foregroundStyle(state.mergedUploadMessage.hasPrefix("已上传") ? Color.accentCyan : Color.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
@@ -1495,8 +1495,8 @@ struct LaunchHackView: View {
                                             if model.confirmedGalleryIDs.contains(item.id) {
                                                 Image(systemName: "checkmark.circle.fill")
                                                     .font(.system(size: 17))
-                                                    .foregroundStyle(.black)
-                                                    .background(Circle().fill(.white).padding(2.5))
+                                                    .foregroundStyle(.white)
+                                                    .background(Circle().fill(Color.accentCyan).padding(2.5))
                                                     .padding(4)
                                             }
                                         }
@@ -1634,8 +1634,8 @@ struct LaunchHackView: View {
                                                 if model.confirmedGalleryIDs.contains(peer.id) {
                                                     Image(systemName: "checkmark.circle.fill")
                                                         .font(.system(size: 13))
-                                                        .foregroundStyle(.black)
-                                                        .background(Circle().fill(.white).padding(2))
+                                                        .foregroundStyle(.white)
+                                                        .background(Circle().fill(Color.accentCyan).padding(2))
                                                         .padding(2)
                                                 }
                                             }
