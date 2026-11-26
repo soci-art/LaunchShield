@@ -7,7 +7,7 @@ extension Color {
     static let appBackground = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1)
-            : UIColor(red: 0.929, green: 0.969, blue: 0.957, alpha: 1)
+            : UIColor(red: 0.918, green: 0.929, blue: 0.918, alpha: 1)
     })
     static let panel = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
@@ -17,28 +17,35 @@ extension Color {
     static let secondaryText = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 0.62, green: 0.62, blue: 0.62, alpha: 1)
-            : UIColor(red: 0.322, green: 0.478, blue: 0.447, alpha: 1)
+            : UIColor(red: 0.392, green: 0.463, blue: 0.416, alpha: 1)
     })
     static let primaryText = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor.white
-            : UIColor(red: 0.031, green: 0.082, blue: 0.070, alpha: 1)
+            : UIColor(red: 0.125, green: 0.149, blue: 0.122, alpha: 1)
     })
-    /// 主题强调色：薄荷青（Grace 2026-11-26 定）——深色亮薄荷、浅色深青。
+    /// 主题强调色：青瓷（Grace 2026-11-26 定，莫兰迪第 4 组青瓷 × 珊瑚）——深色灰青瓷、浅色深青瓷。
     /// 名字还叫 accentCyan 是历史包袱：全 App 都引这个名，逐处改名风险大，
     /// 只换它的值。广告商图标的一家一色和删除按钮的红不在此列、保持原样。
     static let accentCyan = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.176, green: 0.831, blue: 0.749, alpha: 1)
-            : UIColor(red: 0.051, green: 0.580, blue: 0.533, alpha: 1)
+            ? UIColor(red: 0.576, green: 0.710, blue: 0.631, alpha: 1)
+            : UIColor(red: 0.373, green: 0.541, blue: 0.447, alpha: 1)
+    })
+    /// 撞色珊瑚（青瓷 × 珊瑚）：只给主操作按钮（两步流程的实心钮、
+    /// LaunchHack 的开始扫描/取消扫描），别处不用。
+    static let accentCoral = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.808, green: 0.510, blue: 0.400, alpha: 1)
+            : UIColor(red: 0.737, green: 0.384, blue: 0.259, alpha: 1)
     })
     /// 强调色的淡底版（卡片底、胶囊底、顶部光晕用）：深色模式不带绿，
-    /// 用白色淡底（压在纯黑上是浅灰）；浅色模式才是薄荷淡底。
+    /// 用白色淡底（压在纯黑上是浅灰）；浅色模式才是青瓷淡底。
     /// Grace 2026-11-26 定：深色就纯黑，绿只留强调色本体。
     static let accentWash = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor.white
-            : UIColor(red: 0.051, green: 0.580, blue: 0.533, alpha: 1)
+            : UIColor(red: 0.373, green: 0.541, blue: 0.447, alpha: 1)
     })
 }
 

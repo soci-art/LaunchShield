@@ -1382,7 +1382,7 @@ struct LaunchHackView: View {
                 }
                 .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
                 .frame(maxWidth: .infinity).frame(height: 50)
-                .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14))
+                .background(Color.accentCoral, in: RoundedRectangle(cornerRadius: 14))
             }
             .disabled(model.isRunning)
             if state.checkedIDs.count >= 2 {
@@ -1405,7 +1405,7 @@ struct LaunchHackView: View {
                     Text("取消扫描")
                         .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
                         .frame(maxWidth: .infinity).frame(height: 50)
-                        .background(Color.accentCyan, in: RoundedRectangle(cornerRadius: 14))
+                        .background(Color.accentCoral, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
             }
