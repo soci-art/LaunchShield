@@ -103,7 +103,7 @@ struct LogsView: View {
             .foregroundStyle(Color.accentCyan)
             .frame(maxWidth: .infinity)
             .frame(height: 40)
-            .background(Color.accentCyan.opacity(0.10),
+            .background(Color.accentWash.opacity(0.10),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)

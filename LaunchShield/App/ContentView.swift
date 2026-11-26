@@ -28,7 +28,7 @@ struct ContentView: View {
             ZStack {
                 Color.appBackground.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    LinearGradient(colors: [Color.accentCyan.opacity(0.10), Color.accentCyan.opacity(0)],
+                    LinearGradient(colors: [Color.accentWash.opacity(0.10), Color.accentWash.opacity(0)],
                                    startPoint: .top, endPoint: .bottom)
                         .frame(height: 280)
                     Spacer(minLength: 0)
@@ -572,7 +572,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .background(Color.accentCyan.opacity(0.09),
+            .background(Color.accentWash.opacity(0.09),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -604,7 +604,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .background(Color.accentCyan.opacity(0.09),
+            .background(Color.accentWash.opacity(0.09),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -718,7 +718,7 @@ struct ContentView: View {
                         .foregroundStyle(Color.accentCyan)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(Color.accentCyan.opacity(0.10), in: Capsule())
+                        .background(Color.accentWash.opacity(0.10), in: Capsule())
                 }
                 .buttonStyle(.plain)
             }
@@ -820,7 +820,7 @@ struct ContentView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
                     .frame(width: 30, height: 30)
-                    .background(Color.accentCyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.accentWash.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("排除白名单")
                         .font(.system(size: 13, weight: .semibold))
@@ -863,7 +863,7 @@ struct ContentView: View {
             .foregroundStyle(Color.accentCyan)
             .frame(maxWidth: .infinity)
             .frame(height: 52)
-            .background(Color.accentCyan.opacity(0.10),
+            .background(Color.accentWash.opacity(0.10),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -1138,7 +1138,7 @@ struct ContentView: View {
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(Color.accentCyan.opacity(0.5), lineWidth: 1))
+                                    .stroke(Color.accentWash.opacity(0.5), lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                     }

@@ -16,12 +16,12 @@ extension Color {
     })
     static let secondaryText = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.561, green: 0.722, blue: 0.682, alpha: 1)
+            ? UIColor(red: 0.62, green: 0.62, blue: 0.62, alpha: 1)
             : UIColor(red: 0.322, green: 0.478, blue: 0.447, alpha: 1)
     })
     static let primaryText = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.941, green: 0.980, blue: 0.969, alpha: 1)
+            ? UIColor.white
             : UIColor(red: 0.031, green: 0.082, blue: 0.070, alpha: 1)
     })
     /// 主题强调色：薄荷青（Grace 2026-11-26 定）——深色亮薄荷、浅色深青。
@@ -30,6 +30,14 @@ extension Color {
     static let accentCyan = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 0.176, green: 0.831, blue: 0.749, alpha: 1)
+            : UIColor(red: 0.051, green: 0.580, blue: 0.533, alpha: 1)
+    })
+    /// 强调色的淡底版（卡片底、胶囊底、顶部光晕用）：深色模式不带绿，
+    /// 用白色淡底（压在纯黑上是浅灰）；浅色模式才是薄荷淡底。
+    /// Grace 2026-11-26 定：深色就纯黑，绿只留强调色本体。
+    static let accentWash = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor.white
             : UIColor(red: 0.051, green: 0.580, blue: 0.533, alpha: 1)
     })
 }
