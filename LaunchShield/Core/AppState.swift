@@ -208,15 +208,23 @@ final class AppState: ObservableObject {
     /// 当前目标的容器路径（异步刷新缓存，界面读这个，不在渲染时现算）。
     @Published private(set) var targetPath: String?
     /// App 排除白名单：以 Bundle ID 为唯一标识，保存在本机。
+    /// 小写索引只在这里重建一次。它原来是计算属性，每次访问都现做
+    /// Set(appWhitelist.keys.map { ... })：白名单页排序比较器里每比较一次要
+    /// 调两次 isWhitelisted，上千个应用就是上万次比较、每次重建一个 Set，
+    /// 页面因此卡顿。
     @Published var appWhitelist: [String: String] =
-        UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:]
-    var whitelistedBundleIDs: Set<String> { Set(appWhitelist.keys.map { $0.lowercased() }) }
+        UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:] {
+        didSet { whitelistIndex = Set(appWhitelist.keys.map { $0.lowercased() }) }
+    }
+    private(set) var whitelistIndex: Set<String> =
+        Set((UserDefaults.standard.dictionary(forKey: "ls.appWhitelist") as? [String: String] ?? [:]).keys.map { $0.lowercased() })
+    var whitelistedBundleIDs: Set<String> { whitelistIndex }
     func isWhitelisted(_ bundleID: String) -> Bool {
         let normalized = bundleID.lowercased()
-        if whitelistedBundleIDs.contains(normalized) { return true }
+        if whitelistIndex.contains(normalized) { return true }
         guard normalized.hasPrefix("group.") else { return false }
         let groupOwner = String(normalized.dropFirst(6))
-        return whitelistedBundleIDs.contains {
+        return whitelistIndex.contains {
             groupOwner == $0 || groupOwner.hasPrefix($0 + ".")
         }
     }
@@ -1374,6 +1382,7 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.containers = list
                 self.groupContainers = groups
+                self.reloadKernelAppIDSets()
                 self.didLoadContainers = true
                 self.log("诊断[容器] 刷新完成：应用容器 \(list.count) 个，共享组容器 \(groups.count) 个")
                 self.loadAppIconsIfNeeded()
@@ -1395,16 +1404,26 @@ final class AppState: ObservableObject {
     func loadAppIconsIfNeeded() {
         guard !iconLoadStarted, !headlessRun, channel.isAvailable else { return }
         iconLoadStarted = true
-        let targets = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) }
+        let targets = containers.filter { !Self.isSystemApp($0) && isMainApp($0) }
         iconQueue.async { [weak self] in
             guard let self else { return }
             var cached = 0, newFetched = 0, refreshed = 0
             var missing: [String] = []
             var pending: [ContainerInfo] = []
             var shownFromCache = Set<String>()
+            // 图标按批合并成一次改动：原来每取到一个就改一次 @Published 的
+            // appIcons，几百个图标就是几百次整页重绘，主页会卡顿。
+            var iconBatch: [String: UIImage] = [:]
+            func flushIcons() {
+                guard !iconBatch.isEmpty else { return }
+                let batch = iconBatch
+                iconBatch.removeAll(keepingCapacity: true)
+                DispatchQueue.main.async { self.appIcons.merge(batch) { _, new in new } }
+            }
             for info in targets {
                 if let image = self.iconProvider.iconFromCache(bundleID: info.bundleID) {
-                    DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                    iconBatch[info.bundleID] = image
+                    if iconBatch.count >= 32 { flushIcons() }
                     cached += 1
                     shownFromCache.insert(info.bundleID)
                 }
@@ -1412,17 +1431,20 @@ final class AppState: ObservableObject {
                     pending.append(info)
                 }
             }
+            flushIcons()
             if !pending.isEmpty {
                 // 第 90 条：打包批量查商店目录（每批 30 个），不再一个个慢慢搜。
                 let got = self.iconProvider.fetchIcons(bundleIDs: pending.map { $0.bundleID })
                 for info in pending {
                     if let image = got[info.bundleID] {
-                        DispatchQueue.main.async { self.appIcons[info.bundleID] = image }
+                        iconBatch[info.bundleID] = image
+                        if iconBatch.count >= 32 { flushIcons() }
                         if shownFromCache.contains(info.bundleID) { refreshed += 1 } else { newFetched += 1 }
                     } else if !shownFromCache.contains(info.bundleID) {
                         missing.append(info.bundleID)
                     }
                 }
+                flushIcons()
             }
             if !targets.isEmpty {
                 // 第 91 条：只留一行汇总；没找到的名单不再整串写进
@@ -1720,12 +1742,29 @@ final class AppState: ObservableObject {
     /// app id plus at least one more component, and the parent id itself is
     /// in the catalog. When the catalog is empty (LaunchServices unavailable)
     /// nothing is filtered.
-    static func isMainApp(_ container: ContainerInfo) -> Bool {
+    /// 主应用 / 扩展的 Bundle ID 集合。每次调用都去过一遍 ObjC 侧
+    /// （wq_extension_bundle_ids / wq_main_app_bundle_ids，各带一把锁）在
+    /// 上千行的列表里太贵，所以按容器列表刷新时取一次存下来。
+    private(set) var kernelMainAppIDs: Set<String> = []
+    private(set) var kernelExtensionIDs: Set<String> = []
+
+    /// 刷新上面两份集合。只在容器列表更新后调用。
+    func reloadKernelAppIDSets() {
+        guard wq_kernel_active() else {
+            kernelMainAppIDs = []
+            kernelExtensionIDs = []
+            return
+        }
+        kernelExtensionIDs = wq_extension_bundle_ids()
+        kernelMainAppIDs = wq_main_app_bundle_ids()
+    }
+
+    func isMainApp(_ container: ContainerInfo) -> Bool {
         if container.isGroup { return false }
         guard wq_kernel_active() else { return true }
-        let extensionIDs = wq_extension_bundle_ids()
+        let extensionIDs = kernelExtensionIDs
         if extensionIDs.contains(container.bundleID) { return false }
-        let ids = wq_main_app_bundle_ids()
+        let ids = kernelMainAppIDs
         if ids.isEmpty { return true }
         if ids.contains(container.bundleID) { return true }
         var parent = container.bundleID
@@ -1766,7 +1805,7 @@ final class AppState: ObservableObject {
     ]
 
     var allUserAppsChecked: Bool {
-        let userApps = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
+        let userApps = containers.filter { !Self.isSystemApp($0) && isMainApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
         return !userApps.isEmpty && userApps.allSatisfy { checkedIDs.contains($0.bundleID) }
     }
 
@@ -1789,8 +1828,8 @@ final class AppState: ObservableObject {
             alertText = "已取消一键勾选，现在按单个目标应用处理。"
             return
         }
-        let userApps = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
-        let games = containers.filter { !Self.isSystemApp($0) && Self.isMainApp($0) && $0.isGame }
+        let userApps = containers.filter { !Self.isSystemApp($0) && isMainApp($0) && !$0.isGame && !isWhitelisted($0.bundleID) }
+        let games = containers.filter { !Self.isSystemApp($0) && isMainApp($0) && $0.isGame }
         guard !userApps.isEmpty else {
             alertText = "当前没有可勾选的应用（可能都已加入排除白名单）。"
             return

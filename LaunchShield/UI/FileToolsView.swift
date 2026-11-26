@@ -52,7 +52,10 @@ struct FileToolsView: View {
     }
 
     var body: some View {
-        SheetPage("大文件榜 / 搜文件名") {
+        // 每渲染一次只算一次：原来 ForEach 里用 displayList.last 判分隔线，
+        // 每一行都把整个列表重新筛＋排序。
+        let rows = displayList
+        return SheetPage("大文件榜 / 搜文件名") {
             VStack(alignment: .leading, spacing: 12) {
                 Text("范围和找广告一样：当前目标应用（加一键勾选的应用）连同关联的共享组容器。选中的文件会加进找广告候选，并算作你标记的广告；去除仍在候选列表里确认，这里不动文件。")
                     .font(.system(size: 11))
@@ -167,7 +170,7 @@ struct FileToolsView: View {
                     }
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(displayList) { file in
+                            ForEach(rows) { file in
                                 Button {
                                     if selectedPaths.contains(file.path) {
                                         selectedPaths.remove(file.path)
@@ -178,7 +181,7 @@ struct FileToolsView: View {
                                     row(file)
                                 }
                                 .buttonStyle(.plain)
-                                if file.id != displayList.last?.id {
+                                if file.id != rows.last?.id {
                                     Divider()
                                         .overlay(Color.primaryText.opacity(0.06))
                                         .padding(.leading, 46)
