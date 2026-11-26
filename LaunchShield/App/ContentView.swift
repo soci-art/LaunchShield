@@ -1299,18 +1299,35 @@ private struct AppWhitelistView: View {
             !$0.isGroup && $0.bundleID != AppState.ownBundleID &&
             !AppState.isSystemApp($0) && AppState.isMainApp($0)
         }
-        let matched = query.isEmpty ? apps : apps.filter {
+        guard !query.isEmpty else { return apps }
+        return apps.filter {
             $0.name.localizedCaseInsensitiveContains(query) ||
             $0.bundleID.localizedCaseInsensitiveContains(query)
         }
-        // 重设计定稿：在白名单里的排前面，跟白名单页图上一致。
-        return matched.sorted {
-            state.isWhitelisted($0.bundleID) && !state.isWhitelisted($1.bundleID)
+    }
+
+    /// 重设计定稿：在白名单里的排前面。用一次分组代替排序——原来的比较器
+    /// 每比较一次要查两个 isWhitelisted，一千多个应用就是上万次比较，正好
+    /// 是白名单页卡顿的来源。
+    private func orderedApps(_ apps: [ContainerInfo]) -> [ContainerInfo] {
+        let whitelisted = state.whitelistIndex
+        var first: [ContainerInfo] = []
+        var second: [ContainerInfo] = []
+        first.reserveCapacity(apps.count)
+        second.reserveCapacity(apps.count)
+        let lowercased: (ContainerInfo) -> Bool = { whitelisted.contains($0.bundleID.lowercased()) }
+        for app in apps {
+            if lowercased(app) { first.append(app) } else { second.append(app) }
         }
+        return first + second
     }
 
     var body: some View {
-        SheetPage("排除白名单") {
+        // 每渲染一次只算一次：原来筛选和排序写在 ForEach 的每一行里
+        // （还用了 filteredApps.last 做分隔线判断），一千多行会把整个列表
+        // 重算一千多次，白名单页因此很卡。
+        let rows = orderedApps(filteredApps)
+        return SheetPage("排除白名单") {
             // 整页可滚：已排除名单再长也不会把下面的添加区挤没。
             ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -1359,7 +1376,7 @@ private struct AppWhitelistView: View {
                     .background(Color.primaryText.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(filteredApps) { app in
+                            ForEach(rows) { app in
                                 HStack(spacing: 8) {
                                     AppIconView(bundleID: app.bundleID, size: 32)
                                     VStack(alignment: .leading, spacing: 2) {
@@ -1381,7 +1398,7 @@ private struct AppWhitelistView: View {
                                     ))
                                 }
                                 .padding(.vertical, 8)
-                                if app.id != filteredApps.last?.id {
+                                if app.id != rows.last?.id {
                                     Divider().overlay(Color.primaryText.opacity(0.06))
                                 }
                             }

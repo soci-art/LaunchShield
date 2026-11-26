@@ -20,7 +20,10 @@ struct AppPickerView: View {
     }
 
     var body: some View {
-        SheetPage("选择目标应用") {
+        // 每渲染一次只筛一次。原来 ForEach 里用 filtered.last 判断分隔线，
+        // 每一行都会把整个列表重新筛一遍，应用一多，列表就很卡。
+        let rows = filtered
+        return SheetPage("选择目标应用") {
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -54,7 +57,7 @@ struct AppPickerView: View {
 
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(filtered) { container in
+                        ForEach(rows) { container in
                             Button {
                                 state.select(container)
                                 dismiss()
@@ -64,7 +67,7 @@ struct AppPickerView: View {
                             .buttonStyle(.plain)
                             .disabled(state.isWhitelisted(container.bundleID))
                             .opacity(state.isWhitelisted(container.bundleID) ? 0.45 : 1)
-                            if container.id != filtered.last?.id {
+                            if container.id != rows.last?.id {
                                 Divider()
                                     .overlay(Color.primaryText.opacity(0.06))
                                     .padding(.leading, 90)
