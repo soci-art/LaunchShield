@@ -186,7 +186,7 @@ struct ContainerBrowserView: View {
                     if item.isImmutable {
                         Text("已冻结")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(Color.primaryText)
                     }
                 }
             }
