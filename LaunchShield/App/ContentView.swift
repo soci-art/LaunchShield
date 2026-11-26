@@ -274,7 +274,7 @@ struct ContentView: View {
             VStack(alignment: .trailing, spacing: 4) {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(state.channelReady ? Color.green : Color.orange)
+                        .fill(state.channelReady ? Color.primaryText : Color.orange)
                         .frame(width: 8, height: 8)
                     Text(pillText)
                         .font(.system(size: 11, weight: .medium))
@@ -659,7 +659,7 @@ struct ContentView: View {
                     }
                     Spacer()
                     StatusBadge(text: state.isWhitelisted(state.target.bundleID) ? "已排除" : (state.targetPath == nil ? "没有容器" : "已找到"),
-                                tint: state.isWhitelisted(state.target.bundleID) || state.targetPath == nil ? .orange : .green)
+                                tint: state.isWhitelisted(state.target.bundleID) || state.targetPath == nil ? .orange : Color.primaryText)
                 } else {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("已勾选 \(state.checkedIDs.count) 个应用")
@@ -959,7 +959,7 @@ struct ContentView: View {
             rowDivider
             sourceRow(name: "其他广告", symbol: "ellipsis.circle", tint: .gray, count: tallies["其他广告"] ?? 0)
             if (tallies[AppState.launchHackTargetGroup] ?? 0) > 0 {
-                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", tint: .cyan, count: tallies[AppState.launchHackTargetGroup] ?? 0)
+                sourceRow(name: "LaunchHack 识别", symbol: "viewfinder", tint: Color.accentCyan, count: tallies[AppState.launchHackTargetGroup] ?? 0)
             }
         }
         .padding(.horizontal, 16)
@@ -1109,7 +1109,7 @@ struct ContentView: View {
                 if summary.recurred > 0 {
                     StatusBadge(text: "有复发", tint: .orange)
                 } else {
-                    StatusBadge(text: "守护中", tint: .green)
+                    StatusBadge(text: "守护中", tint: Color.primaryText)
                 }
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))

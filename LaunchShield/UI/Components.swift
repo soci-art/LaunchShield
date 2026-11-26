@@ -6,33 +6,40 @@ extension Color {
     /// 界面颜色跟着系统走：浅色模式下自动变浅，不再写死深色。
     static let appBackground = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.030, green: 0.047, blue: 0.063, alpha: 1)
-            : UIColor(red: 0.945, green: 0.953, blue: 0.965, alpha: 1)
+            ? UIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1)
+            : UIColor(red: 0.980, green: 0.980, blue: 0.980, alpha: 1)
     })
     static let panel = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.070, green: 0.092, blue: 0.118, alpha: 1)
+            ? UIColor(red: 0.066, green: 0.066, blue: 0.066, alpha: 1)
             : UIColor.white
     })
     static let secondaryText = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.58, green: 0.63, blue: 0.70, alpha: 1)
-            : UIColor(red: 0.38, green: 0.42, blue: 0.48, alpha: 1)
+            ? UIColor(red: 0.62, green: 0.62, blue: 0.62, alpha: 1)
+            : UIColor(red: 0.42, green: 0.42, blue: 0.42, alpha: 1)
     })
     static let primaryText = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
             ? UIColor.white
-            : UIColor(red: 0.07, green: 0.09, blue: 0.12, alpha: 1)
+            : UIColor(red: 0.04, green: 0.04, blue: 0.04, alpha: 1)
     })
-    static let accentCyan = Color(red: 0.35, green: 0.85, blue: 0.95)
+    /// 主题强调色：极简黑白（Grace 2026-11-26 定）——深色用白、浅色用黑。
+    /// 名字还叫 accentCyan 是历史包袱：全 App 都引这个名，逐处改名风险大，
+    /// 只换它的值。广告商图标的一家一色和删除按钮的红不在此列、保持原样。
+    static let accentCyan = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor.white
+            : UIColor(red: 0.04, green: 0.04, blue: 0.04, alpha: 1)
+    })
 }
 
 func recipeTint(_ state: RecipeState) -> Color {
     switch state {
-    case .normal: return .green
-    case .frozen: return .cyan
+    case .normal: return .secondaryText
+    case .frozen: return .primaryText
     case .recurred: return .orange
-    case .placeholder: return .purple
+    case .placeholder: return .secondaryText
     case .missing: return .red
     case .unknown: return .secondaryText
     }
@@ -41,8 +48,8 @@ func recipeTint(_ state: RecipeState) -> Color {
 func logTint(_ level: LogLevel) -> Color {
     switch level {
     case .info: return .secondaryText
-    case .notice: return .cyan
-    case .success: return .green
+    case .notice: return .primaryText
+    case .success: return .primaryText
     case .warning: return .orange
     }
 }
@@ -460,9 +467,9 @@ struct SwitchToggle: View {
         } label: {
             ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule()
-                    .fill(isOn ? Color.green : Color.primaryText.opacity(0.18))
+                    .fill(isOn ? Color.primaryText : Color.primaryText.opacity(0.18))
                 Circle()
-                    .fill(Color.white)
+                    .fill(isOn ? Color.appBackground : Color.white)
                     .frame(width: 27, height: 27)
                     .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                     .padding(2)

@@ -1360,7 +1360,7 @@ struct LaunchHackView: View {
             if !state.mergedUploadMessage.isEmpty {
                 Text(state.mergedUploadMessage)
                     .font(.system(size: 11))
-                    .foregroundStyle(state.mergedUploadMessage.hasPrefix("已上传") ? Color.green : Color.secondaryText)
+                    .foregroundStyle(state.mergedUploadMessage.hasPrefix("已上传") ? Color.primaryText : Color.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
         }
@@ -1495,7 +1495,7 @@ struct LaunchHackView: View {
                                             if model.confirmedGalleryIDs.contains(item.id) {
                                                 Image(systemName: "checkmark.circle.fill")
                                                     .font(.system(size: 17))
-                                                    .foregroundStyle(.green)
+                                                    .foregroundStyle(.black)
                                                     .background(Circle().fill(.white).padding(2.5))
                                                     .padding(4)
                                             }
@@ -1634,7 +1634,7 @@ struct LaunchHackView: View {
                                                 if model.confirmedGalleryIDs.contains(peer.id) {
                                                     Image(systemName: "checkmark.circle.fill")
                                                         .font(.system(size: 13))
-                                                        .foregroundStyle(.green)
+                                                        .foregroundStyle(.black)
                                                         .background(Circle().fill(.white).padding(2))
                                                         .padding(2)
                                                 }
@@ -1648,7 +1648,7 @@ struct LaunchHackView: View {
                     }
                     if model.confirmedGalleryIDs.contains(item.id) {
                         Label("已标记，会同步到主页素材清单，在那里处理它。", systemImage: "checkmark.circle.fill")
-                            .font(.system(size: 13, weight: .medium)).foregroundStyle(.green)
+                            .font(.system(size: 13, weight: .medium)).foregroundStyle(Color.primaryText)
                         Button {
                             model.unconfirmGalleryItem(item, state: state)
                         } label: {

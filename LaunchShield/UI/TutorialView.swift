@@ -230,7 +230,8 @@ struct LaunchHackGuideView: View {
                             .overlay(alignment: .topTrailing) {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 15))
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(.black)
+                                    .background(Circle().fill(.white).padding(2))
                                     .padding(4)
                             }
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
