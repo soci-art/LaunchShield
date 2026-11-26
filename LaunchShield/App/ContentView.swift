@@ -332,7 +332,7 @@ struct ContentView: View {
     private var heroCard: some View {
         let total = state.recipes.count
         let frozen = state.recipes.filter { $0.frozen }.count
-        let fraction = total > 0 ? Double(frozen) / Double(total) : (state.channelReady ? 1 : 0)
+        let fraction = total > 0 ? Double(frozen) / Double(total) : 0
         return VStack(spacing: 0) {
             HStack(spacing: 18) {
                 ZStack {
@@ -348,7 +348,7 @@ struct ContentView: View {
                 }
                 .frame(width: 92, height: 92)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(state.channelReady ? "守护中" : (state.channelChecking ? "正在检测通道" : "通道不可用"))
+                    Text(heroTitle)
                         .font(.system(size: 27, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                     Text(heroStateLine)
@@ -376,6 +376,15 @@ struct ContentView: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .panel(radius: 24)
+    }
+
+    /// 大卡标题（Grace 2026-11-26 定）：通道没就绪先报通道状态；
+    /// 通道就绪后看有没有冻住的素材——有＝守护中，没有＝未守护。
+    /// 全部还原会把素材解冻，还原完自动回到未守护。
+    private var heroTitle: String {
+        if state.channelChecking { return "正在检测通道" }
+        if !state.channelReady { return "通道不可用" }
+        return state.recipes.contains { $0.frozen } ? "守护中" : "未守护"
     }
 
     private var heroStateLine: String {
