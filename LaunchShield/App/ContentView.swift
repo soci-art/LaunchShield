@@ -352,7 +352,7 @@ struct ContentView: View {
                         .font(.system(size: 27, weight: .semibold))
                         .foregroundStyle(Color.primaryText)
                     Text(heroStateLine)
-                        .font(.system(size: 16, weight: .medium))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(Color.secondaryText)
                     if state.recurredRecipeCount > 0 {
                         Text("有 \(state.recurredRecipeCount) 个文件复发，记得重新冻结")
