@@ -1006,7 +1006,7 @@ struct ContentView: View {
                 .foregroundStyle(Color.appBackground)
                 .padding(.horizontal, 15)
                 .frame(height: 38)
-                .background(filled ? Color.accentCyan : Color.primaryText, in: Capsule())
+                .background(filled ? Color.accentCoral : Color.primaryText, in: Capsule())
             }
             .buttonStyle(.plain)
         }
