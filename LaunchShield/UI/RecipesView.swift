@@ -154,7 +154,7 @@ struct RecipesView: View {
                 } else if missing > 0 && missing == group.items.count && !group.items.isEmpty {
                     StatusBadge(text: "文件不见了", tint: .red)
                 } else {
-                    StatusBadge(text: "守护中", tint: Color.primaryText)
+                    StatusBadge(text: "守护中", tint: .green)
                 }
                 // 「结束守护」和备份页的「还原」一个样：白色胶囊按钮，
                 // 整块都能点（Grace 2026-11-26）。
