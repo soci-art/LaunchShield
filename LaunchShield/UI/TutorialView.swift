@@ -119,7 +119,7 @@ private func tutorialMockButton(_ text: String) -> some View {
         .foregroundStyle(Color.accentCyan)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color.accentCyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(Color.accentWash.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 }
 
 private func tutorialSolidButton(_ text: String) -> some View {

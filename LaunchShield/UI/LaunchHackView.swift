@@ -1319,7 +1319,7 @@ struct LaunchHackView: View {
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(Color.accentCyan)
                     .frame(width: 48, height: 48)
-                    .background(Color.accentCyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                    .background(Color.accentWash.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 3) {
                     Text("LaunchHack").font(.system(size: 21, weight: .semibold)).foregroundStyle(Color.primaryText)
                     Text("列图片和动态素材 · 手动标记").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.secondaryText)
@@ -1352,7 +1352,7 @@ struct LaunchHackView: View {
                 .foregroundStyle(Color.accentCyan)
                 .frame(maxWidth: .infinity)
                 .frame(height: 44)
-                .background(Color.accentCyan.opacity(0.12),
+                .background(Color.accentWash.opacity(0.12),
                             in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
@@ -1461,7 +1461,7 @@ struct LaunchHackView: View {
                                                 // 成套素材没有单张预览图：
                                                 // 图标＋种类＋文件数。
                                                 ZStack {
-                                                    Rectangle().fill(Color.accentCyan.opacity(0.10))
+                                                    Rectangle().fill(Color.accentWash.opacity(0.10))
                                                     VStack(spacing: 5) {
                                                         Image(systemName: item.kind == .lottie ? "play.square.stack" : "globe")
                                                             .font(.system(size: 22))
