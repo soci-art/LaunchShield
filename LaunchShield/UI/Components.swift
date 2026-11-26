@@ -6,12 +6,12 @@ extension Color {
     /// 界面颜色跟着系统走：浅色模式下自动变浅，不再写死深色。
     static let appBackground = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.024, green: 0.067, blue: 0.059, alpha: 1)
+            ? UIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1)
             : UIColor(red: 0.929, green: 0.969, blue: 0.957, alpha: 1)
     })
     static let panel = Color(UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.043, green: 0.102, blue: 0.090, alpha: 1)
+            ? UIColor(red: 0.066, green: 0.066, blue: 0.066, alpha: 1)
             : UIColor.white
     })
     static let secondaryText = Color(UIColor { traits in
