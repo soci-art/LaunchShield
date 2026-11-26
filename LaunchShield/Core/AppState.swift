@@ -393,11 +393,7 @@ final class AppState: ObservableObject {
     private var fullScanTotalIds: Int64 = 0
 
     private var didBootstrap = false
-    /// 第 103 条：快捷指令在后台唤起跑复查时置真，关掉拉图标这类
-    /// 与复查无关的活，省后台时间。
-    var headlessRun = false
-    /// 第 103 条修法：补扫防重入（进程内静态标记）——App 开着时
-    /// 启动补扫和快捷指令复查是两个实例，别让两轮补扫同时跑、
+    /// 补扫防重入（进程内静态标记）：别让两轮补扫同时跑、
     /// 撞同一批文件。
     static var sweepInFlight = false
     // 文件在清零期间连续变化时短暂退避，避免重复扫描反复撞同一文件。
@@ -775,50 +771,6 @@ final class AppState: ObservableObject {
                 self.log("内核链路已就绪：沙箱已放开，所有功能可用", .success)
                 // 走一遍正常的通道就绪流程：列应用、复查配方。
                 self.recheckChannel()
-            }
-        }
-    }
-
-    /// 第 103 条：快捷指令在后台唤起时跑的复查——跟打开 App 时
-    /// 自动做的那一轮同源（目录补扫自动去除＋配方复查），但不碰
-    /// 界面、不查更新、不拉图标。跑完把一句话结果交回去，快捷
-    /// 指令会显示出来；全程写进日志，事后打开 App 能查。
-    func runShortcutRecheck(completion: @escaping (String) -> Void) {
-        if AppState.sweepInFlight {
-            log("快捷指令复查：已经有一轮补扫在跑，这轮没重复跑", .info)
-            completion("已经有一轮复查在跑了，这轮没重复跑")
-            return
-        }
-        recipes = store.file.recipes
-        directoryGuards = store.file.directoryGuards
-        backups = store.file.backups.sorted { $0.createdAt > $1.createdAt }
-        headlessRun = true
-        if store.loadFailure != nil {
-            log("快捷指令复查：守护库读取失败，没敢动任何文件", .warning)
-            completion("守护库读取失败，这次没敢动任何文件，请打开 LaunchShield 看一下")
-            return
-        }
-        log("快捷指令复查：开始", .info)
-        work.async {
-            let ok = self.channel.isAvailable
-            DispatchQueue.main.async {
-                guard ok else {
-                    self.log("快捷指令复查：通道不可用（\(self.channel.unavailableReason)）", .warning)
-                    completion("通道不可用：\(self.channel.unavailableReason)")
-                    return
-                }
-                self.refreshContainers {
-                    self.work.async {
-                        self.sweepAdDirectories(reason: "快捷指令复查") { cleared in
-                            self.checkRecipes(silent: true)
-                            let text = cleared > 0
-                                ? "复查完成：清掉 \(cleared) 个新冒出来的广告文件，都已备份并冻结"
-                                : "复查完成：没有新冒出来的广告文件"
-                            self.log("快捷指令复查：\(text)", .notice)
-                            completion(text)
-                        }
-                    }
-                }
             }
         }
     }
@@ -1402,7 +1354,7 @@ final class AppState: ObservableObject {
     /// 第 91 条：轮次范围和「选择目标应用」同口径——系统应用直接
     /// 跳过（它们在选择页不显示、商店里也没条目，白查还刷日志）。
     func loadAppIconsIfNeeded() {
-        guard !iconLoadStarted, !headlessRun, channel.isAvailable else { return }
+        guard !iconLoadStarted, channel.isAvailable else { return }
         iconLoadStarted = true
         let targets = containers.filter { !Self.isSystemApp($0) && isMainApp($0) }
         iconQueue.async { [weak self] in
