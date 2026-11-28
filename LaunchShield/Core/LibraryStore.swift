@@ -135,7 +135,19 @@ final class LibraryStore {
         }
         let handle = try FileHandle(forWritingTo: journalURL)
         defer { try? handle.close() }
-        _ = try handle.seekToEnd()
+        let end = try handle.seekToEnd()
+        if end > 0 {
+            // 上次进程要是正好死在写一半的地方，文件末尾会留半行、
+            // 没有换行；直接续写会把新记录跟半行粘成一行，回放时
+            // 两条都解不出来。先给半行补上换行收尾，新记录另起
+            // 一行（半行回放时会被当坏行跳过，不影响别人）。
+            try handle.seek(toFileOffset: end - 1)
+            let last = try handle.read(upToCount: 1) ?? Data()
+            _ = try handle.seekToEnd()
+            if last.first != UInt8(0x0A) {
+                try handle.write(contentsOf: Data([UInt8(0x0A)]))
+            }
+        }
         try handle.write(contentsOf: data)
         try handle.write(contentsOf: Data([UInt8(0x0A)]))
         try handle.synchronize()
