@@ -221,56 +221,72 @@ private enum LaunchHackImageProbe {
         let imageHash: UInt64?
     }
 
+    struct Meta {
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let frameCount: Int
+    }
+
+    /// 只读图片头拿宽高和帧数，不整张解码。宽高与解码同一口径：
+    /// 带 EXIF 方向的按摆正后算（缩略图解码用的是 WithTransform）。
+    static func inspect(path: String, channel: Channel) -> Meta? {
+        let maxBytes = 40 * 1024 * 1024
+        guard let data = try? channel.read(path, maxBytes: maxBytes + 1),
+              !data.isEmpty, data.count <= maxBytes,
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let frameCount = CGImageSourceGetCount(source)
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+              let width = props[kCGImagePropertyPixelWidth as String] as? Int,
+              let height = props[kCGImagePropertyPixelHeight as String] as? Int,
+              width > 0, height > 0 else { return nil }
+        let orientation = props[kCGImagePropertyOrientation as String] as? Int ?? 1
+        let rotated = orientation >= 5
+        return Meta(pixelWidth: rotated ? height : width,
+                    pixelHeight: rotated ? width : height,
+                    frameCount: frameCount)
+    }
+
     static func probe(path: String, relativePath: String, channel: Channel) -> Result? {
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LaunchHackProbe-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: folder) }
-            // 临时副本的后缀要用系统认得的：原文件靠内容认出来的
-            // （如 .image），原后缀会让解码器认不出格式，按内容给。
-            let originalExt = (relativePath as NSString).pathExtension.lowercased()
-            let knownExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"]
-            let ext = knownExts.contains(originalExt) ? originalExt : "png"
-            let localURL = folder.appendingPathComponent("asset.\(ext)")
-            try channel.copyToLocal(path: path, destination: localURL.path)
-            let size = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
-            guard size > 0, size <= 40 * 1024 * 1024 else { return nil }
-            guard let source = CGImageSourceCreateWithURL(localURL as CFURL, nil) else { return nil }
-            let frameCount = CGImageSourceGetCount(source)
-            // 动图把原始数据带回去放着播；太大的不带（只上墙第一帧）。
-            let animationData = (frameCount > 1 && size <= 10 * 1024 * 1024)
-                ? try? Data(contentsOf: localURL) : nil
-            // 解码按方向标记摆正、限尺寸（手机照片常躺着存，靠标记
-            // 摆正显示；墙上展示与量尺寸都要摆正后的）。
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 900
-            ]
-            guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-                    ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-            // 预览图：墙上当图、点开确认也用它。太大就缩一份小的。
-            var preview = UIImage(cgImage: image).jpegData(compressionQuality: 0.65)
-            if (preview?.count ?? 0) > 160 * 1024 {
-                let scale = min(1, 480.0 / CGFloat(max(image.width, image.height)))
-                let thumbSize = CGSize(width: CGFloat(image.width) * scale,
-                                       height: CGFloat(image.height) * scale)
-                let renderer = UIGraphicsImageRenderer(size: thumbSize)
-                preview = renderer.jpegData(withCompressionQuality: 0.6) { _ in
-                    UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: thumbSize))
-                }
-                if (preview?.count ?? 0) > 160 * 1024 { preview = nil }
+        let maxBytes = 40 * 1024 * 1024
+        guard let data = try? channel.read(path, maxBytes: maxBytes + 1),
+              !data.isEmpty, data.count <= maxBytes else { return nil }
+        return probe(data: data)
+    }
+
+    /// 解码、预览、指纹：只给真正可能上墙的图用。数据直接从通道读，
+    /// 不再每张图都拷一份到临时目录再读回来。
+    static func probe(data: Data) -> Result? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let frameCount = CGImageSourceGetCount(source)
+        // 动图把原始数据带回去放着播；太大的不带（只上墙第一帧）。
+        let animationData = (frameCount > 1 && data.count <= 10 * 1024 * 1024) ? data : nil
+        // 解码按方向标记摆正、限尺寸（手机照片常躺着存，靠标记
+        // 摆正显示；墙上展示与量尺寸都要摆正后的）。
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 900
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+                ?? CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        // 预览图：墙上当图、点开确认也用它。太大就缩一份小的。
+        var preview = UIImage(cgImage: image).jpegData(compressionQuality: 0.65)
+        if (preview?.count ?? 0) > 160 * 1024 {
+            let scale = min(1, 480.0 / CGFloat(max(image.width, image.height)))
+            let thumbSize = CGSize(width: CGFloat(image.width) * scale,
+                                   height: CGFloat(image.height) * scale)
+            let renderer = UIGraphicsImageRenderer(size: thumbSize)
+            preview = renderer.jpegData(withCompressionQuality: 0.6) { _ in
+                UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: thumbSize))
             }
-            return Result(pixelWidth: image.width, pixelHeight: image.height,
-                          previewData: preview,
-                          detail: "图片 · \(image.width) × \(image.height)",
-                          frameCount: frameCount,
-                          animationData: animationData,
-                          imageHash: LaunchHackImageHash.dHash(of: image))
-        } catch {
-            return nil
+            if (preview?.count ?? 0) > 160 * 1024 { preview = nil }
         }
+        return Result(pixelWidth: image.width, pixelHeight: image.height,
+                      previewData: preview,
+                      detail: "图片 · \(image.width) × \(image.height)",
+                      frameCount: frameCount,
+                      animationData: animationData,
+                      imageHash: LaunchHackImageHash.dHash(of: image))
     }
 }
 
@@ -700,12 +716,14 @@ private final class LaunchHackModel: ObservableObject {
         cancelToken = token
 
         DispatchQueue.global(qos: .userInitiated).async {
+            let scanStartedAt = Date().timeIntervalSince1970
             var matches: [LaunchHackCandidate] = []
             var visited = 0
             var lastPublishedVisited = 0
             var mediaCount = 0
             var dataCount = 0
             var sniffedMedia = 0
+            var decodedImages = 0
             var galleryPool: [LaunchHackGalleryItem] = []
             var dynamicPool: [LaunchHackGalleryItem] = []
             // 第 99 条：视频单独一摊，不再和动图/成套抢 dynamicPool
@@ -823,6 +841,11 @@ private final class LaunchHackModel: ObservableObject {
                     return kind == .other || kind == .video
                 }
 
+                // 第一遍：只读图片头（不解码），按解码同一口径估「900px
+                // 缩略图」的短边。旧版对每张图都先解码、再按解码后的
+                // 短边判小图；这里用同一个公式先判，宽幅 banner 这类
+                // 解出来也只有 900×70 的照样判掉，口径不变。
+                var imageCandidates: [(file: FileItem, score: Int, frameCount: Int?)] = []
                 for imageEntry in imageWork {
                     if token.isCancelled { cancelled = true; break }
                     let file = imageEntry.file
@@ -833,13 +856,41 @@ private final class LaunchHackModel: ObservableObject {
                             self.scanProgress = totalWork > 0 ? Double(snapshot) / Double(totalWork) : 1
                         }
                     }
-                    let relative = relativeOf(file)
                     guard file.size > 0, file.size <= 40 * 1024 * 1024 else { continue }
                     mediaCount += 1
                     if mediaCount % 20 == 0 {
                         let snapshot = mediaCount
                         DispatchQueue.main.async { self.checkedMedia = snapshot }
                     }
+                    guard let meta = LaunchHackImageProbe.inspect(path: file.path, channel: channel) else {
+                        // 头读不出来：交给解码线，和旧版一样由解码结果决定。
+                        imageCandidates.append((file: file, score: imageEntry.score, frameCount: nil))
+                        continue
+                    }
+                    let scale = min(1.0, 900.0 / Double(max(meta.pixelWidth, meta.pixelHeight)))
+                    let thumbMin = Double(min(meta.pixelWidth, meta.pixelHeight)) * scale
+                    // 250 以下按旧口径直接算小图，不再解码；250–380 之间
+                    // 留给解码复核，避免缩略取整在门槛附近翻面。
+                    if thumbMin < 250 {
+                        smallSkipped += 1
+                        continue
+                    }
+                    imageCandidates.append((file: file, score: imageEntry.score, frameCount: meta.frameCount))
+                }
+
+                // 第二遍：只解可能上墙的图。图片墙 60、动图 30，两种名额
+                // 都满了就不再往下解；解码失败不占位、继续下一张——旧版
+                // 的顺序和补位语义因此原样保留，墙上还是同一批、同一顺序。
+                for candidate in imageCandidates {
+                    if token.isCancelled { cancelled = true; break }
+                    if galleryPool.count >= 60, dynamicPool.count >= 30 { break }
+                    if let frames = candidate.frameCount {
+                        if frames > 1, dynamicPool.count >= 30 { continue }
+                        if frames <= 1, galleryPool.count >= 60 { continue }
+                    }
+                    let file = candidate.file
+                    let relative = relativeOf(file)
+                    decodedImages += 1
                     guard let probe = LaunchHackImageProbe.probe(path: file.path,
                         relativePath: relative, channel: channel) else { continue }
                     // 图片墙：大图（短边 ≥300）按证据顺序收录，小图只
@@ -855,7 +906,7 @@ private final class LaunchHackModel: ObservableObject {
                                     relativePath: relative, size: file.size,
                                     modifiedAt: file.modified,
                                     pixelWidth: probe.pixelWidth, pixelHeight: probe.pixelHeight,
-                                    pathScore: imageEntry.score, previewData: preview)
+                                    pathScore: candidate.score, previewData: preview)
                                 item.kind = .animated
                                 item.animationData = probe.animationData
                                 item.imageHash = probe.imageHash
@@ -869,7 +920,7 @@ private final class LaunchHackModel: ObservableObject {
                                 relativePath: relative, size: file.size,
                                 modifiedAt: file.modified,
                                 pixelWidth: probe.pixelWidth, pixelHeight: probe.pixelHeight,
-                                pathScore: imageEntry.score, previewData: preview)
+                                pathScore: candidate.score, previewData: preview)
                             item.imageHash = probe.imageHash
                             galleryPool.append(item)
                         }
@@ -1091,6 +1142,8 @@ private final class LaunchHackModel: ObservableObject {
                 self.status = statusText
                 self.persistSession()
                 self.onLog?(statusText, failures.isEmpty ? .success : .warning)
+                let scanElapsed = Date().timeIntervalSince1970 - scanStartedAt
+                self.onLog?("LaunchHack 扫描耗时 \(String(format: "%.1f", scanElapsed)) 秒：文件 \(totalWork) 个，实解码图片 \(decodedImages) 张、视频 \(videoCount) 个", .info)
                 self.onLog?("LaunchHack 机器数据（只上传不展示）：按证据命中 \(dataCount) 项", .info)
                 if !galleryPool.isEmpty || smallSkipped > 0 {
                     self.onLog?("LaunchHack 图片墙收录 \(galleryPool.count) 张大图（短边 ≥300），另略过 \(smallSkipped) 张小图", .info)
