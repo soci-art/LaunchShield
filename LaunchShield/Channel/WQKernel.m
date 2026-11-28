@@ -326,6 +326,10 @@ BOOL wq_kernel_start(void)
         // to run before the process died, and the 18.7.1 reports show that
         // window being missed (two "not in the expected zone
         // data.kalloc.32" panics after successful runs).
+        // Pages that were written but never verified still hold the bogus
+        // pointer in their pcb. Stage 1 is over and the system is quiet now,
+        // so retry every one of them before the process can be killed.
+        int repaired = kexploit_repair_poison();
         int restored = kexploit_filter_armed() ? kexploit_filter_set(0) : 0;
         @synchronized (wq_kernel_lock()) {
             gKernelQuiesced = (restored == 0);
@@ -333,7 +337,8 @@ BOOL wq_kernel_start(void)
         if (restored != 0) {
             wq_log(@"kernel: could not restore the icmp6 filter (code %d); the process is not safe to kill yet", restored);
         } else {
-            wq_log(@"kernel: icmp6 filter restored right after the escape; the process is safe to kill");
+            wq_log(@"kernel: icmp6 filter restored right after the escape (%d leftover field(s) repaired); the process is safe to kill",
+                   repaired);
         }
         // A panic leaves nothing in this app's log, so the previous session
         // ends mid-line and the only way to know what the kernel tripped on is
