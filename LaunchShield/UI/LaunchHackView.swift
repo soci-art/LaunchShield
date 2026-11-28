@@ -724,6 +724,15 @@ private final class LaunchHackModel: ObservableObject {
             var dataCount = 0
             var sniffedMedia = 0
             var decodedImages = 0
+            // 分段计时：只写日志、不改行为。收尾把这七段的秒数报出来，
+            // 真机跑一次就知道时间到底花在盘点、配置、图片还是数据线上。
+            var timePlan = 0.0
+            var timeConfig = 0.0
+            var timeInspect = 0.0
+            var timeDecode = 0.0
+            var timeVideo = 0.0
+            var timeData = 0.0
+            var timeBundle = 0.0
             var galleryPool: [LaunchHackGalleryItem] = []
             var dynamicPool: [LaunchHackGalleryItem] = []
             // 第 99 条：视频单独一摊，不再和动图/成套抢 dynamicPool
@@ -741,6 +750,7 @@ private final class LaunchHackModel: ObservableObject {
             // 阶段一：盘点。先把每个容器的文件清单走完，真进度条的
             // 分母就有了；盘点期间 scanProgress 保持 nil（页面显示盘点中）。
             var plan: [(target: LaunchHackScanTarget, files: [FileItem], work: [FileItem])] = []
+            let planStartedAt = Date().timeIntervalSince1970
             for target in targets {
                 if token.isCancelled { cancelled = true; break }
                 do {
@@ -775,6 +785,7 @@ private final class LaunchHackModel: ObservableObject {
                     failures.append("\(target.appName)：\(error.localizedDescription)")
                 }
             }
+            timePlan = Date().timeIntervalSince1970 - planStartedAt
             let totalWork = plan.reduce(0) { $0 + $1.work.count }
             var processed = 0
             if !cancelled {
@@ -796,6 +807,7 @@ private final class LaunchHackModel: ObservableObject {
                 // 这份证据只喂机器那份上传数据，不展示给用户。
                 var configEvidence: [LaunchHackContentEvidence] = []
                 var configBytesRead: UInt64 = 0
+                let configStartedAt = Date().timeIntervalSince1970
                 for config in entry.files where !config.isDirectory && !config.isSymlink
                     && config.path.hasPrefix(target.rootPath + "/")
                     && LaunchHackContentAnalyzer.isReadableConfig(config.path, size: config.size) {
@@ -809,6 +821,7 @@ private final class LaunchHackModel: ObservableObject {
                     ) else { continue }
                     configEvidence.append(evidence)
                 }
+                timeConfig += Date().timeIntervalSince1970 - configStartedAt
 
                 // 媒体判定：先看后缀，后缀认不出的再看文件内容
                 // （SDWebImage 的 .image、无后缀缓存靠内容才认得出，
@@ -846,6 +859,7 @@ private final class LaunchHackModel: ObservableObject {
                 // 短边判小图；这里用同一个公式先判，宽幅 banner 这类
                 // 解出来也只有 900×70 的照样判掉，口径不变。
                 var imageCandidates: [(file: FileItem, score: Int, frameCount: Int?)] = []
+                let inspectStartedAt = Date().timeIntervalSince1970
                 for imageEntry in imageWork {
                     if token.isCancelled { cancelled = true; break }
                     let file = imageEntry.file
@@ -877,10 +891,12 @@ private final class LaunchHackModel: ObservableObject {
                     }
                     imageCandidates.append((file: file, score: imageEntry.score, frameCount: meta.frameCount))
                 }
+                timeInspect += Date().timeIntervalSince1970 - inspectStartedAt
 
                 // 第二遍：只解可能上墙的图。图片墙 60、动图 30，两种名额
                 // 都满了就不再往下解；解码失败不占位、继续下一张——旧版
                 // 的顺序和补位语义因此原样保留，墙上还是同一批、同一顺序。
+                let decodeStartedAt = Date().timeIntervalSince1970
                 for candidate in imageCandidates {
                     if token.isCancelled { cancelled = true; break }
                     if galleryPool.count >= 60, dynamicPool.count >= 30 { break }
@@ -928,6 +944,7 @@ private final class LaunchHackModel: ObservableObject {
                         smallSkipped += 1
                     }
                 }
+                timeDecode += Date().timeIntervalSince1970 - decodeStartedAt
 
                 // 第 69 条：视频上墙——只收路径证据够的（缓存目录
                 // 里的媒体起步 42 分），免得把应用自己的视频内容
@@ -936,6 +953,7 @@ private final class LaunchHackModel: ObservableObject {
                 // 第 99 条补：视频进单独的 videoPool（自己 30 个
                 // 名额），并照图片同口径加短边 ≥300 的门槛，小
                 // 视频只计数不上墙。
+                let videoStartedAt = Date().timeIntervalSince1970
                 let videoWork = entry.work
                     .filter { (kindOf[$0.path] ?? .other) == .video }
                     .map { (file: $0, score: LaunchHackAssessment.assess(relativePath: relativeOf($0)).score) }
@@ -979,7 +997,9 @@ private final class LaunchHackModel: ObservableObject {
                     videoPool.append(item)
                     videoCount += 1
                 }
+                timeVideo += Date().timeIntervalSince1970 - videoStartedAt
 
+                let dataStartedAt = Date().timeIntervalSince1970
                 for file in dataWork {
                     if token.isCancelled { cancelled = true; break }
                     processed += 1
@@ -1034,11 +1054,13 @@ private final class LaunchHackModel: ObservableObject {
                         mediaDetails: nil, previewData: nil))
                     dataCount += 1
                 }
+                timeData += Date().timeIntervalSince1970 - dataStartedAt
 
                 // 第 69 条：成套素材上墙——Lottie 动画（json＋图片
                 // 成套）和网页广告包（文件夹里有 html）按整个文件
                 // 夹成组列出，用户认的是整套、标记也按整套走。
                 if dynamicPool.count < 30 {
+                    let bundleStartedAt = Date().timeIntervalSince1970
                     var byFolder: [String: [FileItem]] = [:]
                     for file in entry.work {
                         let relative = relativeOf(file)
@@ -1103,6 +1125,7 @@ private final class LaunchHackModel: ObservableObject {
                         dynamicPool.append(item)
                         bundleCount += 1
                     }
+                    timeBundle += Date().timeIntervalSince1970 - bundleStartedAt
                 }
             }
 
@@ -1143,7 +1166,9 @@ private final class LaunchHackModel: ObservableObject {
                 self.persistSession()
                 self.onLog?(statusText, failures.isEmpty ? .success : .warning)
                 let scanElapsed = Date().timeIntervalSince1970 - scanStartedAt
-                self.onLog?("LaunchHack 扫描耗时 \(String(format: "%.1f", scanElapsed)) 秒：文件 \(totalWork) 个，实解码图片 \(decodedImages) 张、视频 \(videoCount) 个", .info)
+                func sec(_ value: Double) -> String { String(format: "%.1f", value) }
+                self.onLog?("LaunchHack 扫描耗时 \(sec(scanElapsed)) 秒：盘点 \(sec(timePlan))、配置 \(sec(timeConfig))、图片头 \(sec(timeInspect))、解码 \(sec(timeDecode))、视频 \(sec(timeVideo))、数据线 \(sec(timeData))、成套 \(sec(timeBundle))", .info)
+                self.onLog?("LaunchHack 扫描量：文件 \(totalWork) 个，实解码图片 \(decodedImages) 张、视频 \(videoCount) 个，已处理 \(processed) 个", .info)
                 self.onLog?("LaunchHack 机器数据（只上传不展示）：按证据命中 \(dataCount) 项", .info)
                 if !galleryPool.isEmpty || smallSkipped > 0 {
                     self.onLog?("LaunchHack 图片墙收录 \(galleryPool.count) 张大图（短边 ≥300），另略过 \(smallSkipped) 张小图", .info)
