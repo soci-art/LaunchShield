@@ -35,6 +35,11 @@ final class LibraryStore {
     let backupRoot: URL
 
     private var jsonURL: URL { root.appendingPathComponent("library.json") }
+    /// 备份登记用的追加日志：一条记录一行，写完即 fsync。
+    /// 以前每登记一条备份就整份 library.json 重写＋读回校验，批量清零
+    /// 两万个文件时写入量是 O(n²)，几十 GB 都花在重写索引上；这里
+    /// 改成追加一行，收尾或下一次 save 时再合并回 library.json。
+    private var journalURL: URL { root.appendingPathComponent("backups.journal") }
     private(set) var loadFailure: String?
 
     init() {
@@ -50,13 +55,28 @@ final class LibraryStore {
     }
 
     func load() {
-        guard FileManager.default.fileExists(atPath: jsonURL.path) else { return }
-        do {
-            let data = try Data(contentsOf: jsonURL)
-            file = try JSONDecoder().decode(LibraryFile.self, from: data)
-            loadFailure = nil
-        } catch {
-            loadFailure = error.localizedDescription
+        if FileManager.default.fileExists(atPath: jsonURL.path) {
+            do {
+                let data = try Data(contentsOf: jsonURL)
+                file = try JSONDecoder().decode(LibraryFile.self, from: data)
+                loadFailure = nil
+            } catch {
+                loadFailure = error.localizedDescription
+            }
+        }
+        replayJournal()
+    }
+
+    /// 把日志里还没合并进 library.json 的备份记录补回来。崩溃、被杀进程
+    /// 之后，这些记录只存在于日志里；半行或坏行直接跳过，不让一行坏数据
+    /// 挡住整库。
+    private func replayJournal() {
+        guard let data = try? Data(contentsOf: journalURL), !data.isEmpty else { return }
+        let decoder = JSONDecoder()
+        var known = Set(file.backups.map { $0.id })
+        for line in data.split(separator: UInt8(ascii: "\n")) {
+            guard let record = try? decoder.decode(BackupRecord.self, from: Data(line)) else { continue }
+            if known.insert(record.id).inserted { file.backups.append(record) }
         }
     }
 
@@ -81,31 +101,44 @@ final class LibraryStore {
             ])
         }
         loadFailure = nil
+        // 合并已完成，日志里的记录都进了 library.json；删失败也不怕，
+        // 下次加载时按 id 去重会跳过重复。
+        try? FileManager.default.removeItem(at: journalURL)
     }
 
     /// Register a backup record durably before its source file is modified.
-    /// On failure the in-memory index is left unchanged and the caller must
-    /// skip truncation/freezing for that file.
+    /// Appends one journal line and fsyncs it; the full-library rewrite is
+    /// deferred to save(). On failure the in-memory index is left unchanged.
     func registerBackup(_ record: BackupRecord) throws {
         if file.backups.contains(where: { $0.id == record.id }) { return }
-        let previous = file.backups
-        file.backups.append(record)
         do {
-            try saveOrThrow()
+            try appendToJournal(record)
         } catch {
-            file.backups = previous
-            // If the failed write can be rolled back durably, remove the
-            // unregistered backup bytes as well. If rollback also fails,
-            // preserve the backup directory rather than risk deleting bytes
-            // referenced by an index that may have reached disk.
-            do {
-                try saveOrThrow()
-                try? FileManager.default.removeItem(at: backupDirectoryURL(for: record.id))
-            } catch {
-                // Keep the backup bytes for manual recovery.
-            }
+            // 记录没落盘，这份备份不作数：删掉刚拷出来的字节，原文件没动。
+            try? FileManager.default.removeItem(at: backupDirectoryURL(for: record.id))
             throw error
         }
+        file.backups.append(record)
+    }
+
+    /// 追加一行并 fsync。这是「先登记、再动原文件」的持久化点，代价恒定，
+    /// 不随备份条数增长。
+    private func appendToJournal(_ record: BackupRecord) throws {
+        let data = try JSONEncoder().encode(record)
+        guard !data.contains(UInt8(ascii: "\n")) else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSLocalizedDescriptionKey: "备份记录含换行，无法写入日志"
+            ])
+        }
+        if !FileManager.default.fileExists(atPath: journalURL.path) {
+            FileManager.default.createFile(atPath: journalURL.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: journalURL)
+        defer { try? handle.close() }
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+        try handle.write(contentsOf: Data([UInt8(0x0A)]))
+        try handle.synchronize()
     }
 
     /// Best-effort save for non-destructive metadata updates. Critical

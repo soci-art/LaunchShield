@@ -1511,6 +1511,16 @@ final class AppState: ObservableObject {
         return (nil, false)
     }
 
+    /// 批量入册时的去重键。一次清零可能有上万条配方，逐条去 contains
+    /// 是 O(n²) 的字符串比较；先建一次 Set，再逐条 insert 判断。
+    static func recipeKey(_ recipe: Recipe) -> String {
+        recipe.bundleID + "\n" + (recipe.groupID ?? "") + "\n" + recipe.relativePath
+    }
+
+    static func guardKey(_ guardItem: DirectoryGuard) -> String {
+        guardItem.bundleID + "\n" + (guardItem.groupID ?? "") + "\n" + guardItem.relativePath
+    }
+
     // MARK: - 文件夹守护（第 52 条：优先冻结文件夹）
 
     /// 这些是容器里的大区根，本身太宽，绝不整夹守护/冻结；
@@ -1660,12 +1670,20 @@ final class AppState: ObservableObject {
     /// 第 78 条：批量操作真进度上报。后台循环里每处理完一个
     /// 就调一次；界面以弹窗形式显示确定进度条＋已完成/总数。
     func reportWorkProgress(label: String, done: Int, total: Int) {
+        // 每处理完一个文件就推一次进度：批量 2 万个目标时，主线程和
+        // SwiftUI 会被迫重画两万次，进度条自己成了卡顿源。这里限到约
+        // 10 Hz（收尾那一次一定发），界面看起来反而更顺。
+        let now = Date().timeIntervalSince1970
+        if done != total, now - lastProgressReportAt < 0.1 { return }
+        lastProgressReportAt = now
         DispatchQueue.main.async {
             guard self.isBusy else { return }
             self.workProgress = WorkProgress(label: label, done: done,
                                              total: total, detail: nil)
         }
     }
+    /// 只在 work 队列上读写：reportWorkProgress 的调用方都是批量干活循环。
+    private var lastProgressReportAt: TimeInterval = 0
 
     /// Names of apps the latest scan found ad material in (for the find-ad guide).
     var appsWithAds: [String] {
@@ -2122,6 +2140,21 @@ final class AppState: ObservableObject {
             var freezePace = 0
             var newBackups: [BackupRecord] = []
             var newRecipes: [Recipe] = []
+            // 同一个文件在这次清零里要被问三次「它落在哪个容器」（备份、
+            // 冻文件夹、建文件夹守护），每次都重算一遍容器比对没有意义。
+            // 按路径记一次，后面直接查。
+            var locationCache: [String: (groupID: String?, isKnown: Bool)] = [:]
+            func location(of file: TargetFile, ownerID: String) -> (groupID: String?, isKnown: Bool) {
+                if let cached = locationCache[file.path] { return cached }
+                let resolved = self.locateFile(path: file.path, relativePath: file.relativePath, ownerID: ownerID)
+                locationCache[file.path] = resolved
+                return resolved
+            }
+            // 分段计时：改完之后光看总时长分不清是拷贝、截断还是冻结慢，
+            // 收尾把三段报出来，真机上一眼就能对上。
+            let clearStartedAt = Date().timeIntervalSince1970
+            var timeBackup = 0.0
+            var timeTruncate = 0.0
 
             for (index, targetFile) in targets.enumerated() {
                 self.reportWorkProgress(label: "去除中", done: index, total: targets.count)
@@ -2150,9 +2183,8 @@ final class AppState: ObservableObject {
                         let ownerName = targetFile.appName.isEmpty ? LocalADBlockRule.dynamicSplashDisplayName : targetFile.appName
                         // 这个文件生根在哪个容器：应用自己的，或某个共享组。
                         // 备份和配方都记准这个根，之后定位才不会找错地方。
-                        let located = self.locateFile(path: targetFile.path,
-                                                      relativePath: targetFile.relativePath,
-                                                      ownerID: ownerID)
+                        let located = location(of: targetFile, ownerID: ownerID)
+                        let backupStarted = Date().timeIntervalSince1970
                         let record = try self.backupManager.backup(path: targetFile.path,
                                                                    relativePath: targetFile.relativePath,
                                                                    bundleID: ownerID,
@@ -2161,10 +2193,15 @@ final class AppState: ObservableObject {
                                                                    groupID: located.groupID,
                                                                    channel: self.channel)
                         try self.store.registerBackup(record)
+                        timeBackup += Date().timeIntervalSince1970 - backupStarted
                         newBackups.append(record)
-                        let backedUpDigest = try self.channel.md5(targetFile.path)
-                        guard backedUpDigest.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                            throw ChannelFailure("备份后源文件内容发生变化，已取消去除")
+                        // 备份内部已经核对过「拷出来的字节 == 源文件字节」，
+                        // 这里只复查文件身份（inode/大小/时间），不再把整份
+                        // 素材重算一遍 MD5——大视频上这一遍就是几十 MB 的读。
+                        let postBackupVersion = try self.channel.fileVersion(targetFile.path)
+                        guard let sourceVersion = record.sourceVersion,
+                              postBackupVersion.isSameObject(as: sourceVersion) else {
+                            throw ChannelFailure("备份后源文件身份或内容发生变化，已取消去除")
                         }
                         if wasImmutable {
                             try self.channel.setImmutable(targetFile.path, false)
@@ -2175,11 +2212,11 @@ final class AppState: ObservableObject {
                               preWriteItem.size == record.originalSize else {
                             throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
                         }
-                        let preWriteMD5 = try self.channel.md5(targetFile.path)
-                        guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                            throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
-                        }
+                        // truncate(_:matching:expectedMD5:) 在真正写入前会再核对
+                        // 一次身份和 MD5；这里不再提前读第三遍整份文件。
+                        let truncateStarted = Date().timeIntervalSince1970
                         try self.channel.truncate(targetFile.path, matching: record.sourceVersion, expectedMD5: record.md5)
+                        timeTruncate += Date().timeIntervalSince1970 - truncateStarted
                         done += 1
                         self.log("已清零：\(targetFile.relativePath)（\(Format.bytes(size))）", .success)
                         // 清零过的都登记进守护名单，不再挑组：以前只有「软件自营」
@@ -2252,7 +2289,7 @@ final class AppState: ObservableObject {
             var directoryRoots: [String: String] = [:]
             for file in targets {
                 let owner = file.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : file.bundleID
-                let located = self.locateFile(path: file.path, relativePath: file.relativePath, ownerID: owner)
+                let located = location(of: file, ownerID: owner)
                 if let root = self.channel.rootPath(bundleID: owner, groupID: located.groupID) {
                     directoryRoots[root] = owner
                 }
@@ -2281,15 +2318,16 @@ final class AppState: ObservableObject {
             // 把文件夹本身冻上。之后新广告落回这些文件夹，启动
             // 巡查会一并清掉，不再「第三次冷启动又出现」。
             var newGuards: [DirectoryGuard] = []
+            var guardKeys = Set<String>()
             for file in targets {
                 let owner = file.bundleID.isEmpty ? LocalADBlockRule.dynamicSplashBundleID : file.bundleID
                 let ownerName = file.appName.isEmpty ? LocalADBlockRule.dynamicSplashDisplayName : file.appName
-                let located = self.locateFile(path: file.path, relativePath: file.relativePath, ownerID: owner)
+                let located = location(of: file, ownerID: owner)
                 guard located.isKnown,
                       let guardItem = self.makeDirectoryGuard(bundleID: owner, appName: ownerName,
                                                               groupID: located.groupID,
                                                               fileRelativePath: file.relativePath),
-                      !newGuards.contains(where: { $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID })
+                      guardKeys.insert(Self.guardKey(guardItem)).inserted
                 else { continue }
                 newGuards.append(guardItem)
             }
@@ -2311,17 +2349,13 @@ final class AppState: ObservableObject {
                 self.isBusy = false
                 self.busyText = ""
                 self.workProgress = nil
-                for recipe in newRecipes {
-                    let exists = self.store.file.recipes.contains {
-                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
-                    }
-                    if !exists { self.store.file.recipes.append(recipe) }
+                var recipeKeys = Set(self.store.file.recipes.map { Self.recipeKey($0) })
+                for recipe in newRecipes where recipeKeys.insert(Self.recipeKey(recipe)).inserted {
+                    self.store.file.recipes.append(recipe)
                 }
-                for guardItem in newGuards {
-                    let exists = self.store.file.directoryGuards.contains {
-                        $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID
-                    }
-                    if !exists { self.store.file.directoryGuards.append(guardItem) }
+                var knownGuards = Set(self.store.file.directoryGuards.map { Self.guardKey($0) })
+                for guardItem in newGuards where knownGuards.insert(Self.guardKey(guardItem)).inserted {
+                    self.store.file.directoryGuards.append(guardItem)
                 }
                 let recipesSaved = self.store.save()
                 self.recipes = self.store.file.recipes
@@ -2332,6 +2366,11 @@ final class AppState: ObservableObject {
                 }
 
                 self.log("清零完成：\(done) 个文件已截断为 0 字节", .success)
+                let clearElapsed = Date().timeIntervalSince1970 - clearStartedAt
+                let paceSeconds = Double(freezePace / 10) * 0.06
+                let otherSeconds = max(0, clearElapsed - timeBackup - timeTruncate)
+                let avgMS = done > 0 ? clearElapsed / Double(done) * 1000 : 0
+                self.log("清零耗时：\(String(format: "%.1f", clearElapsed)) 秒，\(done) 个文件平均 \(String(format: "%.0f", avgMS)) ms/个；拷贝+登记 \(String(format: "%.1f", timeBackup)) 秒，截断 \(String(format: "%.1f", timeTruncate)) 秒，其余 \(String(format: "%.1f", otherSeconds)) 秒（其中冻结限速睡眠约 \(String(format: "%.1f", paceSeconds)) 秒）", .info)
                 if frozenCount > 0 {
                     self.log("清零的文件已全部冻结：\(frozenCount) 个", .success)
                 }
@@ -2904,9 +2943,10 @@ final class AppState: ObservableObject {
                                                                channel: self.channel)
                     try self.store.registerBackup(record)
                     newBackups.append(record)
-                    let sourceMD5AfterBackup = try self.channel.md5(full)
-                    guard sourceMD5AfterBackup.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                        throw ChannelFailure("备份后源文件内容发生变化，已取消去除")
+                    let sourceVersionAfterBackup = try self.channel.fileVersion(full)
+                    guard let sourceVersion = record.sourceVersion,
+                          sourceVersionAfterBackup.isSameObject(as: sourceVersion) else {
+                        throw ChannelFailure("备份后源文件身份或内容发生变化，已取消去除")
                     }
                     if wasImmutable { try self.channel.setImmutable(full, false) }
                     guard let preWriteItem = try self.channel.inspectItem(at: full),
@@ -2914,10 +2954,7 @@ final class AppState: ObservableObject {
                           preWriteItem.size == record.originalSize else {
                         throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
                     }
-                    let preWriteMD5 = try self.channel.md5(full)
-                    guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                        throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
-                    }
+                    // truncate 在写入前会再核对身份和 MD5，这里不重复整文件读。
                     try self.channel.truncate(full, matching: record.sourceVersion, expectedMD5: record.md5)
                     var frozen = false
                     do {
@@ -3011,17 +3048,13 @@ final class AppState: ObservableObject {
                 self.isBusy = false
                 self.busyText = ""
                 self.workProgress = nil
-                for recipe in newRecipes {
-                    let exists = self.store.file.recipes.contains {
-                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
-                    }
-                    if !exists { self.store.file.recipes.append(recipe) }
+                var recipeKeys = Set(self.store.file.recipes.map { Self.recipeKey($0) })
+                for recipe in newRecipes where recipeKeys.insert(Self.recipeKey(recipe)).inserted {
+                    self.store.file.recipes.append(recipe)
                 }
-                for guardItem in newGuards {
-                    let exists = self.store.file.directoryGuards.contains {
-                        $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID
-                    }
-                    if !exists { self.store.file.directoryGuards.append(guardItem) }
+                var knownGuards = Set(self.store.file.directoryGuards.map { Self.guardKey($0) })
+                for guardItem in newGuards where knownGuards.insert(Self.guardKey(guardItem)).inserted {
+                    self.store.file.directoryGuards.append(guardItem)
                 }
                 let recipesSaved = self.store.save()
                 self.recipes = self.store.file.recipes
@@ -4405,17 +4438,13 @@ final class AppState: ObservableObject {
             let recipesToAdd = newRecipes
             let guardsToAdd = newGuards
             DispatchQueue.main.async {
-                for recipe in recipesToAdd {
-                    let exists = self.store.file.recipes.contains {
-                        $0.bundleID == recipe.bundleID && $0.relativePath == recipe.relativePath && $0.groupID == recipe.groupID
-                    }
-                    if !exists { self.store.file.recipes.append(recipe) }
+                var knownRecipes = Set(self.store.file.recipes.map { Self.recipeKey($0) })
+                for recipe in recipesToAdd where knownRecipes.insert(Self.recipeKey(recipe)).inserted {
+                    self.store.file.recipes.append(recipe)
                 }
-                for guardItem in guardsToAdd {
-                    let exists = self.store.file.directoryGuards.contains {
-                        $0.bundleID == guardItem.bundleID && $0.relativePath == guardItem.relativePath && $0.groupID == guardItem.groupID
-                    }
-                    if !exists { self.store.file.directoryGuards.append(guardItem) }
+                var knownGuards = Set(self.store.file.directoryGuards.map { Self.guardKey($0) })
+                for guardItem in guardsToAdd where knownGuards.insert(Self.guardKey(guardItem)).inserted {
+                    self.store.file.directoryGuards.append(guardItem)
                 }
                 if !self.store.save() {
                     self.log("自动清理已完成，但守护配方未能保存到本机；请复查守护列表", .warning)
@@ -4468,9 +4497,10 @@ final class AppState: ObservableObject {
                                                   channel: channel)
             try store.registerBackup(record)
             newBackups.append(record)
-            let backedUpDigest = try channel.md5(file.path)
-            guard backedUpDigest.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                throw ChannelFailure("备份后源文件内容发生变化，已取消去除")
+            let backedUpVersion = try channel.fileVersion(file.path)
+            guard let sourceVersion = record.sourceVersion,
+                  backedUpVersion.isSameObject(as: sourceVersion) else {
+                throw ChannelFailure("备份后源文件身份或内容发生变化，已取消去除")
             }
             if wasImmutable { try channel.setImmutable(file.path, false) }
             guard let preWriteItem = try channel.inspectItem(at: file.path),
@@ -4478,10 +4508,7 @@ final class AppState: ObservableObject {
                   preWriteItem.size == record.originalSize else {
                 throw ChannelFailure("备份后目标文件状态发生变化，已取消去除")
             }
-            let preWriteMD5 = try channel.md5(file.path)
-            guard preWriteMD5.caseInsensitiveCompare(record.md5) == .orderedSame else {
-                throw ChannelFailure("备份后目标文件内容发生变化，已取消去除")
-            }
+            // truncate 会在写入前再核对身份和 MD5，这里不重复整文件读。
             try channel.truncate(file.path, matching: record.sourceVersion, expectedMD5: record.md5)
             var frozen = false
             do {
